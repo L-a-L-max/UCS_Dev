@@ -92,6 +92,8 @@ function App() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [locationSource, setLocationSource] = useState<'geolocation' | 'default'>('default');
 
   const handleLogin = async () => {
     try {
@@ -131,11 +133,17 @@ function App() {
     };
 
     try {
+      // Build weather URL with location parameters if available
+      let weatherUrl = `${API_BASE}/api/v1/screen/weather`;
+      if (currentLocation) {
+        weatherUrl += `?lat=${currentLocation.lat}&lng=${currentLocation.lng}`;
+      }
+
       const [dronesRes, taskRes, teamsRes, weatherRes, eventsRes] = await Promise.all([
         fetch(`${API_BASE}/api/v1/screen/uav/list`, { headers }),
         fetch(`${API_BASE}/api/v1/screen/task/summary`, { headers }),
         fetch(`${API_BASE}/api/v1/screen/team/status`, { headers }),
-        fetch(`${API_BASE}/api/v1/screen/weather`, { headers }),
+        fetch(weatherUrl, { headers }),
         fetch(`${API_BASE}/api/v1/screen/events?limit=10`, { headers })
       ]);
 
@@ -165,13 +173,14 @@ function App() {
     setLoading(false);
   };
 
-  const getCurrentLocation = () => {
+  const getCurrentLocation = (flyToLocation = true) => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const { latitude, longitude } = position.coords;
           setCurrentLocation({ lat: latitude, lng: longitude });
-          if (map.current) {
+          setLocationSource('geolocation');
+          if (flyToLocation && map.current) {
             map.current.flyTo({
               center: [longitude, latitude],
               zoom: 10,
@@ -180,7 +189,10 @@ function App() {
           }
         },
         () => {
-          if (map.current) {
+          // Geolocation failed, use Beijing as default
+          setCurrentLocation({ lat: 39.9042, lng: 116.4074 });
+          setLocationSource('default');
+          if (flyToLocation && map.current) {
             map.current.flyTo({
               center: [116.4074, 39.9042],
               zoom: 10,
@@ -189,28 +201,40 @@ function App() {
           }
         }
       );
+    } else {
+      // Geolocation not supported, use Beijing as default
+      setCurrentLocation({ lat: 39.9042, lng: 116.4074 });
+      setLocationSource('default');
     }
   };
 
   const initMap = () => {
     if (!mapContainer.current || map.current) return;
 
+    // Use multiple tile sources for better availability in China
+    // CartoDB tiles are generally more accessible in China than OSM
+    const tileSources = [
+      'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+      'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+      'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png'
+    ];
+
     map.current = new maplibregl.Map({
       container: mapContainer.current,
       style: {
         version: 8,
         sources: {
-          'osm': {
+          'carto': {
             type: 'raster',
-            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+            tiles: tileSources,
             tileSize: 256,
-            attribution: 'OpenStreetMap'
+            attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           }
         },
         layers: [{
-          id: 'osm',
+          id: 'carto',
           type: 'raster',
-          source: 'osm',
+          source: 'carto',
           minzoom: 0,
           maxzoom: 19
         }]
@@ -219,6 +243,12 @@ function App() {
       zoom: 5,
       minZoom: 2,
       maxZoom: 18
+    });
+
+    // Add error handling for map loading
+    map.current.on('error', (e) => {
+      console.error('Map error:', e);
+      setMapError('Map loading failed. Please check your network connection.');
     });
 
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
@@ -357,7 +387,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (isLoggedIn) initMap();
+    if (isLoggedIn) {
+      initMap();
+      // Get location on login for weather data
+      getCurrentLocation(false);
+    }
     return () => { if (map.current) { map.current.remove(); map.current = null; } };
   }, [isLoggedIn]);
 
@@ -456,7 +490,7 @@ function App() {
             <CardContent className="px-3 pb-3">
               {weather && (
                 <div className="space-y-2 text-sm">
-                  <div className="flex justify-between"><span className="text-slate-400">Location</span><span>{weather.location || 'Beijing'}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">Location</span><span>{weather.location || 'Beijing'}{locationSource === 'default' ? ' (default)' : ''}</span></div>
                   <div className="flex justify-between"><span className="text-slate-400">Temp</span><span className="text-lg font-bold">{weather.temperature?.toFixed(1)}C</span></div>
                   <div className="flex justify-between"><span className="text-slate-400">Humidity</span><span>{weather.humidity?.toFixed(0)}%</span></div>
                   <div className="flex justify-between"><span className="text-slate-400">Wind</span><span>{weather.windSpeed?.toFixed(1)} m/s</span></div>
@@ -510,6 +544,16 @@ function App() {
 
         <div className="flex-1 relative">
           <div ref={mapContainer} className="absolute inset-0" />
+          
+          {mapError && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 z-20">
+              <div className="bg-slate-800 p-4 rounded-lg text-center max-w-sm">
+                <AlertTriangle className="w-8 h-8 text-yellow-400 mx-auto mb-2" />
+                <p className="text-white mb-2">{mapError}</p>
+                <p className="text-slate-400 text-sm">Try refreshing the page or check your network connection.</p>
+              </div>
+            </div>
+          )}
           
           <div className="absolute top-3 left-3 z-10 bg-slate-800/90 rounded-lg p-2 space-y-2">
             <div className="flex items-center gap-1 text-xs text-slate-300 mb-1">

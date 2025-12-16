@@ -59,8 +59,17 @@ public class ScreenController {
     }
     
     @GetMapping("/weather")
-    public ApiResponse<WeatherDTO> getWeather() {
-        WeatherDTO weather = weatherService.getCurrentWeather();
+    public ApiResponse<WeatherDTO> getWeather(
+            @RequestParam(required = false) Double lat,
+            @RequestParam(required = false) Double lng) {
+        WeatherDTO weather;
+        if (lat != null && lng != null) {
+            // Fetch weather for the specified location
+            weather = weatherService.getWeatherByCoordinates(lat, lng);
+        } else {
+            // Default to Beijing
+            weather = weatherService.getCurrentWeather();
+        }
         return ApiResponse.success(weather);
     }
     
