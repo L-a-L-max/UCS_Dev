@@ -132,6 +132,8 @@ public class MapTileController {
         );
         
         try {
+            logger.debug("请求高德瓦片: z={}, x={}, y={}, style={}", z, x, y, style);
+            
             HttpHeaders headers = new HttpHeaders();
             headers.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
             headers.set("Referer", "https://www.amap.com/");
@@ -145,8 +147,19 @@ public class MapTileController {
                 byte[].class
             );
             
+            logger.debug("高德瓦片响应: status={}, contentType={}, bodyLength={}", 
+                response.getStatusCode(), 
+                response.getHeaders().getContentType(),
+                response.getBody() != null ? response.getBody().length : 0);
+            
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 byte[] tileData = response.getBody();
+                
+                // Check if response is actually a PNG (starts with PNG header)
+                if (tileData.length < 8 || tileData[0] != (byte)0x89 || tileData[1] != 'P' || tileData[2] != 'N' || tileData[3] != 'G') {
+                    logger.warn("高德瓦片响应不是有效的 PNG 图片，可能是错误信息: {}", new String(tileData, 0, Math.min(200, tileData.length)));
+                    return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
+                }
                 
                 // Cache the tile (limit cache size to prevent memory issues)
                 if (tileCache.size() < 10000) {
@@ -155,13 +168,15 @@ public class MapTileController {
                 
                 return ResponseEntity.ok()
                         .contentType(MediaType.IMAGE_PNG)
+                        .header("Access-Control-Allow-Origin", "*")
                         .cacheControl(CacheControl.maxAge(java.time.Duration.ofHours(24)))
                         .body(tileData);
             } else {
+                logger.warn("高德瓦片请求失败: status={}", response.getStatusCode());
                 return ResponseEntity.status(response.getStatusCode()).build();
             }
         } catch (Exception e) {
-            System.err.println("Failed to fetch Gaode tile: " + e.getMessage());
+            logger.error("获取高德瓦片异常: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
         }
     }
