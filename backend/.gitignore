@@ -33,6 +33,3 @@ build/
 
 ### Logs ###
 *.log
-
-### Local configuration (contains secrets) ###
-application-local.properties
