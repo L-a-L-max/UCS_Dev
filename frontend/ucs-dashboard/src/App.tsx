@@ -111,6 +111,10 @@ const zhCN = {
   tileLoadFailed: '地图瓦片加载失败',
   networkError: '网络连接异常',
   tryRefresh: '请尝试刷新页面',
+  apiKeyNotConfigured: '高德地图 API 密钥未配置',
+  apiKeyConfigHint: '请设置环境变量 GAODE_API_KEY 和 GAODE_SECURITY_KEY 后重启后端服务',
+  backendNotReachable: '无法连接后端服务',
+  checkBackendHint: '请确保后端服务已启动 (端口 8080)',
   
   // Tile source selector
   tileSource: '地图源',
@@ -349,7 +353,24 @@ function App() {
     }
   };
 
-  const initMap = (selectedTileSource: TileSourceKey = tileSource) => {
+  // Check if Gaode tile proxy is configured
+  const checkTileHealth = async (): Promise<{ configured: boolean; message: string }> => {
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/map/tiles/health`);
+      if (!response.ok) {
+        return { configured: false, message: zhCN.backendNotReachable };
+      }
+      const data = await response.json();
+      return {
+        configured: data.configured === true,
+        message: data.message || (data.configured ? '' : zhCN.apiKeyConfigHint)
+      };
+    } catch {
+      return { configured: false, message: zhCN.backendNotReachable };
+    }
+  };
+
+  const initMap = async (selectedTileSource: TileSourceKey = tileSource) => {
     if (!mapContainer.current) return;
 
     // Remove existing map if any
@@ -364,6 +385,16 @@ function App() {
       setMapError(zhCN.mapLoadFailed);
       setMapErrorDetails('No tile source configured');
       return;
+    }
+
+    // Check tile health for Gaode source
+    if (selectedTileSource === 'gaode') {
+      const health = await checkTileHealth();
+      if (!health.configured) {
+        setMapError(zhCN.apiKeyNotConfigured);
+        setMapErrorDetails(health.message);
+        // Don't return - still try to initialize map, but user will see error
+      }
     }
 
     setMapError(null);
@@ -499,10 +530,10 @@ function App() {
     });
   };
 
-  const changeTileSource = (newSource: TileSourceKey) => {
+  const changeTileSource = async (newSource: TileSourceKey) => {
     setTileSource(newSource);
     setShowTileSelector(false);
-    initMap(newSource);
+    await initMap(newSource);
   };
 
   const updateMapMarkers = () => {
@@ -662,7 +693,7 @@ function App() {
 
   useEffect(() => {
     if (isLoggedIn) {
-      initMap();
+      initMap().catch(console.error);
       // Get location on login for weather data
       getCurrentLocation(false);
     }
@@ -827,7 +858,7 @@ function App() {
                 {mapErrorDetails && <p className="text-slate-400 text-xs mb-2">{mapErrorDetails}</p>}
                 <p className="text-slate-400 text-sm mb-3">{zhCN.mapErrorHint}</p>
                 <div className="flex gap-2 justify-center">
-                  <Button size="sm" onClick={() => initMap()} className="bg-blue-600 hover:bg-blue-700">{zhCN.tryRefresh}</Button>
+                  <Button size="sm" onClick={() => initMap().catch(console.error)} className="bg-blue-600 hover:bg-blue-700">{zhCN.tryRefresh}</Button>
                   <Button size="sm" variant="outline" onClick={() => setShowTileSelector(true)} className="border-slate-600 text-slate-200">
                     <Settings className="w-3 h-3 mr-1" />{zhCN.tileSource}
                   </Button>

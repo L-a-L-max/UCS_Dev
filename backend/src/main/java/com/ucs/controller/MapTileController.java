@@ -1,15 +1,22 @@
 package com.ucs.controller;
 
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 @RestController
 @RequestMapping("/api/v1/map")
 public class MapTileController {
+    
+    private static final Logger logger = LoggerFactory.getLogger(MapTileController.class);
     
     // Gaode Map API credentials from application properties
     @Value("${gaode.api.key:}")
@@ -35,6 +42,53 @@ public class MapTileController {
         this.restTemplate = new RestTemplate();
     }
     
+    @PostConstruct
+    public void init() {
+        boolean apiKeyPresent = gaodeApiKey != null && !gaodeApiKey.isEmpty();
+        boolean securityKeyPresent = gaodeSecurityKey != null && !gaodeSecurityKey.isEmpty();
+        
+        logger.info("=== 高德地图瓦片代理配置 ===");
+        logger.info("API Key 已配置: {}", apiKeyPresent ? "是" : "否");
+        logger.info("安全密钥已配置: {}", securityKeyPresent ? "是" : "否");
+        
+        if (!apiKeyPresent || !securityKeyPresent) {
+            logger.warn("警告: 高德地图 API 密钥未完整配置！");
+            logger.warn("请设置环境变量 GAODE_API_KEY 和 GAODE_SECURITY_KEY");
+            logger.warn("地图瓦片功能将无法正常工作");
+        } else {
+            logger.info("高德地图瓦片代理已启用");
+        }
+    }
+    
+    private boolean isConfigured() {
+        return gaodeApiKey != null && !gaodeApiKey.isEmpty() 
+            && gaodeSecurityKey != null && !gaodeSecurityKey.isEmpty();
+    }
+    
+    /**
+     * Health check endpoint for map tiles configuration
+     * Returns configuration status and any error messages
+     */
+    @GetMapping("/tiles/health")
+    public ResponseEntity<Map<String, Object>> healthCheck() {
+        Map<String, Object> health = new HashMap<>();
+        boolean configured = isConfigured();
+        
+        health.put("configured", configured);
+        health.put("apiKeyPresent", gaodeApiKey != null && !gaodeApiKey.isEmpty());
+        health.put("securityKeyPresent", gaodeSecurityKey != null && !gaodeSecurityKey.isEmpty());
+        
+        if (configured) {
+            health.put("status", "ok");
+            health.put("message", "高德地图瓦片代理已配置");
+        } else {
+            health.put("status", "error");
+            health.put("message", "高德地图 API 密钥未配置。请设置环境变量 GAODE_API_KEY 和 GAODE_SECURITY_KEY 后重启后端服务。");
+        }
+        
+        return ResponseEntity.ok(health);
+    }
+    
     /**
      * Proxy endpoint for Gaode map tiles
      * This endpoint fetches tiles from Gaode servers with proper authentication
@@ -46,6 +100,12 @@ public class MapTileController {
             @PathVariable int x,
             @PathVariable int y,
             @RequestParam(defaultValue = "7") int style) {
+        
+        // Check if API keys are configured
+        if (!isConfigured()) {
+            logger.warn("地图瓦片请求失败: API 密钥未配置");
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+        }
         
         String cacheKey = String.format("%d/%d/%d/%d", z, x, y, style);
         
