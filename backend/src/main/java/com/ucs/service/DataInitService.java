@@ -195,8 +195,8 @@ public class DataInitService {
                 {"DJI-MINI3-002", "Mini 3 Pro", "DJI", "3"}
         };
         
-        double baseLat = 31.2304;
-        double baseLng = 121.4737;
+        double baseLat = 39.9042;
+        double baseLng = 116.4074;
         
         for (int i = 0; i < drones.length; i++) {
             String[] droneData = drones[i];
@@ -269,12 +269,12 @@ public class DataInitService {
     
     private void initWeather() {
         WeatherSnapshot weather = new WeatherSnapshot();
-        weather.setTemperature(25.5f);
-        weather.setHumidity(65.0f);
-        weather.setWindSpeed(4.5f);
-        weather.setWindDirection(180.0f);
-        weather.setRiskLevel("LOW");
-        weather.setLocation("Shanghai");
+        weather.setTemperature(-2.0f);
+        weather.setHumidity(35.0f);
+        weather.setWindSpeed(3.5f);
+        weather.setWindDirection(315.0f);
+        weather.setRiskLevel("MEDIUM");
+        weather.setLocation("Beijing");
         weatherSnapshotRepository.save(weather);
     }
 }
