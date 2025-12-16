@@ -168,7 +168,6 @@ public class MapTileController {
                 
                 return ResponseEntity.ok()
                         .contentType(MediaType.IMAGE_PNG)
-                        .header("Access-Control-Allow-Origin", "*")
                         .cacheControl(CacheControl.maxAge(java.time.Duration.ofHours(24)))
                         .body(tileData);
             } else {
