@@ -17,11 +17,145 @@ import {
   LogIn,
   MapPin,
   Locate,
-  Layers
+  Layers,
+  Settings
 } from 'lucide-react';
 import './App.css';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+
+// Chinese localization dictionary
+const zhCN = {
+  // Login page
+  platformTitle: '无人机集群管控平台',
+  username: '用户名',
+  password: '密码',
+  login: '登录',
+  loginHint: '观察员账号: observer / 123456',
+  loginFailed: '登录失败',
+  connectionFailed: '连接失败',
+  observerOnly: '仅观察员角色可访问大屏',
+  accessDenied: '访问被拒绝：需要观察员角色',
+  
+  // Header
+  dashboardTitle: '无人机集群管控 - 全局大屏',
+  refresh: '刷新',
+  logout: '退出',
+  
+  // Task card
+  tasks: '任务态势',
+  total: '总计',
+  active: '执行中',
+  done: '已完成',
+  error: '异常',
+  
+  // Weather card
+  weather: '天气信息',
+  location: '位置',
+  defaultLocation: '(默认)',
+  temperature: '温度',
+  humidity: '湿度',
+  wind: '风速',
+  risk: '飞行风险',
+  riskLow: '低',
+  riskMedium: '中',
+  riskHigh: '高',
+  
+  // Teams card
+  teams: '任务小队',
+  leader: '队长',
+  
+  // Stats card
+  stats: '实时统计',
+  flying: '飞行中',
+  totalUavs: '无人机总数',
+  lowBattery: '低电量',
+  errors: '异常状态',
+  
+  // Map controls
+  heatmapMode: '热力图模式',
+  heatmapDrone: '无人机',
+  heatmapTask: '任务',
+  heatmapMember: '成员',
+  myLocation: '我的位置',
+  focusUavs: '聚焦无人机',
+  
+  // Map legend
+  flyingStatus: '飞行中',
+  idleStatus: '待机',
+  clickForDetails: '点击标记查看详情',
+  
+  // UAV list
+  uavList: '无人机列表',
+  
+  // Events
+  events: '事件日志',
+  noEvents: '暂无事件',
+  
+  // Footer
+  footerInfo: 'UCS 平台 v1.0 | 每5秒自动刷新',
+  locationInfo: '当前位置',
+  
+  // Drone popup
+  model: '型号',
+  battery: '电量',
+  altitude: '高度',
+  status: '状态',
+  operator: '操作员',
+  
+  // Map error
+  mapLoadFailed: '地图加载失败',
+  mapErrorHint: '请检查网络连接或尝试切换地图源',
+  webglNotSupported: '您的浏览器不支持 WebGL，无法显示地图',
+  tileLoadFailed: '地图瓦片加载失败',
+  networkError: '网络连接异常',
+  tryRefresh: '请尝试刷新页面',
+  
+  // Tile source selector
+  tileSource: '地图源',
+  tileSourceGaode: '高德地图',
+  tileSourceOSM: 'OpenStreetMap',
+  tileSourceCarto: 'CartoDB',
+};
+
+// Map tile source configurations
+type TileSourceKey = 'gaode' | 'osm' | 'carto';
+
+interface TileSourceConfig {
+  name: string;
+  tiles: string[];
+  attribution: string;
+}
+
+// Gaode (高德) Map - uses public tile service (no API key required for basic tiles)
+const TILE_SOURCES: Record<TileSourceKey, TileSourceConfig> = {
+  gaode: {
+    name: '高德地图',
+    tiles: [
+      'https://wprd01.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
+      'https://wprd02.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
+      'https://wprd03.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
+      'https://wprd04.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7'
+    ],
+    attribution: '&copy; <a href="https://www.amap.com/">高德地图</a>'
+  },
+  osm: {
+    name: 'OpenStreetMap',
+    tiles: [
+      'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+    ],
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  },
+  carto: {
+    name: 'CartoDB',
+    tiles: [
+      'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+      'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+      'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png'
+    ],
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  }
+};
 
 interface DroneStatus {
   uavId: string;
@@ -93,7 +227,10 @@ function App() {
   const map = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const [mapError, setMapError] = useState<string | null>(null);
+  const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
   const [locationSource, setLocationSource] = useState<'geolocation' | 'default'>('default');
+  const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
+  const [showTileSelector, setShowTileSelector] = useState(false);
 
   const handleLogin = async () => {
     try {
@@ -107,7 +244,7 @@ function App() {
       if (data.code === 0) {
         const roles = data.data.roles || [];
         if (!roles.includes('OBSERVER') && !roles.includes('observer')) {
-          setError('Only observer role can access the dashboard');
+          setError(zhCN.observerOnly);
           return;
         }
         setToken(data.data.token);
@@ -116,10 +253,10 @@ function App() {
         localStorage.setItem('token', data.data.token);
         localStorage.setItem('roles', JSON.stringify(roles));
       } else {
-        setError(data.msg || 'Login failed');
+        setError(data.msg || zhCN.loginFailed);
       }
     } catch {
-      setError('Connection failed');
+      setError(zhCN.connectionFailed);
     }
   };
 
@@ -148,7 +285,7 @@ function App() {
       ]);
 
       if (dronesRes.status === 403) {
-        setError('Access denied: Observer role required');
+        setError(zhCN.accessDenied);
         setIsLoggedIn(false);
         localStorage.removeItem('token');
         localStorage.removeItem('roles');
@@ -208,33 +345,42 @@ function App() {
     }
   };
 
-  const initMap = () => {
-    if (!mapContainer.current || map.current) return;
+  const initMap = (selectedTileSource: TileSourceKey = tileSource) => {
+    if (!mapContainer.current) return;
 
-    // Use multiple tile sources for better availability in China
-    // CartoDB tiles are generally more accessible in China than OSM
-    const tileSources = [
-      'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
-      'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
-      'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png'
-    ];
+    // Remove existing map if any
+    if (map.current) {
+      map.current.remove();
+      map.current = null;
+    }
+
+    // Get tile configuration
+    const tileConfig = TILE_SOURCES[selectedTileSource];
+    if (!tileConfig.tiles.length) {
+      setMapError(zhCN.mapLoadFailed);
+      setMapErrorDetails('No tile source configured');
+      return;
+    }
+
+    setMapError(null);
+    setMapErrorDetails(null);
 
     map.current = new maplibregl.Map({
       container: mapContainer.current,
       style: {
         version: 8,
         sources: {
-          'carto': {
+          'basemap': {
             type: 'raster',
-            tiles: tileSources,
+            tiles: tileConfig.tiles,
             tileSize: 256,
-            attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            attribution: tileConfig.attribution
           }
         },
         layers: [{
-          id: 'carto',
+          id: 'basemap',
           type: 'raster',
-          source: 'carto',
+          source: 'basemap',
           minzoom: 0,
           maxzoom: 19
         }]
@@ -245,10 +391,19 @@ function App() {
       maxZoom: 18
     });
 
-    // Add error handling for map loading
+    // Enhanced error handling for map loading
     map.current.on('error', (e) => {
       console.error('Map error:', e);
-      setMapError('Map loading failed. Please check your network connection.');
+      const errorMsg = e.error?.message || '';
+      const sourceId = (e as { sourceId?: string }).sourceId || '';
+      
+      if (errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError')) {
+        setMapError(zhCN.networkError);
+        setMapErrorDetails(`${zhCN.tileLoadFailed}: ${sourceId || 'basemap'}`);
+      } else {
+        setMapError(zhCN.mapLoadFailed);
+        setMapErrorDetails(errorMsg || zhCN.tryRefresh);
+      }
     });
 
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
@@ -285,6 +440,12 @@ function App() {
     });
   };
 
+  const changeTileSource = (newSource: TileSourceKey) => {
+    setTileSource(newSource);
+    setShowTileSelector(false);
+    initMap(newSource);
+  };
+
   const updateMapMarkers = () => {
     if (!map.current) return;
 
@@ -302,11 +463,11 @@ function App() {
         const popup = new maplibregl.Popup({ offset: 25 }).setHTML(`
           <div style="padding:8px;font-family:sans-serif;">
             <h3 style="margin:0 0 8px 0;font-size:14px;font-weight:bold;">${drone.uavId}</h3>
-            <p style="margin:4px 0;font-size:12px;">Model: ${drone.model}</p>
-            <p style="margin:4px 0;font-size:12px;">Battery: ${drone.battery?.toFixed(0)}%</p>
-            <p style="margin:4px 0;font-size:12px;">Altitude: ${drone.altitude?.toFixed(0)}m</p>
-            <p style="margin:4px 0;font-size:12px;">Status: ${isFlying ? 'Flying' : 'Idle'}</p>
-            <p style="margin:4px 0;font-size:12px;">Operator: ${drone.owner}</p>
+            <p style="margin:4px 0;font-size:12px;">${zhCN.model}: ${drone.model}</p>
+            <p style="margin:4px 0;font-size:12px;">${zhCN.battery}: ${drone.battery?.toFixed(0)}%</p>
+            <p style="margin:4px 0;font-size:12px;">${zhCN.altitude}: ${drone.altitude?.toFixed(0)}m</p>
+            <p style="margin:4px 0;font-size:12px;">${zhCN.status}: ${isFlying ? zhCN.flyingStatus : zhCN.idleStatus}</p>
+            <p style="margin:4px 0;font-size:12px;">${zhCN.operator}: ${drone.owner}</p>
           </div>
         `);
 
@@ -417,17 +578,17 @@ function App() {
           <CardHeader>
             <CardTitle className="text-white text-center flex items-center justify-center gap-2">
               <Plane className="w-6 h-6" />
-              UAV Swarm Control Platform
+              {zhCN.platformTitle}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Input placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} className="bg-slate-700 border-slate-600 text-white" />
-            <Input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} className="bg-slate-700 border-slate-600 text-white" onKeyPress={(e) => e.key === 'Enter' && handleLogin()} />
+            <Input placeholder={zhCN.username} value={username} onChange={(e) => setUsername(e.target.value)} className="bg-slate-700 border-slate-600 text-white" />
+            <Input type="password" placeholder={zhCN.password} value={password} onChange={(e) => setPassword(e.target.value)} className="bg-slate-700 border-slate-600 text-white" onKeyPress={(e) => e.key === 'Enter' && handleLogin()} />
             {error && <p className="text-red-400 text-sm">{error}</p>}
             <Button onClick={handleLogin} className="w-full bg-blue-600 hover:bg-blue-700">
-              <LogIn className="w-4 h-4 mr-2" />Login
+              <LogIn className="w-4 h-4 mr-2" />{zhCN.login}
             </Button>
-            <p className="text-slate-400 text-xs text-center">Observer: observer / 123456</p>
+            <p className="text-slate-400 text-xs text-center">{zhCN.loginHint}</p>
           </CardContent>
         </Card>
       </div>
@@ -439,13 +600,13 @@ function App() {
       <header className="flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
         <h1 className="text-xl font-bold flex items-center gap-2">
           <Plane className="w-6 h-6 text-blue-400" />
-          UAV Swarm Control - Dashboard
+          {zhCN.dashboardTitle}
         </h1>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={fetchData} disabled={loading} className="border-slate-600 text-slate-300">
-            <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />Refresh
+            <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />{zhCN.refresh}
           </Button>
-          <Button variant="outline" size="sm" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('roles'); setIsLoggedIn(false); setToken(''); }} className="border-slate-600 text-slate-300">Logout</Button>
+          <Button variant="outline" size="sm" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('roles'); setIsLoggedIn(false); setToken(''); }} className="border-slate-600 text-slate-300">{zhCN.logout}</Button>
         </div>
       </header>
 
@@ -454,7 +615,7 @@ function App() {
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <ClipboardList className="w-4 h-4 text-blue-400" />Tasks
+                <ClipboardList className="w-4 h-4 text-blue-400" />{zhCN.tasks}
               </CardTitle>
             </CardHeader>
             <CardContent className="px-3 pb-3">
@@ -462,19 +623,19 @@ function App() {
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-slate-600 p-2 rounded text-center">
                     <div className="text-lg font-bold text-blue-400">{taskSummary.total}</div>
-                    <div className="text-xs text-slate-400">Total</div>
+                    <div className="text-xs text-slate-400">{zhCN.total}</div>
                   </div>
                   <div className="bg-slate-600 p-2 rounded text-center">
                     <div className="text-lg font-bold text-green-400">{taskSummary.executing}</div>
-                    <div className="text-xs text-slate-400">Active</div>
+                    <div className="text-xs text-slate-400">{zhCN.active}</div>
                   </div>
                   <div className="bg-slate-600 p-2 rounded text-center">
                     <div className="text-lg font-bold text-slate-300">{taskSummary.completed}</div>
-                    <div className="text-xs text-slate-400">Done</div>
+                    <div className="text-xs text-slate-400">{zhCN.done}</div>
                   </div>
                   <div className="bg-slate-600 p-2 rounded text-center">
                     <div className="text-lg font-bold text-red-400">{taskSummary.abnormal}</div>
-                    <div className="text-xs text-slate-400">Error</div>
+                    <div className="text-xs text-slate-400">{zhCN.error}</div>
                   </div>
                 </div>
               )}
@@ -484,19 +645,19 @@ function App() {
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <Cloud className="w-4 h-4 text-blue-400" />Weather
+                <Cloud className="w-4 h-4 text-blue-400" />{zhCN.weather}
               </CardTitle>
             </CardHeader>
             <CardContent className="px-3 pb-3">
               {weather && (
                 <div className="space-y-2 text-sm">
-                  <div className="flex justify-between"><span className="text-slate-400">Location</span><span>{weather.location || 'Beijing'}{locationSource === 'default' ? ' (default)' : ''}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-400">Temp</span><span className="text-lg font-bold">{weather.temperature?.toFixed(1)}C</span></div>
-                  <div className="flex justify-between"><span className="text-slate-400">Humidity</span><span>{weather.humidity?.toFixed(0)}%</span></div>
-                  <div className="flex justify-between"><span className="text-slate-400">Wind</span><span>{weather.windSpeed?.toFixed(1)} m/s</span></div>
-                  <div className="flex justify-between"><span className="text-slate-400">Risk</span>
+                  <div className="flex justify-between"><span className="text-slate-400">{zhCN.location}</span><span>{weather.location || '北京'}{locationSource === 'default' ? ` ${zhCN.defaultLocation}` : ''}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">{zhCN.temperature}</span><span className="text-lg font-bold">{weather.temperature?.toFixed(1)}°C</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">{zhCN.humidity}</span><span>{weather.humidity?.toFixed(0)}%</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">{zhCN.wind}</span><span>{weather.windSpeed?.toFixed(1)} m/s</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">{zhCN.risk}</span>
                     <Badge variant={weather.riskLevel === 'LOW' ? 'default' : weather.riskLevel === 'MEDIUM' ? 'secondary' : 'destructive'}>
-                      {weather.riskLevel === 'LOW' ? 'Low' : weather.riskLevel === 'MEDIUM' ? 'Med' : 'High'}
+                      {weather.riskLevel === 'LOW' ? zhCN.riskLow : weather.riskLevel === 'MEDIUM' ? zhCN.riskMedium : zhCN.riskHigh}
                     </Badge>
                   </div>
                 </div>
@@ -507,7 +668,7 @@ function App() {
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <Users className="w-4 h-4 text-blue-400" />Teams
+                <Users className="w-4 h-4 text-blue-400" />{zhCN.teams}
               </CardTitle>
             </CardHeader>
             <CardContent className="px-3 pb-3">
@@ -516,7 +677,7 @@ function App() {
                   <div key={team.teamId} className="bg-slate-600 p-2 rounded flex justify-between items-center">
                     <div>
                       <div className="font-medium text-xs">{team.teamName}</div>
-                      <div className="text-xs text-slate-400">Leader: {team.leader || 'N/A'}</div>
+                      <div className="text-xs text-slate-400">{zhCN.leader}: {team.leader || 'N/A'}</div>
                     </div>
                     <Badge variant="outline" className="text-slate-300 text-xs">{team.memberCount}</Badge>
                   </div>
@@ -528,15 +689,15 @@ function App() {
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <Activity className="w-4 h-4 text-blue-400" />Stats
+                <Activity className="w-4 h-4 text-blue-400" />{zhCN.stats}
               </CardTitle>
             </CardHeader>
             <CardContent className="px-3 pb-3">
               <div className="space-y-2 text-sm">
-                <div className="flex justify-between"><span className="text-slate-400">Flying</span><span className="font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Total UAVs</span><span className="font-bold">{drones.length}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Low Battery</span><span className="font-bold text-yellow-400">{drones.filter(d => d.battery < 30).length}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Errors</span><span className="font-bold text-red-400">{drones.filter(d => d.hardwareStatus !== 'NORMAL').length}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">{zhCN.flying}</span><span className="font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">{zhCN.totalUavs}</span><span className="font-bold">{drones.length}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">{zhCN.lowBattery}</span><span className="font-bold text-yellow-400">{drones.filter(d => d.battery < 30).length}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">{zhCN.errors}</span><span className="font-bold text-red-400">{drones.filter(d => d.hardwareStatus !== 'NORMAL').length}</span></div>
               </div>
             </CardContent>
           </Card>
@@ -547,36 +708,69 @@ function App() {
           
           {mapError && (
             <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 z-20">
-              <div className="bg-slate-800 p-4 rounded-lg text-center max-w-sm">
+              <div className="bg-slate-800 p-4 rounded-lg text-center max-w-md">
                 <AlertTriangle className="w-8 h-8 text-yellow-400 mx-auto mb-2" />
                 <p className="text-white mb-2">{mapError}</p>
-                <p className="text-slate-400 text-sm">Try refreshing the page or check your network connection.</p>
+                {mapErrorDetails && <p className="text-slate-400 text-xs mb-2">{mapErrorDetails}</p>}
+                <p className="text-slate-400 text-sm mb-3">{zhCN.mapErrorHint}</p>
+                <div className="flex gap-2 justify-center">
+                  <Button size="sm" onClick={() => initMap()} className="bg-blue-600 hover:bg-blue-700">{zhCN.tryRefresh}</Button>
+                  <Button size="sm" variant="outline" onClick={() => setShowTileSelector(true)} className="border-slate-600 text-slate-200">
+                    <Settings className="w-3 h-3 mr-1" />{zhCN.tileSource}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showTileSelector && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 z-30">
+              <div className="bg-slate-800 p-4 rounded-lg max-w-sm">
+                <h3 className="text-white font-bold mb-3">{zhCN.tileSource}</h3>
+                <div className="space-y-2">
+                  <Button size="sm" onClick={() => changeTileSource('gaode')} className={`w-full justify-start ${tileSource === 'gaode' ? 'bg-blue-600' : 'bg-slate-700'}`}>
+                    {zhCN.tileSourceGaode}
+                  </Button>
+                  <Button size="sm" onClick={() => changeTileSource('osm')} className={`w-full justify-start ${tileSource === 'osm' ? 'bg-blue-600' : 'bg-slate-700'}`}>
+                    {zhCN.tileSourceOSM}
+                  </Button>
+                  <Button size="sm" onClick={() => changeTileSource('carto')} className={`w-full justify-start ${tileSource === 'carto' ? 'bg-blue-600' : 'bg-slate-700'}`}>
+                    {zhCN.tileSourceCarto}
+                  </Button>
+                </div>
+                <p className="text-slate-400 text-xs mt-3">
+                  推荐使用高德地图（国内网络访问更稳定）
+                </p>
+                <Button size="sm" variant="outline" onClick={() => setShowTileSelector(false)} className="w-full mt-3 border-slate-600 text-slate-200">
+                  关闭
+                </Button>
               </div>
             </div>
           )}
           
           <div className="absolute top-3 left-3 z-10 bg-slate-800/90 rounded-lg p-2 space-y-2">
             <div className="flex items-center gap-1 text-xs text-slate-300 mb-1">
-              <Layers className="w-3 h-3" />Heatmap Mode
+              <Layers className="w-3 h-3" />{zhCN.heatmapMode}
             </div>
             <div className="flex gap-1">
-              <Button size="sm" variant={heatmapMode === 'drone' ? 'default' : 'outline'} onClick={() => setHeatmapMode('drone')} className={`text-xs px-2 py-1 h-7 ${heatmapMode === 'drone' ? 'bg-blue-600' : 'border-slate-600'}`}>UAV</Button>
-              <Button size="sm" variant={heatmapMode === 'task' ? 'default' : 'outline'} onClick={() => setHeatmapMode('task')} className={`text-xs px-2 py-1 h-7 ${heatmapMode === 'task' ? 'bg-blue-600' : 'border-slate-600'}`}>Task</Button>
-              <Button size="sm" variant={heatmapMode === 'member' ? 'default' : 'outline'} onClick={() => setHeatmapMode('member')} className={`text-xs px-2 py-1 h-7 ${heatmapMode === 'member' ? 'bg-blue-600' : 'border-slate-600'}`}>Team</Button>
+              <Button size="sm" variant={heatmapMode === 'drone' ? 'default' : 'outline'} onClick={() => setHeatmapMode('drone')} className={`text-xs px-2 py-1 h-7 ${heatmapMode === 'drone' ? 'bg-blue-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapDrone}</Button>
+              <Button size="sm" variant={heatmapMode === 'task' ? 'default' : 'outline'} onClick={() => setHeatmapMode('task')} className={`text-xs px-2 py-1 h-7 ${heatmapMode === 'task' ? 'bg-blue-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapTask}</Button>
+              <Button size="sm" variant={heatmapMode === 'member' ? 'default' : 'outline'} onClick={() => setHeatmapMode('member')} className={`text-xs px-2 py-1 h-7 ${heatmapMode === 'member' ? 'bg-blue-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapMember}</Button>
             </div>
           </div>
 
           <div className="absolute top-3 right-14 z-10 flex flex-col gap-1">
-            <Button size="sm" variant="outline" onClick={getCurrentLocation} className="bg-slate-800/90 border-slate-600 text-white h-8 w-8 p-0" title="My Location"><Locate className="w-4 h-4" /></Button>
-            <Button size="sm" variant="outline" onClick={focusOnDrones} className="bg-slate-800/90 border-slate-600 text-white h-8 w-8 p-0" title="Focus UAVs"><MapPin className="w-4 h-4" /></Button>
+            <Button size="sm" variant="outline" onClick={() => getCurrentLocation()} className="bg-slate-800/90 border-slate-600 text-white h-8 w-8 p-0" title={zhCN.myLocation}><Locate className="w-4 h-4" /></Button>
+            <Button size="sm" variant="outline" onClick={focusOnDrones} className="bg-slate-800/90 border-slate-600 text-white h-8 w-8 p-0" title={zhCN.focusUavs}><MapPin className="w-4 h-4" /></Button>
+            <Button size="sm" variant="outline" onClick={() => setShowTileSelector(true)} className="bg-slate-800/90 border-slate-600 text-white h-8 w-8 p-0" title={zhCN.tileSource}><Settings className="w-4 h-4" /></Button>
           </div>
 
           <div className="absolute bottom-3 left-3 z-10 bg-slate-800/90 rounded-lg p-2 max-w-xs">
             <div className="flex items-center gap-2 text-xs text-slate-300 mb-2">
-              <div className="w-3 h-3 rounded-full bg-green-500"></div><span>Flying</span>
-              <div className="w-3 h-3 rounded-full bg-gray-500 ml-2"></div><span>Idle</span>
+              <div className="w-3 h-3 rounded-full bg-green-500"></div><span>{zhCN.flyingStatus}</span>
+              <div className="w-3 h-3 rounded-full bg-gray-500 ml-2"></div><span>{zhCN.idleStatus}</span>
             </div>
-            <div className="text-xs text-slate-400">Click marker for details</div>
+            <div className="text-xs text-slate-400">{zhCN.clickForDetails}</div>
           </div>
         </div>
 
@@ -584,7 +778,7 @@ function App() {
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <Plane className="w-4 h-4 text-blue-400" />UAV List
+                <Plane className="w-4 h-4 text-blue-400" />{zhCN.uavList}
               </CardTitle>
             </CardHeader>
             <CardContent className="px-3 pb-3">
@@ -597,7 +791,7 @@ function App() {
                         <div className="text-xs text-slate-400">{drone.model}</div>
                       </div>
                       <Badge variant={drone.flightStatus === 'FLYING' ? 'default' : 'secondary'} className={`text-xs ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : ''}`}>
-                        {drone.flightStatus === 'FLYING' ? 'Flying' : 'Idle'}
+                        {drone.flightStatus === 'FLYING' ? zhCN.flyingStatus : zhCN.idleStatus}
                       </Badge>
                     </div>
                     <div className="flex justify-between mt-1 text-xs">
@@ -615,13 +809,13 @@ function App() {
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <AlertTriangle className="w-4 h-4 text-yellow-400" />Events
+                <AlertTriangle className="w-4 h-4 text-yellow-400" />{zhCN.events}
               </CardTitle>
             </CardHeader>
             <CardContent className="px-3 pb-3">
               <div className="space-y-2 max-h-48 overflow-y-auto">
                 {events.length === 0 ? (
-                  <p className="text-slate-400 text-center py-2 text-xs">No events</p>
+                  <p className="text-slate-400 text-center py-2 text-xs">{zhCN.noEvents}</p>
                 ) : (
                   events.map((event, idx) => (
                     <div key={idx} className={`p-2 rounded text-xs ${event.level === 'ERROR' ? 'bg-red-900/30 border-l-2 border-red-500' : event.level === 'WARN' ? 'bg-yellow-900/30 border-l-2 border-yellow-500' : 'bg-slate-600'}`}>
@@ -640,8 +834,8 @@ function App() {
       </div>
 
       <footer className="px-4 py-1 bg-slate-800 border-t border-slate-700 text-center text-slate-500 text-xs">
-        UCS Platform v1.0 | Auto-refresh every 5s
-        {currentLocation && ` | Location: ${currentLocation.lat.toFixed(4)}, ${currentLocation.lng.toFixed(4)}`}
+        {zhCN.footerInfo}
+        {currentLocation && ` | ${zhCN.locationInfo}: ${currentLocation.lat.toFixed(4)}, ${currentLocation.lng.toFixed(4)}`}
       </footer>
     </div>
   );
