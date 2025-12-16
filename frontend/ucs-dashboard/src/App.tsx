@@ -81,6 +81,7 @@ const zhCN = {
   focusUavs: '聚焦无人机',
   
   // Map legend
+  flightStatusFilter: '飞行状态筛选',
   flyingStatus: '飞行中',
   idleStatus: '待机',
   clickForDetails: '点击标记查看详情',
@@ -127,15 +128,13 @@ interface TileSourceConfig {
   attribution: string;
 }
 
-// Gaode (高德) Map - uses public tile service (no API key required for basic tiles)
+// Gaode (高德) Map - uses backend proxy to handle API key and security key
 const TILE_SOURCES: Record<TileSourceKey, TileSourceConfig> = {
   gaode: {
     name: '高德地图',
     tiles: [
-      'https://wprd01.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
-      'https://wprd02.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
-      'https://wprd03.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
-      'https://wprd04.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7'
+      // Use backend proxy for Gaode tiles (handles API key + security key)
+      `${API_BASE}/api/v1/map/tiles/{z}/{x}/{y}.png?style=7`
     ],
     attribution: '&copy; <a href="https://www.amap.com/">高德地图</a>'
   },
@@ -156,6 +155,10 @@ const TILE_SOURCES: Record<TileSourceKey, TileSourceConfig> = {
     attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
   }
 };
+
+// Heatmap layer types for multi-select
+type HeatmapLayerType = 'drone' | 'task' | 'member';
+type FlightStatusType = 'flying' | 'idle';
 
 interface DroneStatus {
   uavId: string;
@@ -204,8 +207,6 @@ interface Event {
   message: string;
 }
 
-type HeatmapMode = 'drone' | 'task' | 'member';
-
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [username, setUsername] = useState('');
@@ -220,7 +221,10 @@ function App() {
   const [weather, setWeather] = useState<Weather | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(false);
-  const [heatmapMode, setHeatmapMode] = useState<HeatmapMode>('drone');
+  // Multi-select for heatmap layers (can show multiple at once)
+  const [selectedHeatmapLayers, setSelectedHeatmapLayers] = useState<Set<HeatmapLayerType>>(new Set(['drone']));
+  // Multi-select for flight status filter (can show both flying and idle)
+  const [selectedFlightStatus, setSelectedFlightStatus] = useState<Set<FlightStatusType>>(new Set(['flying', 'idle']));
   const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(null);
   
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -410,26 +414,81 @@ function App() {
     map.current.addControl(new maplibregl.ScaleControl(), 'bottom-left');
 
     map.current.on('load', () => {
-      map.current?.addSource('heatmap-source', {
+      // Add drone heatmap source and layer (blue-cyan gradient)
+      map.current?.addSource('heatmap-drone-source', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] }
       });
-
       map.current?.addLayer({
-        id: 'heatmap-layer',
+        id: 'heatmap-drone-layer',
         type: 'heatmap',
-        source: 'heatmap-source',
+        source: 'heatmap-drone-source',
+        layout: { visibility: 'visible' },
         paint: {
           'heatmap-weight': ['get', 'weight'],
           'heatmap-intensity': 1,
           'heatmap-color': [
             'interpolate', ['linear'], ['heatmap-density'],
-            0, 'rgba(0, 0, 255, 0)',
-            0.2, 'rgb(0, 255, 255)',
-            0.4, 'rgb(0, 255, 0)',
-            0.6, 'rgb(255, 255, 0)',
-            0.8, 'rgb(255, 128, 0)',
-            1, 'rgb(255, 0, 0)'
+            0, 'rgba(0, 100, 255, 0)',
+            0.2, 'rgba(0, 150, 255, 0.4)',
+            0.4, 'rgba(0, 200, 255, 0.6)',
+            0.6, 'rgba(0, 230, 255, 0.7)',
+            0.8, 'rgba(0, 255, 255, 0.8)',
+            1, 'rgba(100, 255, 255, 0.9)'
+          ],
+          'heatmap-radius': 30,
+          'heatmap-opacity': 0.7
+        }
+      });
+
+      // Add task heatmap source and layer (yellow-orange-red gradient)
+      map.current?.addSource('heatmap-task-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+      });
+      map.current?.addLayer({
+        id: 'heatmap-task-layer',
+        type: 'heatmap',
+        source: 'heatmap-task-source',
+        layout: { visibility: 'none' },
+        paint: {
+          'heatmap-weight': ['get', 'weight'],
+          'heatmap-intensity': 1,
+          'heatmap-color': [
+            'interpolate', ['linear'], ['heatmap-density'],
+            0, 'rgba(255, 200, 0, 0)',
+            0.2, 'rgba(255, 180, 0, 0.4)',
+            0.4, 'rgba(255, 150, 0, 0.6)',
+            0.6, 'rgba(255, 100, 0, 0.7)',
+            0.8, 'rgba(255, 50, 0, 0.8)',
+            1, 'rgba(255, 0, 0, 0.9)'
+          ],
+          'heatmap-radius': 30,
+          'heatmap-opacity': 0.7
+        }
+      });
+
+      // Add member heatmap source and layer (green gradient)
+      map.current?.addSource('heatmap-member-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+      });
+      map.current?.addLayer({
+        id: 'heatmap-member-layer',
+        type: 'heatmap',
+        source: 'heatmap-member-source',
+        layout: { visibility: 'none' },
+        paint: {
+          'heatmap-weight': ['get', 'weight'],
+          'heatmap-intensity': 1,
+          'heatmap-color': [
+            'interpolate', ['linear'], ['heatmap-density'],
+            0, 'rgba(0, 200, 100, 0)',
+            0.2, 'rgba(0, 220, 100, 0.4)',
+            0.4, 'rgba(0, 240, 100, 0.6)',
+            0.6, 'rgba(50, 255, 100, 0.7)',
+            0.8, 'rgba(100, 255, 150, 0.8)',
+            1, 'rgba(150, 255, 200, 0.9)'
           ],
           'heatmap-radius': 30,
           'heatmap-opacity': 0.7
@@ -452,76 +511,130 @@ function App() {
     markersRef.current.forEach(marker => marker.remove());
     markersRef.current = [];
 
-    drones.forEach(drone => {
-      if (drone.lat && drone.lng) {
-        const el = document.createElement('div');
-        el.className = 'drone-marker';
-        const isFlying = drone.flightStatus === 'FLYING';
-        el.style.cssText = `width:32px;height:32px;background:${isFlying ? '#22c55e' : '#6b7280'};border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;cursor:pointer;`;
-        el.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>';
+    // Filter drones based on selected flight status
+    const filteredDrones = drones.filter(drone => {
+      if (!drone.lat || !drone.lng) return false;
+      const isFlying = drone.flightStatus === 'FLYING';
+      if (isFlying && !selectedFlightStatus.has('flying')) return false;
+      if (!isFlying && !selectedFlightStatus.has('idle')) return false;
+      return true;
+    });
 
-        const popup = new maplibregl.Popup({ offset: 25 }).setHTML(`
-          <div style="padding:8px;font-family:sans-serif;">
-            <h3 style="margin:0 0 8px 0;font-size:14px;font-weight:bold;">${drone.uavId}</h3>
-            <p style="margin:4px 0;font-size:12px;">${zhCN.model}: ${drone.model}</p>
-            <p style="margin:4px 0;font-size:12px;">${zhCN.battery}: ${drone.battery?.toFixed(0)}%</p>
-            <p style="margin:4px 0;font-size:12px;">${zhCN.altitude}: ${drone.altitude?.toFixed(0)}m</p>
-            <p style="margin:4px 0;font-size:12px;">${zhCN.status}: ${isFlying ? zhCN.flyingStatus : zhCN.idleStatus}</p>
-            <p style="margin:4px 0;font-size:12px;">${zhCN.operator}: ${drone.owner}</p>
-          </div>
-        `);
+    filteredDrones.forEach(drone => {
+      const el = document.createElement('div');
+      el.className = 'drone-marker';
+      const isFlying = drone.flightStatus === 'FLYING';
+      el.style.cssText = `width:32px;height:32px;background:${isFlying ? '#22c55e' : '#6b7280'};border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;cursor:pointer;`;
+      el.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>';
 
-        const marker = new maplibregl.Marker({ element: el })
-          .setLngLat([drone.lng, drone.lat])
-          .setPopup(popup)
-          .addTo(map.current!);
+      const popup = new maplibregl.Popup({ offset: 25 }).setHTML(`
+        <div style="padding:8px;font-family:sans-serif;">
+          <h3 style="margin:0 0 8px 0;font-size:14px;font-weight:bold;">${drone.uavId}</h3>
+          <p style="margin:4px 0;font-size:12px;">${zhCN.model}: ${drone.model}</p>
+          <p style="margin:4px 0;font-size:12px;">${zhCN.battery}: ${drone.battery?.toFixed(0)}%</p>
+          <p style="margin:4px 0;font-size:12px;">${zhCN.altitude}: ${drone.altitude?.toFixed(0)}m</p>
+          <p style="margin:4px 0;font-size:12px;">${zhCN.status}: ${isFlying ? zhCN.flyingStatus : zhCN.idleStatus}</p>
+          <p style="margin:4px 0;font-size:12px;">${zhCN.operator}: ${drone.owner}</p>
+        </div>
+      `);
 
-        markersRef.current.push(marker);
-      }
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat([drone.lng, drone.lat])
+        .setPopup(popup)
+        .addTo(map.current!);
+
+      markersRef.current.push(marker);
     });
   };
 
+  // Update heatmap layers based on selected layers (multi-select support)
   const updateHeatmap = () => {
     if (!map.current) return;
 
-    const source = map.current.getSource('heatmap-source') as maplibregl.GeoJSONSource;
-    if (!source) return;
-
-    let features: GeoJSON.Feature[] = [];
-
-    switch (heatmapMode) {
-      case 'drone':
-        features = drones.filter(d => d.lat && d.lng).map(drone => ({
-          type: 'Feature' as const,
-          properties: { weight: 1 },
-          geometry: { type: 'Point' as const, coordinates: [drone.lng, drone.lat] }
-        }));
-        break;
-      case 'task':
-        features = drones.filter(d => d.lat && d.lng && d.taskStatus === 'EXECUTING').map(drone => ({
-          type: 'Feature' as const,
-          properties: { weight: 2 },
-          geometry: { type: 'Point' as const, coordinates: [drone.lng, drone.lat] }
-        }));
-        break;
-      case 'member':
-        const teamLocs: { [key: string]: { lat: number; lng: number; count: number } } = {};
-        drones.forEach(drone => {
-          if (drone.lat && drone.lng && drone.owner) {
-            const key = `${drone.lat.toFixed(2)},${drone.lng.toFixed(2)}`;
-            if (!teamLocs[key]) teamLocs[key] = { lat: drone.lat, lng: drone.lng, count: 0 };
-            teamLocs[key].count++;
-          }
-        });
-        features = Object.values(teamLocs).map(loc => ({
-          type: 'Feature' as const,
-          properties: { weight: loc.count },
-          geometry: { type: 'Point' as const, coordinates: [loc.lng, loc.lat] }
-        }));
-        break;
+    // Update drone heatmap layer
+    const droneSource = map.current.getSource('heatmap-drone-source') as maplibregl.GeoJSONSource;
+    if (droneSource) {
+      const droneFeatures = drones.filter(d => d.lat && d.lng).map(drone => ({
+        type: 'Feature' as const,
+        properties: { weight: 1 },
+        geometry: { type: 'Point' as const, coordinates: [drone.lng, drone.lat] }
+      }));
+      droneSource.setData({ type: 'FeatureCollection', features: droneFeatures });
+      
+      // Toggle visibility based on selection
+      if (map.current.getLayer('heatmap-drone-layer')) {
+        map.current.setLayoutProperty('heatmap-drone-layer', 'visibility', 
+          selectedHeatmapLayers.has('drone') ? 'visible' : 'none');
+      }
     }
 
-    source.setData({ type: 'FeatureCollection', features });
+    // Update task heatmap layer
+    const taskSource = map.current.getSource('heatmap-task-source') as maplibregl.GeoJSONSource;
+    if (taskSource) {
+      const taskFeatures = drones.filter(d => d.lat && d.lng && d.taskStatus === 'EXECUTING').map(drone => ({
+        type: 'Feature' as const,
+        properties: { weight: 2 },
+        geometry: { type: 'Point' as const, coordinates: [drone.lng, drone.lat] }
+      }));
+      taskSource.setData({ type: 'FeatureCollection', features: taskFeatures });
+      
+      // Toggle visibility based on selection
+      if (map.current.getLayer('heatmap-task-layer')) {
+        map.current.setLayoutProperty('heatmap-task-layer', 'visibility', 
+          selectedHeatmapLayers.has('task') ? 'visible' : 'none');
+      }
+    }
+
+    // Update member heatmap layer
+    const memberSource = map.current.getSource('heatmap-member-source') as maplibregl.GeoJSONSource;
+    if (memberSource) {
+      const teamLocs: { [key: string]: { lat: number; lng: number; count: number } } = {};
+      drones.forEach(drone => {
+        if (drone.lat && drone.lng && drone.owner) {
+          const key = `${drone.lat.toFixed(2)},${drone.lng.toFixed(2)}`;
+          if (!teamLocs[key]) teamLocs[key] = { lat: drone.lat, lng: drone.lng, count: 0 };
+          teamLocs[key].count++;
+        }
+      });
+      const memberFeatures = Object.values(teamLocs).map(loc => ({
+        type: 'Feature' as const,
+        properties: { weight: loc.count },
+        geometry: { type: 'Point' as const, coordinates: [loc.lng, loc.lat] }
+      }));
+      memberSource.setData({ type: 'FeatureCollection', features: memberFeatures });
+      
+      // Toggle visibility based on selection
+      if (map.current.getLayer('heatmap-member-layer')) {
+        map.current.setLayoutProperty('heatmap-member-layer', 'visibility', 
+          selectedHeatmapLayers.has('member') ? 'visible' : 'none');
+      }
+    }
+  };
+
+  // Toggle heatmap layer selection (multi-select)
+  const toggleHeatmapLayer = (layer: HeatmapLayerType) => {
+    setSelectedHeatmapLayers(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(layer)) {
+        newSet.delete(layer);
+      } else {
+        newSet.add(layer);
+      }
+      return newSet;
+    });
+  };
+
+  // Toggle flight status selection (multi-select)
+  const toggleFlightStatus = (status: FlightStatusType) => {
+    setSelectedFlightStatus(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(status)) {
+        newSet.delete(status);
+      } else {
+        newSet.add(status);
+      }
+      return newSet;
+    });
   };
 
   const focusOnDrones = () => {
@@ -569,7 +682,7 @@ function App() {
       updateMapMarkers();
       updateHeatmap();
     }
-  }, [drones, heatmapMode]);
+  }, [drones, selectedHeatmapLayers, selectedFlightStatus]);
 
   if (!isLoggedIn) {
     return (
@@ -753,9 +866,9 @@ function App() {
               <Layers className="w-3 h-3" />{zhCN.heatmapMode}
             </div>
             <div className="flex gap-1">
-              <Button size="sm" variant={heatmapMode === 'drone' ? 'default' : 'outline'} onClick={() => setHeatmapMode('drone')} className={`text-xs px-2 py-1 h-7 ${heatmapMode === 'drone' ? 'bg-blue-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapDrone}</Button>
-              <Button size="sm" variant={heatmapMode === 'task' ? 'default' : 'outline'} onClick={() => setHeatmapMode('task')} className={`text-xs px-2 py-1 h-7 ${heatmapMode === 'task' ? 'bg-blue-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapTask}</Button>
-              <Button size="sm" variant={heatmapMode === 'member' ? 'default' : 'outline'} onClick={() => setHeatmapMode('member')} className={`text-xs px-2 py-1 h-7 ${heatmapMode === 'member' ? 'bg-blue-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapMember}</Button>
+              <Button size="sm" variant={selectedHeatmapLayers.has('drone') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('drone')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('drone') ? 'bg-blue-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapDrone}</Button>
+              <Button size="sm" variant={selectedHeatmapLayers.has('task') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('task')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('task') ? 'bg-orange-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapTask}</Button>
+              <Button size="sm" variant={selectedHeatmapLayers.has('member') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('member')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('member') ? 'bg-green-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapMember}</Button>
             </div>
           </div>
 
@@ -766,9 +879,16 @@ function App() {
           </div>
 
           <div className="absolute bottom-3 left-3 z-10 bg-slate-800/90 rounded-lg p-2 max-w-xs">
-            <div className="flex items-center gap-2 text-xs text-slate-300 mb-2">
-              <div className="w-3 h-3 rounded-full bg-green-500"></div><span>{zhCN.flyingStatus}</span>
-              <div className="w-3 h-3 rounded-full bg-gray-500 ml-2"></div><span>{zhCN.idleStatus}</span>
+            <div className="flex items-center gap-1 text-xs text-slate-300 mb-1">
+              {zhCN.flightStatusFilter}
+            </div>
+            <div className="flex items-center gap-2 text-xs mb-2">
+              <Button size="sm" variant={selectedFlightStatus.has('flying') ? 'default' : 'outline'} onClick={() => toggleFlightStatus('flying')} className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${selectedFlightStatus.has('flying') ? 'bg-green-600 text-white' : 'border-slate-600 text-slate-200'}`}>
+                <div className="w-2 h-2 rounded-full bg-green-400"></div>{zhCN.flyingStatus}
+              </Button>
+              <Button size="sm" variant={selectedFlightStatus.has('idle') ? 'default' : 'outline'} onClick={() => toggleFlightStatus('idle')} className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${selectedFlightStatus.has('idle') ? 'bg-gray-600 text-white' : 'border-slate-600 text-slate-200'}`}>
+                <div className="w-2 h-2 rounded-full bg-gray-400"></div>{zhCN.idleStatus}
+              </Button>
             </div>
             <div className="text-xs text-slate-400">{zhCN.clickForDetails}</div>
           </div>
