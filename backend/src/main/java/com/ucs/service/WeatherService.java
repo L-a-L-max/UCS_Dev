@@ -52,6 +52,24 @@ public class WeatherService {
                 .orElseGet(this::generateDefaultWeather);
     }
     
+    public WeatherDTO getWeatherByCoordinates(double lat, double lng) {
+        // Generate a location name based on coordinates
+        String locationName = String.format("%.2f,%.2f", lat, lng);
+        
+        // Try to fetch real weather for this location
+        fetchRealWeather(lat, lng, locationName);
+        
+        // Return the latest weather for this location, or default
+        return weatherSnapshotRepository.findLatestByLocation(locationName)
+                .map(this::convertToDTO)
+                .orElseGet(() -> {
+                    // If fetch failed, return default weather with the coordinates
+                    WeatherDTO dto = generateDefaultWeather();
+                    dto.setLocation(locationName);
+                    return dto;
+                });
+    }
+    
     private WeatherDTO convertToDTO(WeatherSnapshot snapshot) {
         WeatherDTO dto = new WeatherDTO();
         dto.setTemperature(snapshot.getTemperature());
