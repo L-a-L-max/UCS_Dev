@@ -445,6 +445,12 @@ function App() {
     map.current.addControl(new maplibregl.ScaleControl(), 'bottom-left');
 
     map.current.on('load', () => {
+      // Force resize to ensure map fills container properly
+      // This fixes the issue where MapLibre container has 0 height initially
+      requestAnimationFrame(() => {
+        map.current?.resize();
+      });
+
       // Add drone heatmap source and layer (blue-cyan gradient)
       map.current?.addSource('heatmap-drone-source', {
         type: 'geojson',
@@ -848,7 +854,7 @@ function App() {
         </div>
 
         <div className="flex-1 relative">
-          <div ref={mapContainer} className="absolute inset-0" />
+          <div ref={mapContainer} className="absolute inset-0 w-full h-full" style={{ minHeight: '100%' }} />
           
           {mapError && (
             <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 z-20">
