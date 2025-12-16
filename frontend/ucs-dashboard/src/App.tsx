@@ -113,13 +113,13 @@ const zhCN = {
   
   // Tile source selector
   tileSource: '地图源',
+  tileSourceGaode: '高德地图',
   tileSourceOSM: 'OpenStreetMap',
   tileSourceCarto: 'CartoDB',
-  tileSourceCustom: '自定义 (需API Key)',
 };
 
 // Map tile source configurations
-type TileSourceKey = 'osm' | 'carto' | 'custom';
+type TileSourceKey = 'gaode' | 'osm' | 'carto';
 
 interface TileSourceConfig {
   name: string;
@@ -127,7 +127,18 @@ interface TileSourceConfig {
   attribution: string;
 }
 
+// Gaode (高德) Map - uses public tile service (no API key required for basic tiles)
 const TILE_SOURCES: Record<TileSourceKey, TileSourceConfig> = {
+  gaode: {
+    name: '高德地图',
+    tiles: [
+      'https://wprd01.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
+      'https://wprd02.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
+      'https://wprd03.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
+      'https://wprd04.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7'
+    ],
+    attribution: '&copy; <a href="https://www.amap.com/">高德地图</a>'
+  },
   osm: {
     name: 'OpenStreetMap',
     tiles: [
@@ -143,11 +154,6 @@ const TILE_SOURCES: Record<TileSourceKey, TileSourceConfig> = {
       'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png'
     ],
     attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-  },
-  custom: {
-    name: '自定义',
-    tiles: [],
-    attribution: ''
   }
 };
 
@@ -223,7 +229,7 @@ function App() {
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
   const [locationSource, setLocationSource] = useState<'geolocation' | 'default'>('default');
-  const [tileSource, setTileSource] = useState<TileSourceKey>('carto');
+  const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
 
   const handleLogin = async () => {
@@ -722,6 +728,9 @@ function App() {
               <div className="bg-slate-800 p-4 rounded-lg max-w-sm">
                 <h3 className="text-white font-bold mb-3">{zhCN.tileSource}</h3>
                 <div className="space-y-2">
+                  <Button size="sm" onClick={() => changeTileSource('gaode')} className={`w-full justify-start ${tileSource === 'gaode' ? 'bg-blue-600' : 'bg-slate-700'}`}>
+                    {zhCN.tileSourceGaode}
+                  </Button>
                   <Button size="sm" onClick={() => changeTileSource('osm')} className={`w-full justify-start ${tileSource === 'osm' ? 'bg-blue-600' : 'bg-slate-700'}`}>
                     {zhCN.tileSourceOSM}
                   </Button>
@@ -730,7 +739,7 @@ function App() {
                   </Button>
                 </div>
                 <p className="text-slate-400 text-xs mt-3">
-                  提示：如需使用高德/天地图等国内地图源，请联系管理员配置 API Key
+                  推荐使用高德地图（国内网络访问更稳定）
                 </p>
                 <Button size="sm" variant="outline" onClick={() => setShowTileSelector(false)} className="w-full mt-3 border-slate-600 text-slate-200">
                   关闭
