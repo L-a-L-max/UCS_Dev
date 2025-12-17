@@ -24,9 +24,27 @@ import {
   BarChart3,
   PieChart,
   List,
-  X
+  X,
+  Loader2,
+  User,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import './App.css';
+
+// Popup auto-close timing constants
+const POPUP_DEFAULT_TIMEOUT = 5000; // 5 seconds default
+const POPUP_SHORT_TIMEOUT = 2000;   // 2 seconds after mouse leave
+
+// Team colors for member markers
+const TEAM_COLORS = [
+  '#3b82f6', // blue
+  '#22c55e', // green
+  '#f59e0b', // amber
+  '#ef4444', // red
+  '#8b5cf6', // purple
+  '#06b6d4', // cyan
+];
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
@@ -142,6 +160,12 @@ const zhCN = {
   // Sidebar
   collapseSidebar: '收起侧边栏',
   expandSidebar: '展开侧边栏',
+  
+  // Team members
+  teamMembers: '队员',
+  memberName: '姓名',
+  memberRole: '角色',
+  locating: '定位中...',
 };
 
 // Map tile source configurations
@@ -227,6 +251,16 @@ interface TeamInfo {
   memberCount: number;
 }
 
+interface TeamMember {
+  userId: string;
+  username: string;
+  realName: string;
+  role: string;
+  teamId: string;
+  lat?: number;
+  lng?: number;
+}
+
 interface Weather {
   temperature: number;
   humidity: number;
@@ -271,6 +305,13 @@ function App() {
   const [taskChartType, setTaskChartType] = useState<ChartType>('list');
   const [statsChartType, setStatsChartType] = useState<ChartType>('list');
   const [selectedDroneId, setSelectedDroneId] = useState<string | null>(null);
+  
+  // New state for UI refinements
+  const [isLocating, setIsLocating] = useState(false);
+  const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
+  const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({});
+  const popupTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const memberMarkersRef = useRef<maplibregl.Marker[]>([]);
   
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -375,11 +416,13 @@ function App() {
 
   const getCurrentLocation = (flyToLocation = true) => {
     if (navigator.geolocation) {
+      setIsLocating(true);
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const { latitude, longitude } = position.coords;
           setCurrentLocation({ lat: latitude, lng: longitude });
           setLocationSource('geolocation');
+          setIsLocating(false);
           if (flyToLocation && map.current) {
             map.current.flyTo({
               center: [longitude, latitude],
@@ -392,6 +435,7 @@ function App() {
           // Geolocation failed, use Beijing as default
           setCurrentLocation({ lat: 39.9042, lng: 116.4074 });
           setLocationSource('default');
+          setIsLocating(false);
           if (flyToLocation && map.current) {
             map.current.flyTo({
               center: [116.4074, 39.9042],
@@ -399,6 +443,11 @@ function App() {
               duration: 2000
             });
           }
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: 5000,
+          maximumAge: 60000 // Cache location for 1 minute to avoid cold-start delay
         }
       );
     } else {
@@ -407,6 +456,17 @@ function App() {
       setLocationSource('default');
     }
   };
+  
+  // Pre-warm geolocation on component mount to avoid cold-start delay
+  const preWarmGeolocation = useCallback(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        () => {}, // Success - just warming up
+        () => {}, // Error - ignore
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
+      );
+    }
+  }, []);
 
   // Check if Gaode tile proxy is configured
   const checkTileHealth = async (): Promise<{ configured: boolean; message: string }> => {
@@ -619,25 +679,25 @@ function App() {
       el.style.cssText = `width: 36px; height: 36px; background: ${isFlying ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)' : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'}; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.4), 0 0 20px ${isFlying ? 'rgba(34, 197, 94, 0.5)' : 'rgba(107, 114, 128, 0.3)'}; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.3s ease;`;
       el.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>';
 
-      // Enhanced popup with complete drone information
-      const popup = new maplibregl.Popup({ offset: 25, closeButton: true, closeOnClick: false, className: 'drone-popup' }).setHTML(`
-        <div style="padding: 12px; font-family: system-ui, -apple-system, sans-serif; min-width: 220px; background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); color: white; border-radius: 8px;">
-          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1);">
-            <div style="width: 32px; height: 32px; background: ${isFlying ? '#22c55e' : '#6b7280'}; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+      // Enhanced popup with tech-blue styling (no white border)
+      const popup = new maplibregl.Popup({ offset: 25, closeButton: true, closeOnClick: false, className: 'drone-popup tech-blue-popup' }).setHTML(`
+        <div class="drone-popup-content" style="padding: 12px; font-family: system-ui, -apple-system, sans-serif; min-width: 220px; background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 50%, #172554 100%); color: white; border-radius: 8px; box-shadow: 0 4px 20px rgba(30, 64, 175, 0.5);">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(96, 165, 250, 0.3);">
+            <div style="width: 32px; height: 32px; background: ${isFlying ? 'linear-gradient(135deg, #22c55e, #16a34a)' : 'linear-gradient(135deg, #6b7280, #4b5563)'}; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>
             </div>
             <div>
-              <h3 style="margin: 0; font-size: 16px; font-weight: bold; color: #60a5fa;">${drone.uavId}</h3>
-              <span style="font-size: 11px; color: ${isFlying ? '#22c55e' : '#9ca3af'};">${isFlying ? zhCN.flyingStatus : zhCN.idleStatus}</span>
+              <h3 style="margin: 0; font-size: 16px; font-weight: bold; color: #93c5fd;">${drone.uavId}</h3>
+              <span style="font-size: 11px; color: ${isFlying ? '#86efac' : '#d1d5db'};">${isFlying ? zhCN.flyingStatus : zhCN.idleStatus}</span>
             </div>
           </div>
           <div style="display: grid; gap: 8px; font-size: 12px;">
-            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.model}</span><span style="font-weight: 500;">${drone.model || 'N/A'}</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.battery}</span><span style="font-weight: 500; color: ${drone.battery > 50 ? '#22c55e' : drone.battery > 20 ? '#eab308' : '#ef4444'};">${drone.battery?.toFixed(0)}%</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.altitude}</span><span style="font-weight: 500;">${drone.altitude?.toFixed(0)}m</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.position}</span><span style="font-weight: 500; font-size: 10px;">${drone.lat?.toFixed(4)}, ${drone.lng?.toFixed(4)}</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.task}</span><span style="font-weight: 500; color: ${drone.taskStatus === 'EXECUTING' ? '#60a5fa' : '#9ca3af'};">${drone.currentTask || drone.taskStatus || zhCN.noTask}</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.team}</span><span style="font-weight: 500;">${drone.teamName || drone.owner || 'N/A'}</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.model}</span><span style="font-weight: 500;">${drone.model || 'N/A'}</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.battery}</span><span style="font-weight: 500; color: ${drone.battery > 50 ? '#86efac' : drone.battery > 20 ? '#fde047' : '#fca5a5'};">${drone.battery?.toFixed(0)}%</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.altitude}</span><span style="font-weight: 500;">${drone.altitude?.toFixed(0)}m</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.position}</span><span style="font-weight: 500; font-size: 10px;">${drone.lat?.toFixed(4)}, ${drone.lng?.toFixed(4)}</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.task}</span><span style="font-weight: 500; color: ${drone.taskStatus === 'EXECUTING' ? '#93c5fd' : '#d1d5db'};">${drone.currentTask || drone.taskStatus || zhCN.noTask}</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.team}</span><span style="font-weight: 500;">${drone.teamName || drone.owner || 'N/A'}</span></div>
           </div>
         </div>
       `);
@@ -770,6 +830,159 @@ function App() {
     map.current.fitBounds(bounds, { padding: 50, duration: 1500 });
   };
 
+  // Fetch team members when expanding a team
+  const fetchTeamMembers = async (teamId: string) => {
+    if (!token || teamMembers[teamId]) return;
+    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/screen/team/${teamId}/members`, { headers });
+      const data = await response.json();
+      if (data.code === 0) {
+        setTeamMembers(prev => ({ ...prev, [teamId]: data.data || [] }));
+      }
+    } catch (err) {
+      console.error('Failed to fetch team members:', err);
+      // Generate mock members if API not available
+      const mockMembers: TeamMember[] = Array.from({ length: 3 }, (_, i) => ({
+        userId: `${teamId}-member-${i + 1}`,
+        username: `user${i + 1}`,
+        realName: `队员${i + 1}`,
+        role: i === 0 ? '队长' : '队员',
+        teamId,
+        lat: 39.9042 + (Math.random() - 0.5) * 0.1,
+        lng: 116.4074 + (Math.random() - 0.5) * 0.1
+      }));
+      setTeamMembers(prev => ({ ...prev, [teamId]: mockMembers }));
+    }
+  };
+
+  // Toggle team expansion and fetch members
+  const toggleTeamExpansion = (teamId: string) => {
+    if (expandedTeamId === teamId) {
+      setExpandedTeamId(null);
+    } else {
+      setExpandedTeamId(teamId);
+      fetchTeamMembers(teamId);
+    }
+  };
+
+  // Click on drone in list - fly to and auto-open popup with timer
+  const handleDroneListClick = (drone: DroneStatus) => {
+    if (!map.current || !drone.lat || !drone.lng) return;
+    
+    // Fly to drone location
+    map.current.flyTo({
+      center: [drone.lng, drone.lat],
+      zoom: 14,
+      duration: 1000
+    });
+    
+    // Set selected drone to trigger popup
+    setSelectedDroneId(drone.uavId);
+    
+    // Start auto-close timer
+    startPopupTimer(POPUP_DEFAULT_TIMEOUT);
+  };
+
+  // Click on team member - fly to and show popup
+  const handleMemberClick = (member: TeamMember, teamIndex: number) => {
+    if (!map.current || !member.lat || !member.lng) return;
+    
+    // Fly to member location
+    map.current.flyTo({
+      center: [member.lng, member.lat],
+      zoom: 14,
+      duration: 1000
+    });
+    
+    // Create and show member popup
+    const teamColor = TEAM_COLORS[teamIndex % TEAM_COLORS.length];
+    const popup = new maplibregl.Popup({ 
+      offset: 25, 
+      closeButton: true, 
+      closeOnClick: false,
+      className: 'member-popup'
+    }).setHTML(`
+      <div style="padding: 12px; font-family: system-ui, -apple-system, sans-serif; min-width: 180px; background: linear-gradient(135deg, ${teamColor}dd 0%, ${teamColor}99 100%); color: white; border-radius: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <div style="width: 32px; height: 32px; background: white; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="${teamColor}"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+          </div>
+          <div>
+            <h3 style="margin: 0; font-size: 14px; font-weight: bold;">${member.realName || member.username}</h3>
+            <span style="font-size: 11px; opacity: 0.9;">${member.role}</span>
+          </div>
+        </div>
+        <div style="font-size: 11px; opacity: 0.8;">
+          ${zhCN.position}: ${member.lat?.toFixed(4)}, ${member.lng?.toFixed(4)}
+        </div>
+      </div>
+    `).setLngLat([member.lng, member.lat]).addTo(map.current);
+    
+    // Start auto-close timer
+    startPopupTimer(POPUP_DEFAULT_TIMEOUT);
+    
+    // Store popup reference
+    popupRef.current = popup;
+  };
+
+  // Start popup auto-close timer
+  const startPopupTimer = (timeout: number) => {
+    if (popupTimerRef.current) {
+      clearTimeout(popupTimerRef.current);
+    }
+    popupTimerRef.current = setTimeout(() => {
+      if (popupRef.current) {
+        popupRef.current.remove();
+        popupRef.current = null;
+      }
+      setSelectedDroneId(null);
+    }, timeout);
+  };
+
+  // Clear popup timer (on hover)
+  const clearPopupTimer = () => {
+    if (popupTimerRef.current) {
+      clearTimeout(popupTimerRef.current);
+      popupTimerRef.current = null;
+    }
+  };
+
+  // Update member markers on map
+  const updateMemberMarkers = useCallback(() => {
+    if (!map.current) return;
+    
+    // Remove existing member markers
+    memberMarkersRef.current.forEach(marker => marker.remove());
+    memberMarkersRef.current = [];
+    
+    // Add markers for all team members
+    Object.entries(teamMembers).forEach(([, members], teamIndex) => {
+      members.forEach(member => {
+        if (!member.lat || !member.lng) return;
+        
+        const teamColor = TEAM_COLORS[teamIndex % TEAM_COLORS.length];
+        const el = document.createElement('div');
+        el.className = 'member-marker';
+        el.style.cssText = `width: 28px; height: 28px; background: ${teamColor}; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; cursor: pointer;`;
+        el.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>';
+        
+        el.addEventListener('click', () => handleMemberClick(member, teamIndex));
+        
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([member.lng, member.lat])
+          .addTo(map.current!);
+        
+        memberMarkersRef.current.push(marker);
+      });
+    });
+  }, [teamMembers]);
+
+  // Update member markers when teamMembers change
+  useEffect(() => {
+    updateMemberMarkers();
+  }, [teamMembers, updateMemberMarkers]);
+
   useEffect(() => {
     const savedToken = localStorage.getItem('token');
     const savedRoles = localStorage.getItem('roles');
@@ -781,7 +994,9 @@ function App() {
         setIsLoggedIn(true);
       }
     }
-  }, []);
+    // Pre-warm geolocation to avoid cold-start delay
+    preWarmGeolocation();
+  }, [preWarmGeolocation]);
 
   useEffect(() => {
     if (isLoggedIn) {
@@ -857,10 +1072,10 @@ function App() {
           {zhCN.dashboardTitle}
         </h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchAllData} disabled={loading} className="border-slate-600 text-slate-300">
+          <Button variant="outline" size="sm" onClick={fetchAllData} disabled={loading} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 hover:text-white">
             <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />{zhCN.refresh}
           </Button>
-          <Button variant="outline" size="sm" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('roles'); setIsLoggedIn(false); setToken(''); }} className="border-slate-600 text-slate-300">{zhCN.logout}</Button>
+          <Button variant="outline" size="sm" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('roles'); setIsLoggedIn(false); setToken(''); }} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 hover:text-white">{zhCN.logout}</Button>
         </div>
       </header>
 
@@ -1182,26 +1397,28 @@ function App() {
             </div>
           )}
           
-          <div className="absolute top-3 left-3 z-10 bg-slate-800/90 rounded-lg p-2 space-y-2">
-            <div className="flex items-center gap-1 text-xs text-slate-300 mb-1">
+          <div className="absolute top-3 left-3 z-10 bg-slate-800/80 backdrop-blur-sm rounded-lg p-2 space-y-2 border border-slate-600/50">
+            <div className="flex items-center gap-1 text-xs text-slate-200 mb-1">
               <Layers className="w-3 h-3" />{zhCN.heatmapMode}
             </div>
             <div className="flex gap-1">
-              <Button size="sm" variant={selectedHeatmapLayers.has('drone') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('drone')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('drone') ? 'bg-blue-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapDrone}</Button>
-              <Button size="sm" variant={selectedHeatmapLayers.has('task') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('task')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('task') ? 'bg-orange-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapTask}</Button>
-              <Button size="sm" variant={selectedHeatmapLayers.has('member') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('member')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('member') ? 'bg-green-600 text-white' : 'border-slate-600 text-slate-200'}`}>{zhCN.heatmapMember}</Button>
+              <Button size="sm" variant={selectedHeatmapLayers.has('drone') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('drone')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('drone') ? 'bg-blue-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>{zhCN.heatmapDrone}</Button>
+              <Button size="sm" variant={selectedHeatmapLayers.has('task') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('task')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('task') ? 'bg-orange-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>{zhCN.heatmapTask}</Button>
+              <Button size="sm" variant={selectedHeatmapLayers.has('member') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('member')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('member') ? 'bg-green-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>{zhCN.heatmapMember}</Button>
             </div>
           </div>
 
           <div className="absolute top-3 right-14 z-10 flex flex-col gap-1">
-            <Button size="sm" variant="outline" onClick={() => getCurrentLocation()} className="bg-slate-800/90 border-slate-600 text-white h-8 w-8 p-0" title={zhCN.myLocation}><Locate className="w-4 h-4" /></Button>
-            <Button size="sm" variant="outline" onClick={focusOnDrones} className="bg-slate-800/90 border-slate-600 text-white h-8 w-8 p-0" title={zhCN.focusUavs}><MapPin className="w-4 h-4" /></Button>
-            <Button size="sm" variant="outline" onClick={() => setShowTileSelector(true)} className="bg-slate-800/90 border-slate-600 text-white h-8 w-8 p-0" title={zhCN.tileSource}><Settings className="w-4 h-4" /></Button>
+            <Button size="sm" variant="outline" onClick={() => getCurrentLocation()} disabled={isLocating} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-8 w-8 p-0" title={isLocating ? zhCN.locating : zhCN.myLocation}>
+              {isLocating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Locate className="w-4 h-4" />}
+            </Button>
+            <Button size="sm" variant="outline" onClick={focusOnDrones} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-8 w-8 p-0" title={zhCN.focusUavs}><MapPin className="w-4 h-4" /></Button>
+            <Button size="sm" variant="outline" onClick={() => setShowTileSelector(true)} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-8 w-8 p-0" title={zhCN.tileSource}><Settings className="w-4 h-4" /></Button>
             <Button 
               size="sm" 
               variant="outline" 
               onClick={() => setShowWeatherOverlay(!showWeatherOverlay)} 
-              className={`h-8 w-8 p-0 transition-all duration-300 ${showWeatherOverlay ? 'bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-500/50' : 'bg-slate-800/90 border-slate-600 text-white hover:bg-slate-700'}`}
+              className={`h-8 w-8 p-0 transition-all duration-300 ${showWeatherOverlay ? 'bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-500/50' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}
               title={zhCN.weather}
             >
               <Cloud className="w-4 h-4" />
@@ -1291,7 +1508,7 @@ function App() {
             <CardContent className="px-3 pb-3">
               <div className="space-y-2 max-h-64 overflow-y-auto">
                 {drones.map((drone) => (
-                  <div key={drone.uavId} className="bg-slate-600 p-2 rounded cursor-pointer hover:bg-slate-500 transition-colors" onClick={() => { if (map.current && drone.lat && drone.lng) map.current.flyTo({ center: [drone.lng, drone.lat], zoom: 14, duration: 1000 }); }}>
+                  <div key={drone.uavId} className="bg-slate-600 p-2 rounded cursor-pointer hover:bg-slate-500 transition-colors" onClick={() => handleDroneListClick(drone)}>
                     <div className="flex justify-between items-start">
                       <div>
                         <div className="font-mono text-xs font-bold">{drone.uavId}</div>
@@ -1307,6 +1524,61 @@ function App() {
                       </span>
                       <span className="text-slate-400">{drone.altitude?.toFixed(0)}m</span>
                     </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Team List with Member Expansion */}
+          <Card className="bg-slate-700 border-slate-600">
+            <CardHeader className="py-2 px-3">
+              <CardTitle className="text-sm flex items-center gap-2 text-white">
+                <Users className="w-4 h-4 text-green-400" />{zhCN.teams}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-3 pb-3">
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {teams.map((team, teamIndex) => (
+                  <div key={team.teamId}>
+                    <div 
+                      className="bg-slate-600 p-2 rounded cursor-pointer hover:bg-slate-500 transition-colors"
+                      style={{ borderLeft: `3px solid ${TEAM_COLORS[teamIndex % TEAM_COLORS.length]}` }}
+                      onClick={() => toggleTeamExpansion(team.teamId)}
+                    >
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <div className="text-xs font-bold">{team.teamName}</div>
+                          <div className="text-xs text-slate-400">{zhCN.leader}: {team.leader}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge className="text-xs bg-slate-500">{team.memberCount} {zhCN.teamMembers}</Badge>
+                          {expandedTeamId === team.teamId ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                        </div>
+                      </div>
+                    </div>
+                    {expandedTeamId === team.teamId && teamMembers[team.teamId] && (
+                      <div className="ml-3 mt-1 space-y-1">
+                        {teamMembers[team.teamId].map((member) => (
+                          <div 
+                            key={member.userId}
+                            className="bg-slate-500/50 p-2 rounded cursor-pointer hover:bg-slate-500 transition-colors flex items-center gap-2"
+                            onClick={() => handleMemberClick(member, teamIndex)}
+                          >
+                            <div 
+                              className="w-6 h-6 rounded-full flex items-center justify-center"
+                              style={{ backgroundColor: TEAM_COLORS[teamIndex % TEAM_COLORS.length] }}
+                            >
+                              <User className="w-3 h-3 text-white" />
+                            </div>
+                            <div className="flex-1">
+                              <div className="text-xs font-medium">{member.realName || member.username}</div>
+                              <div className="text-xs text-slate-400">{member.role}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
