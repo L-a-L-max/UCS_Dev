@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -18,7 +18,13 @@ import {
   MapPin,
   Locate,
   Layers,
-  Settings
+  Settings,
+  ChevronLeft,
+  ChevronRight,
+  BarChart3,
+  PieChart,
+  List,
+  X
 } from 'lucide-react';
 import './App.css';
 
@@ -27,7 +33,7 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 // Chinese localization dictionary
 const zhCN = {
   // Login page
-  platformTitle: '无人机集群管控平台',
+  platformTitle: '无人机综合管控平台',
   username: '用户名',
   password: '密码',
   login: '登录',
@@ -38,7 +44,7 @@ const zhCN = {
   accessDenied: '访问被拒绝：需要观察员角色',
   
   // Header
-  dashboardTitle: '无人机集群管控 - 全局大屏',
+  dashboardTitle: '无人机综合管控平台',
   refresh: '刷新',
   logout: '退出',
   
@@ -48,6 +54,7 @@ const zhCN = {
   active: '执行中',
   done: '已完成',
   error: '异常',
+  pending: '待执行',
   
   // Weather card
   weather: '天气信息',
@@ -73,15 +80,16 @@ const zhCN = {
   errors: '异常状态',
   
   // Map controls
-  heatmapMode: '热力图模式',
+  heatmapMode: '热力图',
   heatmapDrone: '无人机',
   heatmapTask: '任务',
   heatmapMember: '成员',
   myLocation: '我的位置',
   focusUavs: '聚焦无人机',
+  showWeather: '天气信息',
   
   // Map legend
-  flightStatusFilter: '飞行状态筛选',
+  flightStatusFilter: '飞行状态',
   flyingStatus: '飞行中',
   idleStatus: '待机',
   clickForDetails: '点击标记查看详情',
@@ -94,7 +102,7 @@ const zhCN = {
   noEvents: '暂无事件',
   
   // Footer
-  footerInfo: 'UCS 平台 v1.0 | 每5秒自动刷新',
+  footerInfo: 'UCS 平台 v1.0',
   locationInfo: '当前位置',
   
   // Drone popup
@@ -103,6 +111,10 @@ const zhCN = {
   altitude: '高度',
   status: '状态',
   operator: '操作员',
+  task: '当前任务',
+  team: '所属小队',
+  position: '位置',
+  noTask: '无任务',
   
   // Map error
   mapLoadFailed: '地图加载失败',
@@ -112,7 +124,7 @@ const zhCN = {
   networkError: '网络连接异常',
   tryRefresh: '请尝试刷新页面',
   apiKeyNotConfigured: '高德地图 API 密钥未配置',
-  apiKeyConfigHint: '请设置环境变量 GAODE_API_KEY 和 GAODE_SECURITY_KEY 后重启后端服务',
+  apiKeyConfigHint: '请设置环境变量后重启后端服务',
   backendNotReachable: '无法连接后端服务',
   checkBackendHint: '请确保后端服务已启动 (端口 8080)',
   
@@ -121,6 +133,15 @@ const zhCN = {
   tileSourceGaode: '高德地图',
   tileSourceOSM: 'OpenStreetMap',
   tileSourceCarto: 'CartoDB',
+  
+  // Chart types
+  chartList: '列表',
+  chartPie: '饼图',
+  chartBar: '柱状图',
+  
+  // Sidebar
+  collapseSidebar: '收起侧边栏',
+  expandSidebar: '展开侧边栏',
 };
 
 // Map tile source configurations
@@ -163,6 +184,16 @@ const TILE_SOURCES: Record<TileSourceKey, TileSourceConfig> = {
 // Heatmap layer types for multi-select
 type HeatmapLayerType = 'drone' | 'task' | 'member';
 type FlightStatusType = 'flying' | 'idle';
+type ChartType = 'list' | 'pie' | 'bar';
+
+// Data refresh intervals (in milliseconds)
+const REFRESH_INTERVALS = {
+  drone: 2000,      // 2 seconds - highest frequency for real-time UAV data
+  weather: 30000,   // 30 seconds - weather changes slowly
+  team: 10000,      // 10 seconds - team/member data
+  task: 5000,       // 5 seconds - task status
+  event: 5000,      // 5 seconds - event logs
+};
 
 interface DroneStatus {
   uavId: string;
@@ -177,6 +208,8 @@ interface DroneStatus {
   color: string;
   model: string;
   owner: string;
+  currentTask?: string;
+  teamName?: string;
 }
 
 interface TaskSummary {
@@ -231,9 +264,18 @@ function App() {
   const [selectedFlightStatus, setSelectedFlightStatus] = useState<Set<FlightStatusType>>(new Set(['flying', 'idle']));
   const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(null);
   
+  // New state for sidebar collapse, chart types, popup persistence, weather overlay
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(false);
+  const [showWeatherOverlay, setShowWeatherOverlay] = useState(false);
+  const [taskChartType, setTaskChartType] = useState<ChartType>('list');
+  const [statsChartType, setStatsChartType] = useState<ChartType>('list');
+  const [selectedDroneId, setSelectedDroneId] = useState<string | null>(null);
+  
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
+  const popupRef = useRef<maplibregl.Popup | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
   const [locationSource, setLocationSource] = useState<'geolocation' | 'default'>('default');
@@ -268,55 +310,68 @@ function App() {
     }
   };
 
-  const fetchData = async () => {
+  // Separate fetch functions with useCallback for different refresh intervals
+  const fetchDroneData = useCallback(async () => {
     if (!token) return;
-    setLoading(true);
-    
-    const headers = { 
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    };
-
+    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
     try {
-      // Build weather URL with location parameters if available
+      const response = await fetch(`${API_BASE}/api/v1/screen/uav/list`, { headers });
+      if (response.status === 403) {
+        setError(zhCN.accessDenied); setIsLoggedIn(false);
+        localStorage.removeItem('token'); localStorage.removeItem('roles'); return;
+      }
+      const data = await response.json();
+      if (data.code === 0) setDrones(data.data || []);
+    } catch (err) { console.error('Failed to fetch drone data:', err); }
+  }, [token]);
+
+  const fetchWeatherData = useCallback(async () => {
+    if (!token) return;
+    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+    try {
       let weatherUrl = `${API_BASE}/api/v1/screen/weather`;
-      if (currentLocation) {
-        weatherUrl += `?lat=${currentLocation.lat}&lng=${currentLocation.lng}`;
-      }
+      if (currentLocation) weatherUrl += `?lat=${currentLocation.lat}&lng=${currentLocation.lng}`;
+      const response = await fetch(weatherUrl, { headers });
+      const data = await response.json();
+      if (data.code === 0) setWeather(data.data);
+    } catch (err) { console.error('Failed to fetch weather data:', err); }
+  }, [token, currentLocation]);
 
-      const [dronesRes, taskRes, teamsRes, weatherRes, eventsRes] = await Promise.all([
-        fetch(`${API_BASE}/api/v1/screen/uav/list`, { headers }),
-        fetch(`${API_BASE}/api/v1/screen/task/summary`, { headers }),
-        fetch(`${API_BASE}/api/v1/screen/team/status`, { headers }),
-        fetch(weatherUrl, { headers }),
-        fetch(`${API_BASE}/api/v1/screen/events?limit=10`, { headers })
-      ]);
+  const fetchTaskData = useCallback(async () => {
+    if (!token) return;
+    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/screen/task/summary`, { headers });
+      const data = await response.json();
+      if (data.code === 0) setTaskSummary(data.data);
+    } catch (err) { console.error('Failed to fetch task data:', err); }
+  }, [token]);
 
-      if (dronesRes.status === 403) {
-        setError(zhCN.accessDenied);
-        setIsLoggedIn(false);
-        localStorage.removeItem('token');
-        localStorage.removeItem('roles');
-        return;
-      }
+  const fetchTeamData = useCallback(async () => {
+    if (!token) return;
+    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/screen/team/status`, { headers });
+      const data = await response.json();
+      if (data.code === 0) setTeams(data.data || []);
+    } catch (err) { console.error('Failed to fetch team data:', err); }
+  }, [token]);
 
-      const dronesData = await dronesRes.json();
-      const taskData = await taskRes.json();
-      const teamsData = await teamsRes.json();
-      const weatherData = await weatherRes.json();
-      const eventsData = await eventsRes.json();
+  const fetchEventData = useCallback(async () => {
+    if (!token) return;
+    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/screen/events?limit=10`, { headers });
+      const data = await response.json();
+      if (data.code === 0) setEvents(data.data || []);
+    } catch (err) { console.error('Failed to fetch event data:', err); }
+  }, [token]);
 
-      if (dronesData.code === 0) setDrones(dronesData.data || []);
-      if (taskData.code === 0) setTaskSummary(taskData.data);
-      if (teamsData.code === 0) setTeams(teamsData.data || []);
-      if (weatherData.code === 0) setWeather(weatherData.data);
-      if (eventsData.code === 0) setEvents(eventsData.data || []);
-    } catch (err) {
-      console.error('Failed to fetch data:', err);
-    }
-    
+  const fetchAllData = useCallback(async () => {
+    setLoading(true);
+    await Promise.all([fetchDroneData(), fetchWeatherData(), fetchTaskData(), fetchTeamData(), fetchEventData()]);
     setLoading(false);
-  };
+  }, [fetchDroneData, fetchWeatherData, fetchTaskData, fetchTeamData, fetchEventData]);
 
   const getCurrentLocation = (flyToLocation = true) => {
     if (navigator.geolocation) {
@@ -542,7 +597,7 @@ function App() {
     await initMap(newSource);
   };
 
-  const updateMapMarkers = () => {
+  const updateMapMarkers = useCallback(() => {
     if (!map.current) return;
 
     markersRef.current.forEach(marker => marker.remove());
@@ -561,17 +616,29 @@ function App() {
       const el = document.createElement('div');
       el.className = 'drone-marker';
       const isFlying = drone.flightStatus === 'FLYING';
-      el.style.cssText = `width:32px;height:32px;background:${isFlying ? '#22c55e' : '#6b7280'};border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;cursor:pointer;`;
-      el.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>';
+      el.style.cssText = `width: 36px; height: 36px; background: ${isFlying ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)' : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'}; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.4), 0 0 20px ${isFlying ? 'rgba(34, 197, 94, 0.5)' : 'rgba(107, 114, 128, 0.3)'}; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.3s ease;`;
+      el.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>';
 
-      const popup = new maplibregl.Popup({ offset: 25 }).setHTML(`
-        <div style="padding:8px;font-family:sans-serif;">
-          <h3 style="margin:0 0 8px 0;font-size:14px;font-weight:bold;">${drone.uavId}</h3>
-          <p style="margin:4px 0;font-size:12px;">${zhCN.model}: ${drone.model}</p>
-          <p style="margin:4px 0;font-size:12px;">${zhCN.battery}: ${drone.battery?.toFixed(0)}%</p>
-          <p style="margin:4px 0;font-size:12px;">${zhCN.altitude}: ${drone.altitude?.toFixed(0)}m</p>
-          <p style="margin:4px 0;font-size:12px;">${zhCN.status}: ${isFlying ? zhCN.flyingStatus : zhCN.idleStatus}</p>
-          <p style="margin:4px 0;font-size:12px;">${zhCN.operator}: ${drone.owner}</p>
+      // Enhanced popup with complete drone information
+      const popup = new maplibregl.Popup({ offset: 25, closeButton: true, closeOnClick: false, className: 'drone-popup' }).setHTML(`
+        <div style="padding: 12px; font-family: system-ui, -apple-system, sans-serif; min-width: 220px; background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); color: white; border-radius: 8px;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1);">
+            <div style="width: 32px; height: 32px; background: ${isFlying ? '#22c55e' : '#6b7280'}; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>
+            </div>
+            <div>
+              <h3 style="margin: 0; font-size: 16px; font-weight: bold; color: #60a5fa;">${drone.uavId}</h3>
+              <span style="font-size: 11px; color: ${isFlying ? '#22c55e' : '#9ca3af'};">${isFlying ? zhCN.flyingStatus : zhCN.idleStatus}</span>
+            </div>
+          </div>
+          <div style="display: grid; gap: 8px; font-size: 12px;">
+            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.model}</span><span style="font-weight: 500;">${drone.model || 'N/A'}</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.battery}</span><span style="font-weight: 500; color: ${drone.battery > 50 ? '#22c55e' : drone.battery > 20 ? '#eab308' : '#ef4444'};">${drone.battery?.toFixed(0)}%</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.altitude}</span><span style="font-weight: 500;">${drone.altitude?.toFixed(0)}m</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.position}</span><span style="font-weight: 500; font-size: 10px;">${drone.lat?.toFixed(4)}, ${drone.lng?.toFixed(4)}</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.task}</span><span style="font-weight: 500; color: ${drone.taskStatus === 'EXECUTING' ? '#60a5fa' : '#9ca3af'};">${drone.currentTask || drone.taskStatus || zhCN.noTask}</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #94a3b8;">${zhCN.team}</span><span style="font-weight: 500;">${drone.teamName || drone.owner || 'N/A'}</span></div>
+          </div>
         </div>
       `);
 
@@ -580,9 +647,28 @@ function App() {
         .setPopup(popup)
         .addTo(map.current!);
 
+      // Handle popup state persistence
+      el.addEventListener('click', () => {
+        setSelectedDroneId(drone.uavId);
+        popupRef.current = popup;
+      });
+
+      popup.on('close', () => {
+        if (selectedDroneId === drone.uavId) {
+          setSelectedDroneId(null);
+          popupRef.current = null;
+        }
+      });
+
+      // Restore popup if this drone was previously selected
+      if (selectedDroneId === drone.uavId) {
+        marker.togglePopup();
+        popupRef.current = popup;
+      }
+
       markersRef.current.push(marker);
     });
-  };
+  }, [drones, selectedFlightStatus, selectedDroneId]);
 
   // Update heatmap layers based on selected layers (multi-select support)
   const updateHeatmap = () => {
@@ -708,11 +794,22 @@ function App() {
 
   useEffect(() => {
     if (isLoggedIn && token) {
-      fetchData();
-      const interval = setInterval(fetchData, 5000);
-      return () => clearInterval(interval);
+      fetchAllData();
+      // Set up separate intervals for different data types
+      const droneInterval = setInterval(fetchDroneData, REFRESH_INTERVALS.drone);
+      const weatherInterval = setInterval(fetchWeatherData, REFRESH_INTERVALS.weather);
+      const taskInterval = setInterval(fetchTaskData, REFRESH_INTERVALS.task);
+      const teamInterval = setInterval(fetchTeamData, REFRESH_INTERVALS.team);
+      const eventInterval = setInterval(fetchEventData, REFRESH_INTERVALS.event);
+      return () => {
+        clearInterval(droneInterval);
+        clearInterval(weatherInterval);
+        clearInterval(taskInterval);
+        clearInterval(teamInterval);
+        clearInterval(eventInterval);
+      };
     }
-  }, [isLoggedIn, token]);
+  }, [isLoggedIn, token, fetchDroneData, fetchWeatherData, fetchTaskData, fetchTeamData, fetchEventData, fetchAllData]);
 
   useEffect(() => {
     if (map.current && drones.length > 0) {
@@ -720,6 +817,13 @@ function App() {
       updateHeatmap();
     }
   }, [drones, selectedHeatmapLayers, selectedFlightStatus]);
+
+  // Resize map when sidebars collapse/expand
+  useEffect(() => {
+    if (map.current) {
+      setTimeout(() => { map.current?.resize(); }, 300);
+    }
+  }, [leftSidebarCollapsed, rightSidebarCollapsed]);
 
   if (!isLoggedIn) {
     return (
@@ -753,7 +857,7 @@ function App() {
           {zhCN.dashboardTitle}
         </h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchData} disabled={loading} className="border-slate-600 text-slate-300">
+          <Button variant="outline" size="sm" onClick={fetchAllData} disabled={loading} className="border-slate-600 text-slate-300">
             <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />{zhCN.refresh}
           </Button>
           <Button variant="outline" size="sm" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('roles'); setIsLoggedIn(false); setToken(''); }} className="border-slate-600 text-slate-300">{zhCN.logout}</Button>
@@ -761,15 +865,33 @@ function App() {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        <div className="w-72 bg-slate-800 border-r border-slate-700 overflow-y-auto p-3 space-y-3">
+        {/* Left Sidebar Collapse Button */}
+        <button
+          onClick={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)}
+          className="absolute left-0 top-1/2 -translate-y-1/2 z-20 bg-slate-700 hover:bg-slate-600 text-white p-1 rounded-r-lg transition-all duration-300 shadow-lg"
+          style={{ left: leftSidebarCollapsed ? '0' : '288px' }}
+          title={leftSidebarCollapsed ? zhCN.expandSidebar : zhCN.collapseSidebar}
+        >
+          {leftSidebarCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+        </button>
+
+        {/* Left Sidebar */}
+        <div className={`${leftSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-72'} bg-slate-800 border-r border-slate-700 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <ClipboardList className="w-4 h-4 text-blue-400" />{zhCN.tasks}
+              <CardTitle className="text-sm flex items-center justify-between text-white">
+                <div className="flex items-center gap-2">
+                  <ClipboardList className="w-4 h-4 text-blue-400" />{zhCN.tasks}
+                </div>
+                <div className="flex gap-1">
+                  <button onClick={() => setTaskChartType('list')} className={`p-1 rounded ${taskChartType === 'list' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.listView}><List className="w-3 h-3" /></button>
+                  <button onClick={() => setTaskChartType('pie')} className={`p-1 rounded ${taskChartType === 'pie' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.pieChart}><PieChart className="w-3 h-3" /></button>
+                  <button onClick={() => setTaskChartType('bar')} className={`p-1 rounded ${taskChartType === 'bar' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.barChart}><BarChart3 className="w-3 h-3" /></button>
+                </div>
               </CardTitle>
             </CardHeader>
             <CardContent className="px-3 pb-3">
-              {taskSummary && (
+              {taskSummary && taskChartType === 'list' && (
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-slate-600 p-2 rounded text-center">
                     <div className="text-lg font-bold text-blue-400">{taskSummary.total}</div>
@@ -787,6 +909,78 @@ function App() {
                     <div className="text-lg font-bold text-red-400">{taskSummary.abnormal}</div>
                     <div className="text-xs text-slate-400">{zhCN.error}</div>
                   </div>
+                </div>
+              )}
+              {taskSummary && taskChartType === 'pie' && (
+                <div className="flex items-center justify-center py-2">
+                  <svg viewBox="0 0 100 100" className="w-32 h-32">
+                    {(() => {
+                      const total = taskSummary.executing + taskSummary.completed + taskSummary.abnormal;
+                      if (total === 0) return <circle cx="50" cy="50" r="40" fill="#475569" />;
+                      const executingAngle = (taskSummary.executing / total) * 360;
+                      const completedAngle = (taskSummary.completed / total) * 360;
+                      const abnormalAngle = (taskSummary.abnormal / total) * 360;
+                      let currentAngle = 0;
+                      const createArc = (angle: number, color: string) => {
+                        if (angle === 0) return null;
+                        const startAngle = currentAngle;
+                        const endAngle = currentAngle + angle;
+                        currentAngle = endAngle;
+                        const startRad = (startAngle - 90) * Math.PI / 180;
+                        const endRad = (endAngle - 90) * Math.PI / 180;
+                        const x1 = 50 + 40 * Math.cos(startRad);
+                        const y1 = 50 + 40 * Math.sin(startRad);
+                        const x2 = 50 + 40 * Math.cos(endRad);
+                        const y2 = 50 + 40 * Math.sin(endRad);
+                        const largeArc = angle > 180 ? 1 : 0;
+                        return <path d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`} fill={color} />;
+                      };
+                      return (
+                        <>
+                          {createArc(executingAngle, '#22c55e')}
+                          {createArc(completedAngle, '#94a3b8')}
+                          {createArc(abnormalAngle, '#ef4444')}
+                        </>
+                      );
+                    })()}
+                  </svg>
+                  <div className="ml-3 space-y-1 text-xs">
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-green-500"></div>{zhCN.active}: {taskSummary.executing}</div>
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-slate-400"></div>{zhCN.done}: {taskSummary.completed}</div>
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-red-500"></div>{zhCN.error}: {taskSummary.abnormal}</div>
+                  </div>
+                </div>
+              )}
+              {taskSummary && taskChartType === 'bar' && (
+                <div className="space-y-2 py-2">
+                  {(() => {
+                    const max = Math.max(taskSummary.executing, taskSummary.completed, taskSummary.abnormal, 1);
+                    return (
+                      <>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="w-12 text-slate-400">{zhCN.active}</span>
+                          <div className="flex-1 bg-slate-600 rounded h-4 overflow-hidden">
+                            <div className="h-full bg-green-500 transition-all duration-500" style={{ width: `${(taskSummary.executing / max) * 100}%` }}></div>
+                          </div>
+                          <span className="w-6 text-right">{taskSummary.executing}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="w-12 text-slate-400">{zhCN.done}</span>
+                          <div className="flex-1 bg-slate-600 rounded h-4 overflow-hidden">
+                            <div className="h-full bg-slate-400 transition-all duration-500" style={{ width: `${(taskSummary.completed / max) * 100}%` }}></div>
+                          </div>
+                          <span className="w-6 text-right">{taskSummary.completed}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="w-12 text-slate-400">{zhCN.error}</span>
+                          <div className="flex-1 bg-slate-600 rounded h-4 overflow-hidden">
+                            <div className="h-full bg-red-500 transition-all duration-500" style={{ width: `${(taskSummary.abnormal / max) * 100}%` }}></div>
+                          </div>
+                          <span className="w-6 text-right">{taskSummary.abnormal}</span>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               )}
             </CardContent>
@@ -838,17 +1032,107 @@ function App() {
 
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <Activity className="w-4 h-4 text-blue-400" />{zhCN.stats}
+              <CardTitle className="text-sm flex items-center justify-between text-white">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-blue-400" />{zhCN.stats}
+                </div>
+                <div className="flex gap-1">
+                  <button onClick={() => setStatsChartType('list')} className={`p-1 rounded ${statsChartType === 'list' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.listView}><List className="w-3 h-3" /></button>
+                  <button onClick={() => setStatsChartType('pie')} className={`p-1 rounded ${statsChartType === 'pie' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.pieChart}><PieChart className="w-3 h-3" /></button>
+                  <button onClick={() => setStatsChartType('bar')} className={`p-1 rounded ${statsChartType === 'bar' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.barChart}><BarChart3 className="w-3 h-3" /></button>
+                </div>
               </CardTitle>
             </CardHeader>
             <CardContent className="px-3 pb-3">
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between"><span className="text-slate-400">{zhCN.flying}</span><span className="font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">{zhCN.totalUavs}</span><span className="font-bold">{drones.length}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">{zhCN.lowBattery}</span><span className="font-bold text-yellow-400">{drones.filter(d => d.battery < 30).length}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">{zhCN.errors}</span><span className="font-bold text-red-400">{drones.filter(d => d.hardwareStatus !== 'NORMAL').length}</span></div>
-              </div>
+              {statsChartType === 'list' && (
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between"><span className="text-slate-400">{zhCN.flying}</span><span className="font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">{zhCN.totalUavs}</span><span className="font-bold">{drones.length}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">{zhCN.lowBattery}</span><span className="font-bold text-yellow-400">{drones.filter(d => d.battery < 30).length}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">{zhCN.errors}</span><span className="font-bold text-red-400">{drones.filter(d => d.hardwareStatus !== 'NORMAL').length}</span></div>
+                </div>
+              )}
+              {statsChartType === 'pie' && (
+                <div className="flex items-center justify-center py-2">
+                  <svg viewBox="0 0 100 100" className="w-32 h-32">
+                    {(() => {
+                      const flyingCount = drones.filter(d => d.flightStatus === 'FLYING').length;
+                      const idleCount = drones.filter(d => d.flightStatus !== 'FLYING').length;
+                      const total = flyingCount + idleCount;
+                      if (total === 0) return <circle cx="50" cy="50" r="40" fill="#475569" />;
+                      const flyingAngle = (flyingCount / total) * 360;
+                      const idleAngle = (idleCount / total) * 360;
+                      let currentAngle = 0;
+                      const createArc = (angle: number, color: string) => {
+                        if (angle === 0) return null;
+                        const startAngle = currentAngle;
+                        const endAngle = currentAngle + angle;
+                        currentAngle = endAngle;
+                        const startRad = (startAngle - 90) * Math.PI / 180;
+                        const endRad = (endAngle - 90) * Math.PI / 180;
+                        const x1 = 50 + 40 * Math.cos(startRad);
+                        const y1 = 50 + 40 * Math.sin(startRad);
+                        const x2 = 50 + 40 * Math.cos(endRad);
+                        const y2 = 50 + 40 * Math.sin(endRad);
+                        const largeArc = angle > 180 ? 1 : 0;
+                        return <path d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`} fill={color} />;
+                      };
+                      return (
+                        <>
+                          {createArc(flyingAngle, '#22c55e')}
+                          {createArc(idleAngle, '#6b7280')}
+                        </>
+                      );
+                    })()}
+                  </svg>
+                  <div className="ml-3 space-y-1 text-xs">
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-green-500"></div>{zhCN.flying}: {drones.filter(d => d.flightStatus === 'FLYING').length}</div>
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-gray-500"></div>{zhCN.idleStatus}: {drones.filter(d => d.flightStatus !== 'FLYING').length}</div>
+                  </div>
+                </div>
+              )}
+              {statsChartType === 'bar' && (
+                <div className="space-y-2 py-2">
+                  {(() => {
+                    const flyingCount = drones.filter(d => d.flightStatus === 'FLYING').length;
+                    const lowBatteryCount = drones.filter(d => d.battery < 30).length;
+                    const errorCount = drones.filter(d => d.hardwareStatus !== 'NORMAL').length;
+                    const max = Math.max(drones.length, flyingCount, lowBatteryCount, errorCount, 1);
+                    return (
+                      <>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="w-12 text-slate-400">{zhCN.flying}</span>
+                          <div className="flex-1 bg-slate-600 rounded h-4 overflow-hidden">
+                            <div className="h-full bg-green-500 transition-all duration-500" style={{ width: `${(flyingCount / max) * 100}%` }}></div>
+                          </div>
+                          <span className="w-6 text-right">{flyingCount}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="w-12 text-slate-400">{zhCN.totalUavs}</span>
+                          <div className="flex-1 bg-slate-600 rounded h-4 overflow-hidden">
+                            <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${(drones.length / max) * 100}%` }}></div>
+                          </div>
+                          <span className="w-6 text-right">{drones.length}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="w-12 text-slate-400">{zhCN.lowBattery}</span>
+                          <div className="flex-1 bg-slate-600 rounded h-4 overflow-hidden">
+                            <div className="h-full bg-yellow-500 transition-all duration-500" style={{ width: `${(lowBatteryCount / max) * 100}%` }}></div>
+                          </div>
+                          <span className="w-6 text-right">{lowBatteryCount}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="w-12 text-slate-400">{zhCN.errors}</span>
+                          <div className="flex-1 bg-slate-600 rounded h-4 overflow-hidden">
+                            <div className="h-full bg-red-500 transition-all duration-500" style={{ width: `${(errorCount / max) * 100}%` }}></div>
+                          </div>
+                          <span className="w-6 text-right">{errorCount}</span>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -913,7 +1197,62 @@ function App() {
             <Button size="sm" variant="outline" onClick={() => getCurrentLocation()} className="bg-slate-800/90 border-slate-600 text-white h-8 w-8 p-0" title={zhCN.myLocation}><Locate className="w-4 h-4" /></Button>
             <Button size="sm" variant="outline" onClick={focusOnDrones} className="bg-slate-800/90 border-slate-600 text-white h-8 w-8 p-0" title={zhCN.focusUavs}><MapPin className="w-4 h-4" /></Button>
             <Button size="sm" variant="outline" onClick={() => setShowTileSelector(true)} className="bg-slate-800/90 border-slate-600 text-white h-8 w-8 p-0" title={zhCN.tileSource}><Settings className="w-4 h-4" /></Button>
+            <Button 
+              size="sm" 
+              variant="outline" 
+              onClick={() => setShowWeatherOverlay(!showWeatherOverlay)} 
+              className={`h-8 w-8 p-0 transition-all duration-300 ${showWeatherOverlay ? 'bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-500/50' : 'bg-slate-800/90 border-slate-600 text-white hover:bg-slate-700'}`}
+              title={zhCN.weather}
+            >
+              <Cloud className="w-4 h-4" />
+            </Button>
           </div>
+
+          {/* Weather Overlay on Map */}
+          {showWeatherOverlay && weather && (
+            <div className="absolute top-16 right-14 z-10 bg-gradient-to-br from-slate-800/95 to-slate-900/95 backdrop-blur-sm rounded-xl p-4 min-w-[200px] shadow-2xl border border-slate-600/50 animate-in fade-in slide-in-from-top-2 duration-300">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-lg flex items-center justify-center shadow-lg">
+                    <Cloud className="w-5 h-5 text-white" />
+                  </div>
+                  <span className="font-semibold text-white">{zhCN.weather}</span>
+                </div>
+                <button onClick={() => setShowWeatherOverlay(false)} className="text-slate-400 hover:text-white transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 text-sm">{zhCN.location}</span>
+                  <span className="text-white font-medium">{weather.location || '北京'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 text-sm">{zhCN.temperature}</span>
+                  <span className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">{weather.temperature?.toFixed(1)}°C</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-700">
+                  <div className="bg-slate-700/50 rounded-lg p-2 text-center">
+                    <div className="text-xs text-slate-400">{zhCN.humidity}</div>
+                    <div className="text-white font-semibold">{weather.humidity?.toFixed(0)}%</div>
+                  </div>
+                  <div className="bg-slate-700/50 rounded-lg p-2 text-center">
+                    <div className="text-xs text-slate-400">{zhCN.wind}</div>
+                    <div className="text-white font-semibold">{weather.windSpeed?.toFixed(1)} m/s</div>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-2">
+                  <span className="text-slate-400 text-sm">{zhCN.risk}</span>
+                  <Badge 
+                    variant={weather.riskLevel === 'LOW' ? 'default' : weather.riskLevel === 'MEDIUM' ? 'secondary' : 'destructive'}
+                    className={`${weather.riskLevel === 'LOW' ? 'bg-green-600' : weather.riskLevel === 'MEDIUM' ? 'bg-yellow-600' : 'bg-red-600'} shadow-lg`}
+                  >
+                    {weather.riskLevel === 'LOW' ? zhCN.riskLow : weather.riskLevel === 'MEDIUM' ? zhCN.riskMedium : zhCN.riskHigh}
+                  </Badge>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="absolute bottom-3 left-3 z-10 bg-slate-800/90 rounded-lg p-2 max-w-xs">
             <div className="flex items-center gap-1 text-xs text-slate-300 mb-1">
@@ -931,7 +1270,18 @@ function App() {
           </div>
         </div>
 
-        <div className="w-80 bg-slate-800 border-l border-slate-700 overflow-y-auto p-3 space-y-3">
+        {/* Right Sidebar Collapse Button */}
+        <button
+          onClick={() => setRightSidebarCollapsed(!rightSidebarCollapsed)}
+          className="absolute right-0 top-1/2 -translate-y-1/2 z-20 bg-slate-700 hover:bg-slate-600 text-white p-1 rounded-l-lg transition-all duration-300 shadow-lg"
+          style={{ right: rightSidebarCollapsed ? '0' : '320px' }}
+          title={rightSidebarCollapsed ? zhCN.expandSidebar : zhCN.collapseSidebar}
+        >
+          {rightSidebarCollapsed ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </button>
+
+        {/* Right Sidebar */}
+        <div className={`${rightSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-80'} bg-slate-800 border-l border-slate-700 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center gap-2 text-white">
