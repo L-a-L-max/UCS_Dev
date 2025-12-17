@@ -166,6 +166,9 @@ const zhCN = {
   memberName: '姓名',
   memberRole: '角色',
   locating: '定位中...',
+  
+  // Team visibility filter
+  teamMemberFilter: '小队成员显示',
 };
 
 // Map tile source configurations
@@ -310,6 +313,7 @@ function App() {
   const [isLocating, setIsLocating] = useState(false);
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
   const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({});
+  const [visibleTeamIds, setVisibleTeamIds] = useState<Set<string>>(new Set());
   const popupTimerRef = useRef<NodeJS.Timeout | null>(null);
   const memberMarkersRef = useRef<maplibregl.Marker[]>([]);
   
@@ -711,9 +715,24 @@ function App() {
       el.addEventListener('click', () => {
         setSelectedDroneId(drone.uavId);
         popupRef.current = popup;
+        startPopupTimer(POPUP_DEFAULT_TIMEOUT);
+      });
+
+      // Add hover handlers to popup element after it opens
+      popup.on('open', () => {
+        const popupElement = popup.getElement();
+        if (popupElement) {
+          popupElement.addEventListener('mouseenter', () => {
+            clearPopupTimer();
+          });
+          popupElement.addEventListener('mouseleave', () => {
+            startPopupTimer(2000);
+          });
+        }
       });
 
       popup.on('close', () => {
+        clearPopupTimer();
         if (selectedDroneId === drone.uavId) {
           setSelectedDroneId(null);
           popupRef.current = null;
@@ -866,6 +885,23 @@ function App() {
     }
   };
 
+  // Toggle team member visibility on map
+  const toggleTeamVisibility = (teamId: string) => {
+    setVisibleTeamIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(teamId)) {
+        newSet.delete(teamId);
+      } else {
+        newSet.add(teamId);
+        // Auto-fetch team members if not already loaded
+        if (!teamMembers[teamId]) {
+          fetchTeamMembers(teamId);
+        }
+      }
+      return newSet;
+    });
+  };
+
   // Click on drone in list - fly to and auto-open popup with timer
   const handleDroneListClick = (drone: DroneStatus) => {
     if (!map.current || !drone.lat || !drone.lng) return;
@@ -948,7 +984,7 @@ function App() {
     }
   };
 
-  // Update member markers on map
+  // Update member markers on map - only show members from visible teams
   const updateMemberMarkers = useCallback(() => {
     if (!map.current) return;
     
@@ -956,8 +992,11 @@ function App() {
     memberMarkersRef.current.forEach(marker => marker.remove());
     memberMarkersRef.current = [];
     
-    // Add markers for all team members
-    Object.entries(teamMembers).forEach(([, members], teamIndex) => {
+    // Add markers for team members from visible teams only
+    Object.entries(teamMembers).forEach(([teamId, members], teamIndex) => {
+      // Only show members if their team is in visibleTeamIds
+      if (!visibleTeamIds.has(teamId)) return;
+      
       members.forEach(member => {
         if (!member.lat || !member.lng) return;
         
@@ -976,12 +1015,12 @@ function App() {
         memberMarkersRef.current.push(marker);
       });
     });
-  }, [teamMembers]);
+  }, [teamMembers, visibleTeamIds]);
 
-  // Update member markers when teamMembers change
+  // Update member markers when teamMembers or visibleTeamIds change
   useEffect(() => {
     updateMemberMarkers();
-  }, [teamMembers, updateMemberMarkers]);
+  }, [teamMembers, visibleTeamIds, updateMemberMarkers]);
 
   useEffect(() => {
     const savedToken = localStorage.getItem('token');
@@ -1080,18 +1119,8 @@ function App() {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar Collapse Button */}
-        <button
-          onClick={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)}
-          className="absolute left-0 top-1/2 -translate-y-1/2 z-20 bg-slate-700 hover:bg-slate-600 text-white p-1 rounded-r-lg transition-all duration-300 shadow-lg"
-          style={{ left: leftSidebarCollapsed ? '0' : '288px' }}
-          title={leftSidebarCollapsed ? zhCN.expandSidebar : zhCN.collapseSidebar}
-        >
-          {leftSidebarCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-        </button>
-
         {/* Left Sidebar */}
-        <div className={`${leftSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-72'} bg-slate-800 border-r border-slate-700 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
+        <div className={`${leftSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-72'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center justify-between text-white">
@@ -1226,27 +1255,6 @@ function App() {
 
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <Users className="w-4 h-4 text-blue-400" />{zhCN.teams}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
-              <div className="space-y-2">
-                {teams.map((team) => (
-                  <div key={team.teamId} className="bg-slate-600 p-2 rounded flex justify-between items-center">
-                    <div>
-                      <div className="font-medium text-xs">{team.teamName}</div>
-                      <div className="text-xs text-slate-400">{zhCN.leader}: {team.leader || 'N/A'}</div>
-                    </div>
-                    <Badge variant="outline" className="text-slate-300 text-xs">{team.memberCount}</Badge>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center justify-between text-white">
                 <div className="flex items-center gap-2">
                   <Activity className="w-4 h-4 text-blue-400" />{zhCN.stats}
@@ -1352,6 +1360,16 @@ function App() {
           </Card>
         </div>
 
+        {/* Left Sidebar Collapse Button - On Boundary Line */}
+        <div className="w-3 flex-shrink-0 relative bg-slate-700/30 flex items-center justify-center cursor-pointer hover:bg-slate-600/50 transition-colors" onClick={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)}>
+          <button
+            className="absolute z-20 bg-slate-700/90 hover:bg-slate-600 text-white p-1 rounded-full transition-all duration-300 shadow-lg backdrop-blur-sm border border-slate-600/50"
+            title={leftSidebarCollapsed ? zhCN.expandSidebar : zhCN.collapseSidebar}
+          >
+            {leftSidebarCollapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronLeft className="w-3 h-3" />}
+          </button>
+        </div>
+
         <div className="flex-1 relative">
           <div ref={mapContainer} className="absolute inset-0 w-full h-full" style={{ minHeight: '100%' }} />
           
@@ -1397,7 +1415,8 @@ function App() {
             </div>
           )}
           
-          <div className="absolute top-3 left-3 z-10 bg-slate-800/80 backdrop-blur-sm rounded-lg p-2 space-y-2 border border-slate-600/50">
+          {/* Heatmap Controls - Top Center */}
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 bg-slate-800/80 backdrop-blur-sm rounded-lg p-2 space-y-2 border border-slate-600/50">
             <div className="flex items-center gap-1 text-xs text-slate-200 mb-1">
               <Layers className="w-3 h-3" />{zhCN.heatmapMode}
             </div>
@@ -1425,44 +1444,46 @@ function App() {
             </Button>
           </div>
 
-          {/* Weather Overlay on Map */}
+          {/* Weather Overlay - Docked Vertical Panel on Left Side */}
           {showWeatherOverlay && weather && (
-            <div className="absolute top-16 right-14 z-10 bg-gradient-to-br from-slate-800/95 to-slate-900/95 backdrop-blur-sm rounded-xl p-4 min-w-[200px] shadow-2xl border border-slate-600/50 animate-in fade-in slide-in-from-top-2 duration-300">
-              <div className="flex items-center justify-between mb-3">
+            <div className="absolute top-3 left-3 z-10 bg-slate-800/80 backdrop-blur-md rounded-lg p-3 w-48 shadow-xl border border-slate-600/50 animate-in fade-in slide-in-from-left-2 duration-300">
+              <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-lg flex items-center justify-center shadow-lg">
-                    <Cloud className="w-5 h-5 text-white" />
+                  <div className="w-6 h-6 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-md flex items-center justify-center">
+                    <Cloud className="w-4 h-4 text-white" />
                   </div>
-                  <span className="font-semibold text-white">{zhCN.weather}</span>
+                  <span className="text-sm font-semibold text-white">{zhCN.weather}</span>
                 </div>
-                <button onClick={() => setShowWeatherOverlay(false)} className="text-slate-400 hover:text-white transition-colors">
-                  <X className="w-4 h-4" />
+                <button onClick={() => setShowWeatherOverlay(false)} className="text-slate-400 hover:text-white transition-colors p-0.5">
+                  <X className="w-3 h-3" />
                 </button>
               </div>
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400 text-sm">{zhCN.location}</span>
-                  <span className="text-white font-medium">{weather.location || '北京'}</span>
+              
+              {/* Location */}
+              <div className="text-xs text-slate-400 mb-1">{zhCN.location}: {weather.location || '北京'}</div>
+              
+              {/* Temperature - Large Display */}
+              <div className="text-center py-2 border-b border-slate-600/50 mb-2">
+                <div className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+                  {weather.temperature?.toFixed(1)}°C
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400 text-sm">{zhCN.temperature}</span>
-                  <span className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">{weather.temperature?.toFixed(1)}°C</span>
+              </div>
+              
+              {/* Weather Details - Vertical Stack */}
+              <div className="space-y-2">
+                <div className="bg-slate-700/50 rounded-md p-2 flex items-center justify-between">
+                  <span className="text-xs text-slate-400">{zhCN.humidity}</span>
+                  <span className="text-sm font-semibold text-white">{weather.humidity?.toFixed(0)}%</span>
                 </div>
-                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-700">
-                  <div className="bg-slate-700/50 rounded-lg p-2 text-center">
-                    <div className="text-xs text-slate-400">{zhCN.humidity}</div>
-                    <div className="text-white font-semibold">{weather.humidity?.toFixed(0)}%</div>
-                  </div>
-                  <div className="bg-slate-700/50 rounded-lg p-2 text-center">
-                    <div className="text-xs text-slate-400">{zhCN.wind}</div>
-                    <div className="text-white font-semibold">{weather.windSpeed?.toFixed(1)} m/s</div>
-                  </div>
+                <div className="bg-slate-700/50 rounded-md p-2 flex items-center justify-between">
+                  <span className="text-xs text-slate-400">{zhCN.wind}</span>
+                  <span className="text-sm font-semibold text-white">{weather.windSpeed?.toFixed(1)} m/s</span>
                 </div>
-                <div className="flex items-center justify-between pt-2">
-                  <span className="text-slate-400 text-sm">{zhCN.risk}</span>
+                <div className="bg-slate-700/50 rounded-md p-2 flex items-center justify-between">
+                  <span className="text-xs text-slate-400">{zhCN.risk}</span>
                   <Badge 
                     variant={weather.riskLevel === 'LOW' ? 'default' : weather.riskLevel === 'MEDIUM' ? 'secondary' : 'destructive'}
-                    className={`${weather.riskLevel === 'LOW' ? 'bg-green-600' : weather.riskLevel === 'MEDIUM' ? 'bg-yellow-600' : 'bg-red-600'} shadow-lg`}
+                    className={`text-xs ${weather.riskLevel === 'LOW' ? 'bg-green-600' : weather.riskLevel === 'MEDIUM' ? 'bg-yellow-600' : 'bg-red-600'}`}
                   >
                     {weather.riskLevel === 'LOW' ? zhCN.riskLow : weather.riskLevel === 'MEDIUM' ? zhCN.riskMedium : zhCN.riskHigh}
                   </Badge>
@@ -1471,34 +1492,60 @@ function App() {
             </div>
           )}
 
-          <div className="absolute bottom-3 left-3 z-10 bg-slate-800/90 rounded-lg p-2 max-w-xs">
+          {/* Flight Status Filter - Bottom Left */}
+          <div className="absolute bottom-3 left-3 z-10 bg-slate-800/80 backdrop-blur-sm rounded-lg p-2 max-w-xs border border-slate-600/50">
             <div className="flex items-center gap-1 text-xs text-slate-300 mb-1">
               {zhCN.flightStatusFilter}
             </div>
             <div className="flex items-center gap-2 text-xs mb-2">
-              <Button size="sm" variant={selectedFlightStatus.has('flying') ? 'default' : 'outline'} onClick={() => toggleFlightStatus('flying')} className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${selectedFlightStatus.has('flying') ? 'bg-green-600 text-white' : 'border-slate-600 text-slate-200'}`}>
+              <Button size="sm" variant={selectedFlightStatus.has('flying') ? 'default' : 'outline'} onClick={() => toggleFlightStatus('flying')} className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${selectedFlightStatus.has('flying') ? 'bg-green-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>
                 <div className="w-2 h-2 rounded-full bg-green-400"></div>{zhCN.flyingStatus}
               </Button>
-              <Button size="sm" variant={selectedFlightStatus.has('idle') ? 'default' : 'outline'} onClick={() => toggleFlightStatus('idle')} className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${selectedFlightStatus.has('idle') ? 'bg-gray-600 text-white' : 'border-slate-600 text-slate-200'}`}>
+              <Button size="sm" variant={selectedFlightStatus.has('idle') ? 'default' : 'outline'} onClick={() => toggleFlightStatus('idle')} className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${selectedFlightStatus.has('idle') ? 'bg-gray-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>
                 <div className="w-2 h-2 rounded-full bg-gray-400"></div>{zhCN.idleStatus}
               </Button>
             </div>
-            <div className="text-xs text-slate-400">{zhCN.clickForDetails}</div>
+            
+            {/* Team Member Visibility Filter */}
+            {teams.length > 0 && (
+              <>
+                <div className="flex items-center gap-1 text-xs text-slate-300 mb-1 mt-2 pt-2 border-t border-slate-600/50">
+                  <Users className="w-3 h-3" />{zhCN.teamMemberFilter}
+                </div>
+                <div className="flex flex-wrap items-center gap-1 text-xs">
+                  {teams.map((team, teamIndex) => (
+                    <Button 
+                      key={team.teamId}
+                      size="sm" 
+                      variant={visibleTeamIds.has(team.teamId) ? 'default' : 'outline'} 
+                      onClick={() => toggleTeamVisibility(team.teamId)} 
+                      className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${visibleTeamIds.has(team.teamId) ? 'text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}
+                      style={{ backgroundColor: visibleTeamIds.has(team.teamId) ? TEAM_COLORS[teamIndex % TEAM_COLORS.length] : undefined }}
+                    >
+                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: TEAM_COLORS[teamIndex % TEAM_COLORS.length] }}></div>
+                      {team.teamName}
+                    </Button>
+                  ))}
+                </div>
+              </>
+            )}
+            
+            <div className="text-xs text-slate-400 mt-2">{zhCN.clickForDetails}</div>
           </div>
         </div>
 
-        {/* Right Sidebar Collapse Button */}
-        <button
-          onClick={() => setRightSidebarCollapsed(!rightSidebarCollapsed)}
-          className="absolute right-0 top-1/2 -translate-y-1/2 z-20 bg-slate-700 hover:bg-slate-600 text-white p-1 rounded-l-lg transition-all duration-300 shadow-lg"
-          style={{ right: rightSidebarCollapsed ? '0' : '320px' }}
-          title={rightSidebarCollapsed ? zhCN.expandSidebar : zhCN.collapseSidebar}
-        >
-          {rightSidebarCollapsed ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-        </button>
+        {/* Right Sidebar Collapse Button - On Boundary Line */}
+        <div className="w-3 flex-shrink-0 relative bg-slate-700/30 flex items-center justify-center cursor-pointer hover:bg-slate-600/50 transition-colors" onClick={() => setRightSidebarCollapsed(!rightSidebarCollapsed)}>
+          <button
+            className="absolute z-20 bg-slate-700/90 hover:bg-slate-600 text-white p-1 rounded-full transition-all duration-300 shadow-lg backdrop-blur-sm border border-slate-600/50"
+            title={rightSidebarCollapsed ? zhCN.expandSidebar : zhCN.collapseSidebar}
+          >
+            {rightSidebarCollapsed ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+          </button>
+        </div>
 
         {/* Right Sidebar */}
-        <div className={`${rightSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-80'} bg-slate-800 border-l border-slate-700 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
+        <div className={`${rightSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-80'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center gap-2 text-white">
