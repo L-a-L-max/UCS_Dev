@@ -40,3 +40,14 @@
 .read-the-docs {
   color: #888;
 }
+
+/* Smooth popup movement transition for drone tracking */
+/* This makes the popup follow the drone smoothly instead of jumping */
+.maplibregl-popup {
+  transition: transform 100ms linear !important;
+}
+
+/* Drone marker smooth movement */
+.drone-marker {
+  transition: transform 100ms linear;
+}
