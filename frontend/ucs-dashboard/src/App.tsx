@@ -1355,21 +1355,7 @@ function App() {
                 });
               }
       
-              // Update map center if tracking a drone
-              if (trackingDroneId && map.current) {
-                setDrones(currentDrones => {
-                  const trackedDrone = currentDrones.find(d => d.uavId === trackingDroneId);
-                  if (trackedDrone && trackedDrone.lat && trackedDrone.lng) {
-                    // Use easeTo for smooth tracking without changing zoom level
-                    map.current?.easeTo({
-                      center: [trackedDrone.lng, trackedDrone.lat],
-                      duration: 200 // Short duration for smooth following
-                    });
-                  }
-                  return currentDrones;
-                });
-              }
-            }, FLIGHT_SIMULATION_INTERVAL);
+                          }, FLIGHT_SIMULATION_INTERVAL);
     
       return () => {
         if (flightSimulationRef.current) {
@@ -1386,27 +1372,41 @@ function App() {
         }
       }, [leftSidebarCollapsed, rightSidebarCollapsed]);
 
-      // Exit drone tracking mode when user manually interacts with the map (drag, zoom, rotate)
-      useEffect(() => {
-        if (!map.current || !trackingDroneId) return;
+            // Drone tracking effect - update map center when tracked drone moves
+            // This is separate from flight simulation to avoid closure issues
+            useEffect(() => {
+              if (!map.current || !trackingDroneId) return;
+        
+              // Find the tracked drone and update map center
+              const trackedDrone = drones.find(d => d.uavId === trackingDroneId);
+              if (trackedDrone && trackedDrone.lat && trackedDrone.lng) {
+                // Use easeTo for smooth tracking without changing zoom level
+                map.current.easeTo({
+                  center: [trackedDrone.lng, trackedDrone.lat],
+                  duration: 200 // Short duration for smooth following
+                });
+              } else if (drones.length > 0 && !trackedDrone) {
+                // Tracked drone no longer exists in the list, stop tracking
+                setTrackingDroneId(null);
+              }
+            }, [drones, trackingDroneId]);
+
+            // Exit drone tracking mode only when user drags the map
+            // Zoom/rotate/pitch should NOT exit tracking so user can adjust view while following
+            useEffect(() => {
+              if (!map.current || !trackingDroneId) return;
       
-        const exitTracking = () => {
-          setTrackingDroneId(null);
-        };
+              const exitTracking = () => {
+                setTrackingDroneId(null);
+              };
       
-        // Listen for user-initiated map interactions
-        map.current.on('dragstart', exitTracking);
-        map.current.on('zoomstart', exitTracking);
-        map.current.on('rotatestart', exitTracking);
-        map.current.on('pitchstart', exitTracking);
+              // Only listen for drag - user explicitly requested that zoom should NOT exit tracking
+              map.current.on('dragstart', exitTracking);
       
-        return () => {
-          map.current?.off('dragstart', exitTracking);
-          map.current?.off('zoomstart', exitTracking);
-          map.current?.off('rotatestart', exitTracking);
-          map.current?.off('pitchstart', exitTracking);
-        };
-      }, [trackingDroneId]);
+              return () => {
+                map.current?.off('dragstart', exitTracking);
+              };
+            }, [trackingDroneId]);
 
     if (!isLoggedIn) {
     return (
