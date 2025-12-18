@@ -347,10 +347,14 @@ function App() {
     const flightAnglesRef = useRef<number[]>(DRONE_FLIGHT_PATHS.map(path => path.startAngle));
     const flightSimulationRef = useRef<NodeJS.Timeout | null>(null);
   
-    const mapContainer = useRef<HTMLDivElement>(null);
-  const map = useRef<maplibregl.Map | null>(null);
-  const markersRef = useRef<maplibregl.Marker[]>([]);
-  const popupRef = useRef<maplibregl.Popup | null>(null);
+      const mapContainer = useRef<HTMLDivElement>(null);
+    const map = useRef<maplibregl.Map | null>(null);
+    // Use Map for incremental marker updates (key: uavId, value: { marker, popup, element })
+    const droneMarkersMapRef = useRef<Map<string, { marker: maplibregl.Marker; popup: maplibregl.Popup; element: HTMLDivElement }>>(new Map());
+    const popupRef = useRef<maplibregl.Popup | null>(null);
+    // Throttle heatmap updates to reduce performance impact
+    const lastHeatmapUpdateRef = useRef<number>(0);
+    const HEATMAP_UPDATE_THROTTLE = 500; // Only update heatmap every 500ms
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
   const [locationSource, setLocationSource] = useState<'geolocation' | 'default'>('default');
@@ -385,20 +389,44 @@ function App() {
     }
   };
 
-  // Separate fetch functions with useCallback for different refresh intervals
-  const fetchDroneData = useCallback(async () => {
-    if (!token) return;
-    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
-    try {
-      const response = await fetch(`${API_BASE}/api/v1/screen/uav/list`, { headers });
-      if (response.status === 403) {
-        setError(zhCN.accessDenied); setIsLoggedIn(false);
-        localStorage.removeItem('token'); localStorage.removeItem('roles'); return;
-      }
-      const data = await response.json();
-      if (data.code === 0) setDrones(data.data || []);
-    } catch (err) { console.error('Failed to fetch drone data:', err); }
-  }, [token]);
+    // Separate fetch functions with useCallback for different refresh intervals
+    // Note: During flight simulation, we merge backend data but preserve simulated lat/lng positions
+    const fetchDroneData = useCallback(async () => {
+      if (!token) return;
+      const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+      try {
+        const response = await fetch(`${API_BASE}/api/v1/screen/uav/list`, { headers });
+        if (response.status === 403) {
+          setError(zhCN.accessDenied); setIsLoggedIn(false);
+          localStorage.removeItem('token'); localStorage.removeItem('roles'); return;
+        }
+        const data = await response.json();
+        if (data.code === 0) {
+          const newDrones = data.data || [];
+          // Merge with existing drones to preserve simulated positions during flight simulation
+          setDrones(prevDrones => {
+            if (prevDrones.length === 0) {
+              // First load - use backend data directly
+              return newDrones;
+            }
+            // Merge: update non-position fields from backend, keep simulated lat/lng
+            return newDrones.map(newDrone => {
+              const existingDrone = prevDrones.find(d => d.uavId === newDrone.uavId);
+              if (existingDrone && flightSimulationRef.current) {
+                // During flight simulation, preserve simulated position but update other fields
+                return {
+                  ...newDrone,
+                  lat: existingDrone.lat,
+                  lng: existingDrone.lng,
+                  flightStatus: existingDrone.flightStatus, // Keep flying status during simulation
+                };
+              }
+              return newDrone;
+            });
+          });
+        }
+      } catch (err) { console.error('Failed to fetch drone data:', err); }
+    }, [token]);
 
   const fetchWeatherData = useCallback(async () => {
     if (!token) return;
@@ -796,98 +824,129 @@ function App() {
     popupDeadlineRef.current = Date.now() + POPUP_DEFAULT_TIMEOUT;
   }, []);
 
-  const updateMapMarkers = useCallback(() => {
-    if (!map.current) return;
+    // Incremental marker update - only update positions, don't recreate markers
+    const updateMapMarkers = useCallback(() => {
+      if (!map.current) return;
 
-    markersRef.current.forEach(marker => marker.remove());
-    markersRef.current = [];
-
-    // Filter drones based on selected flight status
-    const filteredDrones = drones.filter(drone => {
-      if (!drone.lat || !drone.lng) return false;
-      const isFlying = drone.flightStatus === 'FLYING';
-      if (isFlying && !selectedFlightStatus.has('flying')) return false;
-      if (!isFlying && !selectedFlightStatus.has('idle')) return false;
-      return true;
-    });
-
-    filteredDrones.forEach(drone => {
-      const el = document.createElement('div');
-      el.className = 'drone-marker';
-      const isFlying = drone.flightStatus === 'FLYING';
-      el.style.cssText = `width: 36px; height: 36px; background: ${isFlying ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)' : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'}; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.4), 0 0 20px ${isFlying ? 'rgba(34, 197, 94, 0.5)' : 'rgba(107, 114, 128, 0.3)'}; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.3s ease;`;
-      el.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>';
-
-      // Enhanced popup with tech-blue styling (no white border)
-      const popup = new maplibregl.Popup({ offset: 25, closeButton: true, closeOnClick: false, className: 'drone-popup tech-blue-popup' }).setHTML(`
-        <div class="drone-popup-content" style="padding: 12px; font-family: system-ui, -apple-system, sans-serif; min-width: 220px; background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 50%, #172554 100%); color: white; border-radius: 8px; box-shadow: 0 4px 20px rgba(30, 64, 175, 0.5);">
-          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(96, 165, 250, 0.3);">
-            <div style="width: 32px; height: 32px; background: ${isFlying ? 'linear-gradient(135deg, #22c55e, #16a34a)' : 'linear-gradient(135deg, #6b7280, #4b5563)'}; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>
-            </div>
-            <div>
-              <h3 style="margin: 0; font-size: 16px; font-weight: bold; color: #93c5fd;">${drone.uavId}</h3>
-              <span style="font-size: 11px; color: ${isFlying ? '#86efac' : '#d1d5db'};">${isFlying ? zhCN.flyingStatus : zhCN.idleStatus}</span>
-            </div>
-          </div>
-          <div style="display: grid; gap: 8px; font-size: 12px;">
-            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.model}</span><span style="font-weight: 500;">${drone.model || 'N/A'}</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.battery}</span><span style="font-weight: 500; color: ${drone.battery > 50 ? '#86efac' : drone.battery > 20 ? '#fde047' : '#fca5a5'};">${drone.battery?.toFixed(0)}%</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.altitude}</span><span style="font-weight: 500;">${drone.altitude?.toFixed(0)}m</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.position}</span><span style="font-weight: 500; font-size: 10px;">${drone.lat?.toFixed(4)}, ${drone.lng?.toFixed(4)}</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.task}</span><span style="font-weight: 500; color: ${drone.taskStatus === 'EXECUTING' ? '#93c5fd' : '#d1d5db'};">${drone.currentTask || drone.taskStatus || zhCN.noTask}</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.team}</span><span style="font-weight: 500;">${drone.teamName || drone.owner || 'N/A'}</span></div>
-          </div>
-        </div>
-      `);
-
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([drone.lng, drone.lat])
-        .setPopup(popup)
-        .addTo(map.current!);
-
-      // Handle popup state persistence with singleton popup management
-      el.addEventListener('click', () => {
-        const popupKey = `drone:${drone.uavId}`;
-        
-        // If clicking the same marker that's already open, just reset the timer
-        if (activePopupKeyRef.current === popupKey && popupRef.current) {
-          popupDeadlineRef.current = Date.now() + POPUP_DEFAULT_TIMEOUT;
-          return;
-        }
-        
-        // Close any existing popup before opening new one
-        if (popupRef.current) {
-          popupRef.current.remove();
-        }
-        
-        setSelectedDroneId(drone.uavId);
-        popupRef.current = popup;
-        
-        // Start watchdog timer with popup key
-        startPopupWatchdog(popupKey);
+      // Filter drones based on selected flight status
+      const filteredDrones = drones.filter(drone => {
+        if (!drone.lat || !drone.lng) return false;
+        const isFlying = drone.flightStatus === 'FLYING';
+        if (isFlying && !selectedFlightStatus.has('flying')) return false;
+        if (!isFlying && !selectedFlightStatus.has('idle')) return false;
+        return true;
       });
 
-      // Attach hover listeners for watchdog mechanism
-      attachPopupHoverListeners(popup);
-
-      popup.on('close', () => {
-        if (selectedDroneId === drone.uavId) {
-          setSelectedDroneId(null);
-          popupRef.current = null;
+      // Create a set of currently visible drone IDs
+      const visibleDroneIds = new Set(filteredDrones.map(d => d.uavId));
+    
+      // Remove markers for drones that are no longer visible
+      droneMarkersMapRef.current.forEach((markerData, uavId) => {
+        if (!visibleDroneIds.has(uavId)) {
+          markerData.marker.remove();
+          droneMarkersMapRef.current.delete(uavId);
         }
-        // Timer cleanup is handled by attachPopupHoverListeners
       });
 
-      // Restore popup if this drone was previously selected
-      if (selectedDroneId === drone.uavId) {
-        marker.togglePopup();
-        popupRef.current = popup;
-      }
+      // Update or create markers for visible drones
+      filteredDrones.forEach(drone => {
+        const existingMarkerData = droneMarkersMapRef.current.get(drone.uavId);
+      
+        if (existingMarkerData) {
+          // INCREMENTAL UPDATE: Just update position, don't recreate marker
+          existingMarkerData.marker.setLngLat([drone.lng, drone.lat]);
+        
+          // Update marker style if flight status changed (less frequent)
+          const isFlying = drone.flightStatus === 'FLYING';
+          const currentBg = existingMarkerData.element.style.background;
+          const expectedBg = isFlying ? 'linear-gradient(135deg, rgb(34, 197, 94) 0%, rgb(22, 163, 74) 100%)' : 'linear-gradient(135deg, rgb(107, 114, 128) 0%, rgb(75, 85, 99) 100%)';
+          if (!currentBg.includes(isFlying ? '34, 197, 94' : '107, 114, 128')) {
+            existingMarkerData.element.style.background = isFlying ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)' : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
+            existingMarkerData.element.style.boxShadow = `0 4px 12px rgba(0,0,0,0.4), 0 0 20px ${isFlying ? 'rgba(34, 197, 94, 0.5)' : 'rgba(107, 114, 128, 0.3)'}`;
+          }
+        } else {
+          // CREATE NEW MARKER: Only for drones that don't have a marker yet
+          const el = document.createElement('div');
+          el.className = 'drone-marker';
+          const isFlying = drone.flightStatus === 'FLYING';
+          el.style.cssText = `width: 36px; height: 36px; background: ${isFlying ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)' : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'}; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.4), 0 0 20px ${isFlying ? 'rgba(34, 197, 94, 0.5)' : 'rgba(107, 114, 128, 0.3)'}; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.3s ease;`;
+          el.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>';
 
-      markersRef.current.push(marker);
-    });
-  }, [drones, selectedFlightStatus, selectedDroneId, startPopupWatchdog, attachPopupHoverListeners]);
+          // Enhanced popup with tech-blue styling (no white border)
+          const popup = new maplibregl.Popup({ offset: 25, closeButton: true, closeOnClick: false, className: 'drone-popup tech-blue-popup' }).setHTML(`
+            <div class="drone-popup-content" style="padding: 12px; font-family: system-ui, -apple-system, sans-serif; min-width: 220px; background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 50%, #172554 100%); color: white; border-radius: 8px; box-shadow: 0 4px 20px rgba(30, 64, 175, 0.5);">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(96, 165, 250, 0.3);">
+                <div style="width: 32px; height: 32px; background: ${isFlying ? 'linear-gradient(135deg, #22c55e, #16a34a)' : 'linear-gradient(135deg, #6b7280, #4b5563)'}; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>
+                </div>
+                <div>
+                  <h3 style="margin: 0; font-size: 16px; font-weight: bold; color: #93c5fd;">${drone.uavId}</h3>
+                  <span style="font-size: 11px; color: ${isFlying ? '#86efac' : '#d1d5db'};">${isFlying ? zhCN.flyingStatus : zhCN.idleStatus}</span>
+                </div>
+              </div>
+              <div style="display: grid; gap: 8px; font-size: 12px;">
+                <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.model}</span><span style="font-weight: 500;">${drone.model || 'N/A'}</span></div>
+                <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.battery}</span><span style="font-weight: 500; color: ${drone.battery > 50 ? '#86efac' : drone.battery > 20 ? '#fde047' : '#fca5a5'};">${drone.battery?.toFixed(0)}%</span></div>
+                <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.altitude}</span><span style="font-weight: 500;">${drone.altitude?.toFixed(0)}m</span></div>
+                <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.position}</span><span style="font-weight: 500; font-size: 10px;">${drone.lat?.toFixed(4)}, ${drone.lng?.toFixed(4)}</span></div>
+                <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.task}</span><span style="font-weight: 500; color: ${drone.taskStatus === 'EXECUTING' ? '#93c5fd' : '#d1d5db'};">${drone.currentTask || drone.taskStatus || zhCN.noTask}</span></div>
+                <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.team}</span><span style="font-weight: 500;">${drone.teamName || drone.owner || 'N/A'}</span></div>
+              </div>
+            </div>
+          `);
+
+          const marker = new maplibregl.Marker({ element: el })
+            .setLngLat([drone.lng, drone.lat])
+            .setPopup(popup)
+            .addTo(map.current!);
+
+          // Store drone.uavId in closure for click handler
+          const droneId = drone.uavId;
+        
+          // Handle popup state persistence with singleton popup management
+          el.addEventListener('click', () => {
+            const popupKey = `drone:${droneId}`;
+          
+            // If clicking the same marker that's already open, just reset the timer
+            if (activePopupKeyRef.current === popupKey && popupRef.current) {
+              popupDeadlineRef.current = Date.now() + POPUP_DEFAULT_TIMEOUT;
+              return;
+            }
+          
+            // Close any existing popup before opening new one
+            if (popupRef.current) {
+              popupRef.current.remove();
+            }
+          
+            setSelectedDroneId(droneId);
+            popupRef.current = popup;
+          
+            // Start watchdog timer with popup key
+            startPopupWatchdog(popupKey);
+          });
+
+          // Attach hover listeners for watchdog mechanism
+          attachPopupHoverListeners(popup);
+
+          popup.on('close', () => {
+            // Use ref to check current selected drone (avoid stale closure)
+            if (activePopupKeyRef.current === `drone:${droneId}`) {
+              setSelectedDroneId(null);
+              popupRef.current = null;
+            }
+          });
+
+          // Store marker data in map for future incremental updates
+          droneMarkersMapRef.current.set(drone.uavId, { marker, popup, element: el });
+
+          // Restore popup if this drone was previously selected
+          if (activePopupKeyRef.current === `drone:${drone.uavId}`) {
+            marker.togglePopup();
+            popupRef.current = popup;
+          }
+        }
+      });
+    }, [drones, selectedFlightStatus, startPopupWatchdog, attachPopupHoverListeners]);
 
   // Update heatmap layers based on selected layers (multi-select support)
   const updateHeatmap = () => {
@@ -1200,12 +1259,17 @@ function App() {
     }
   }, [isLoggedIn, token, fetchDroneData, fetchWeatherData, fetchTaskData, fetchTeamData, fetchEventData, fetchAllData]);
 
-  useEffect(() => {
-    if (map.current && drones.length > 0) {
-      updateMapMarkers();
-      updateHeatmap();
-    }
-  }, [drones, selectedHeatmapLayers, selectedFlightStatus]);
+    useEffect(() => {
+      if (map.current && drones.length > 0) {
+        updateMapMarkers();
+        // Throttle heatmap updates to reduce performance impact during flight simulation
+        const now = Date.now();
+        if (now - lastHeatmapUpdateRef.current >= HEATMAP_UPDATE_THROTTLE) {
+          updateHeatmap();
+          lastHeatmapUpdateRef.current = now;
+        }
+      }
+    }, [drones, selectedHeatmapLayers, selectedFlightStatus]);
 
     // Flight simulation - update drone positions in circular orbits
     useEffect(() => {
