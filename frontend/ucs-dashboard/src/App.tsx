@@ -32,9 +32,9 @@ import {
 } from 'lucide-react';
 import './App.css';
 
-// Popup auto-close timing constants
-const POPUP_DEFAULT_TIMEOUT = 5000; // 5 seconds default
-const POPUP_SHORT_TIMEOUT = 2000;   // 2 seconds after mouse leave
+// Popup auto-close timing constants (watchdog mechanism)
+const POPUP_DEFAULT_TIMEOUT = 6000; // 6 seconds default
+const POPUP_WATCHDOG_INTERVAL = 3000; // Check every 3 seconds (half of default)
 
 // Team colors for member markers
 const TEAM_COLORS = [
@@ -314,7 +314,14 @@ function App() {
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
   const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({});
   const [visibleTeamIds, setVisibleTeamIds] = useState<Set<string>>(new Set());
+  
+  // Popup watchdog timer refs
   const popupTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const popupWatchdogRef = useRef<NodeJS.Timeout | null>(null);
+  const popupDeadlineRef = useRef<number>(0);
+  const popupHoveredRef = useRef<boolean>(false);
+  const activePopupKeyRef = useRef<string | null>(null);
+  
   const memberMarkersRef = useRef<maplibregl.Marker[]>([]);
   
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -661,6 +668,111 @@ function App() {
     await initMap(newSource);
   };
 
+  // Clear all popup timers (watchdog and deadline)
+  const clearAllPopupTimers = useCallback(() => {
+    if (popupTimerRef.current) {
+      clearTimeout(popupTimerRef.current);
+      popupTimerRef.current = null;
+    }
+    if (popupWatchdogRef.current) {
+      clearInterval(popupWatchdogRef.current);
+      popupWatchdogRef.current = null;
+    }
+    popupDeadlineRef.current = 0;
+    popupHoveredRef.current = false;
+  }, []);
+
+  // Close the active popup and clean up
+  const closeActivePopup = useCallback(() => {
+    clearAllPopupTimers();
+    if (popupRef.current) {
+      popupRef.current.remove();
+      popupRef.current = null;
+    }
+    activePopupKeyRef.current = null;
+    setSelectedDroneId(null);
+  }, [clearAllPopupTimers]);
+
+  // Start popup watchdog timer mechanism
+  // Watchdog checks every POPUP_WATCHDOG_INTERVAL (3s) if mouse is inside popup
+  // If inside, reset deadline to now + POPUP_DEFAULT_TIMEOUT (6s)
+  // If deadline passed, close popup
+  const startPopupWatchdog = useCallback((popupKey: string) => {
+    // Clear any existing timers
+    clearAllPopupTimers();
+    
+    // Set initial deadline
+    popupDeadlineRef.current = Date.now() + POPUP_DEFAULT_TIMEOUT;
+    activePopupKeyRef.current = popupKey;
+    
+    // Start watchdog interval
+    popupWatchdogRef.current = setInterval(() => {
+      const now = Date.now();
+      const deadline = popupDeadlineRef.current;
+      
+      // Check if deadline has passed
+      if (now >= deadline) {
+        closeActivePopup();
+        return;
+      }
+      
+      // Check if we're in the last half-window and mouse is hovering
+      // If so, extend the deadline
+      if (now >= deadline - POPUP_WATCHDOG_INTERVAL && popupHoveredRef.current) {
+        popupDeadlineRef.current = now + POPUP_DEFAULT_TIMEOUT;
+      }
+    }, POPUP_WATCHDOG_INTERVAL);
+  }, [clearAllPopupTimers, closeActivePopup]);
+
+  // Attach hover listeners to popup element
+  const attachPopupHoverListeners = useCallback((popup: maplibregl.Popup) => {
+    popup.on('open', () => {
+      const popupElement = popup.getElement();
+      if (popupElement) {
+        const handleMouseEnter = () => {
+          popupHoveredRef.current = true;
+          // Immediately extend deadline when mouse enters
+          popupDeadlineRef.current = Date.now() + POPUP_DEFAULT_TIMEOUT;
+        };
+        const handleMouseLeave = () => {
+          popupHoveredRef.current = false;
+        };
+        
+        popupElement.addEventListener('mouseenter', handleMouseEnter);
+        popupElement.addEventListener('mouseleave', handleMouseLeave);
+        
+        // Store handlers for cleanup
+        (popupElement as any)._hoverHandlers = { handleMouseEnter, handleMouseLeave };
+      }
+    });
+    
+    popup.on('close', () => {
+      const popupElement = popup.getElement();
+      if (popupElement && (popupElement as any)._hoverHandlers) {
+        const { handleMouseEnter, handleMouseLeave } = (popupElement as any)._hoverHandlers;
+        popupElement.removeEventListener('mouseenter', handleMouseEnter);
+        popupElement.removeEventListener('mouseleave', handleMouseLeave);
+        delete (popupElement as any)._hoverHandlers;
+      }
+      clearAllPopupTimers();
+      activePopupKeyRef.current = null;
+    });
+  }, [clearAllPopupTimers]);
+
+  // Legacy function for backward compatibility
+  const startPopupTimer = useCallback((timeout: number) => {
+    // Use the new watchdog mechanism
+    if (activePopupKeyRef.current) {
+      popupDeadlineRef.current = Date.now() + timeout;
+    }
+  }, []);
+
+  // Legacy function for backward compatibility
+  const clearPopupTimer = useCallback(() => {
+    // Extend deadline when clearing (mouse entered)
+    popupDeadlineRef.current = Date.now() + POPUP_DEFAULT_TIMEOUT;
+  }, []);
+
   const updateMapMarkers = useCallback(() => {
     if (!map.current) return;
 
@@ -711,32 +823,37 @@ function App() {
         .setPopup(popup)
         .addTo(map.current!);
 
-      // Handle popup state persistence
+      // Handle popup state persistence with singleton popup management
       el.addEventListener('click', () => {
+        const popupKey = `drone:${drone.uavId}`;
+        
+        // If clicking the same marker that's already open, just reset the timer
+        if (activePopupKeyRef.current === popupKey && popupRef.current) {
+          popupDeadlineRef.current = Date.now() + POPUP_DEFAULT_TIMEOUT;
+          return;
+        }
+        
+        // Close any existing popup before opening new one
+        if (popupRef.current) {
+          popupRef.current.remove();
+        }
+        
         setSelectedDroneId(drone.uavId);
         popupRef.current = popup;
-        startPopupTimer(POPUP_DEFAULT_TIMEOUT);
+        
+        // Start watchdog timer with popup key
+        startPopupWatchdog(popupKey);
       });
 
-      // Add hover handlers to popup element after it opens
-      popup.on('open', () => {
-        const popupElement = popup.getElement();
-        if (popupElement) {
-          popupElement.addEventListener('mouseenter', () => {
-            clearPopupTimer();
-          });
-          popupElement.addEventListener('mouseleave', () => {
-            startPopupTimer(2000);
-          });
-        }
-      });
+      // Attach hover listeners for watchdog mechanism
+      attachPopupHoverListeners(popup);
 
       popup.on('close', () => {
-        clearPopupTimer();
         if (selectedDroneId === drone.uavId) {
           setSelectedDroneId(null);
           popupRef.current = null;
         }
+        // Timer cleanup is handled by attachPopupHoverListeners
       });
 
       // Restore popup if this drone was previously selected
@@ -747,7 +864,7 @@ function App() {
 
       markersRef.current.push(marker);
     });
-  }, [drones, selectedFlightStatus, selectedDroneId]);
+  }, [drones, selectedFlightStatus, selectedDroneId, startPopupWatchdog, attachPopupHoverListeners]);
 
   // Update heatmap layers based on selected layers (multi-select support)
   const updateHeatmap = () => {
@@ -920,9 +1037,23 @@ function App() {
     startPopupTimer(POPUP_DEFAULT_TIMEOUT);
   };
 
-  // Click on team member - fly to and show popup
-  const handleMemberClick = (member: TeamMember, teamIndex: number) => {
+  // Click on team member - fly to and show popup (with singleton popup management)
+  const handleMemberClick = useCallback((member: TeamMember, teamIndex: number) => {
     if (!map.current || !member.lat || !member.lng) return;
+    
+    const popupKey = `member:${member.userId}`;
+    
+    // If clicking the same marker that's already open, just reset the timer
+    if (activePopupKeyRef.current === popupKey && popupRef.current) {
+      popupDeadlineRef.current = Date.now() + POPUP_DEFAULT_TIMEOUT;
+      return;
+    }
+    
+    // Close any existing popup before opening new one
+    if (popupRef.current) {
+      popupRef.current.remove();
+      popupRef.current = null;
+    }
     
     // Fly to member location
     map.current.flyTo({
@@ -955,34 +1086,15 @@ function App() {
       </div>
     `).setLngLat([member.lng, member.lat]).addTo(map.current);
     
-    // Start auto-close timer
-    startPopupTimer(POPUP_DEFAULT_TIMEOUT);
-    
     // Store popup reference
     popupRef.current = popup;
-  };
-
-  // Start popup auto-close timer
-  const startPopupTimer = (timeout: number) => {
-    if (popupTimerRef.current) {
-      clearTimeout(popupTimerRef.current);
-    }
-    popupTimerRef.current = setTimeout(() => {
-      if (popupRef.current) {
-        popupRef.current.remove();
-        popupRef.current = null;
-      }
-      setSelectedDroneId(null);
-    }, timeout);
-  };
-
-  // Clear popup timer (on hover)
-  const clearPopupTimer = () => {
-    if (popupTimerRef.current) {
-      clearTimeout(popupTimerRef.current);
-      popupTimerRef.current = null;
-    }
-  };
+    
+    // Attach hover listeners for watchdog mechanism
+    attachPopupHoverListeners(popup);
+    
+    // Start watchdog timer with popup key
+    startPopupWatchdog(popupKey);
+  }, [attachPopupHoverListeners, startPopupWatchdog]);
 
   // Update member markers on map - only show members from visible teams
   const updateMemberMarkers = useCallback(() => {
@@ -1015,7 +1127,7 @@ function App() {
         memberMarkersRef.current.push(marker);
       });
     });
-  }, [teamMembers, visibleTeamIds]);
+  }, [teamMembers, visibleTeamIds, handleMemberClick]);
 
   // Update member markers when teamMembers or visibleTeamIds change
   useEffect(() => {
