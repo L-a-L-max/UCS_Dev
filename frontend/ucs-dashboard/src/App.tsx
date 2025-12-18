@@ -328,11 +328,15 @@ function App() {
   const [statsChartType, setStatsChartType] = useState<ChartType>('list');
   const [selectedDroneId, setSelectedDroneId] = useState<string | null>(null);
   
-  // New state for UI refinements
-  const [isLocating, setIsLocating] = useState(false);
-  const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
-  const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({});
-  const [visibleTeamIds, setVisibleTeamIds] = useState<Set<string>>(new Set());
+    // New state for UI refinements
+    const [isLocating, setIsLocating] = useState(false);
+    const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
+    const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({});
+    const [visibleTeamIds, setVisibleTeamIds] = useState<Set<string>>(new Set());
+  
+    // Collapsible button groups state
+    const [heatmapPanelCollapsed, setHeatmapPanelCollapsed] = useState(false);
+    const [flightStatusPanelCollapsed, setFlightStatusPanelCollapsed] = useState(false);
   
   // Popup watchdog timer refs
   const popupTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -1687,17 +1691,38 @@ function App() {
             </div>
           )}
           
-          {/* Heatmap Controls - Top Center */}
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 bg-slate-800/80 backdrop-blur-sm rounded-lg p-2 space-y-2 border border-slate-600/50">
-            <div className="flex items-center gap-1 text-xs text-slate-200 mb-1">
-              <Layers className="w-3 h-3" />{zhCN.heatmapMode}
-            </div>
-            <div className="flex gap-1">
-              <Button size="sm" variant={selectedHeatmapLayers.has('drone') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('drone')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('drone') ? 'bg-blue-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>{zhCN.heatmapDrone}</Button>
-              <Button size="sm" variant={selectedHeatmapLayers.has('task') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('task')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('task') ? 'bg-orange-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>{zhCN.heatmapTask}</Button>
-              <Button size="sm" variant={selectedHeatmapLayers.has('member') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('member')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('member') ? 'bg-green-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>{zhCN.heatmapMember}</Button>
-            </div>
-          </div>
+                    {/* Heatmap Controls - Top Center with Collapse Button */}
+                    <div className={`absolute left-1/2 -translate-x-1/2 z-10 bg-slate-800/80 backdrop-blur-sm rounded-lg border border-slate-600/50 transition-all duration-300 ${heatmapPanelCollapsed ? 'top-0 -translate-y-full opacity-0 pointer-events-none' : 'top-3'}`}>
+                      <div className="p-2 space-y-2">
+                        <div className="flex items-center gap-1 text-xs text-slate-200 mb-1">
+                          <Layers className="w-3 h-3" />{zhCN.heatmapMode}
+                        </div>
+                        <div className="flex gap-1">
+                          <Button size="sm" variant={selectedHeatmapLayers.has('drone') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('drone')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('drone') ? 'bg-blue-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>{zhCN.heatmapDrone}</Button>
+                          <Button size="sm" variant={selectedHeatmapLayers.has('task') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('task')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('task') ? 'bg-orange-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>{zhCN.heatmapTask}</Button>
+                          <Button size="sm" variant={selectedHeatmapLayers.has('member') ? 'default' : 'outline'} onClick={() => toggleHeatmapLayer('member')} className={`text-xs px-2 py-1 h-7 ${selectedHeatmapLayers.has('member') ? 'bg-green-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>{zhCN.heatmapMember}</Button>
+                        </div>
+                      </div>
+                      {/* Collapse button - bottom center of panel */}
+                      <button
+                        onClick={() => setHeatmapPanelCollapsed(true)}
+                        className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-slate-700/90 hover:bg-slate-600 text-white p-1 rounded-full transition-all duration-300 shadow-lg backdrop-blur-sm border border-slate-600/50"
+                        title="收起热力图面板"
+                      >
+                        <ChevronUp className="w-3 h-3" />
+                      </button>
+                    </div>
+                    {/* Heatmap Panel Expand Button - shown when collapsed */}
+                    {heatmapPanelCollapsed && (
+                      <button
+                        onClick={() => setHeatmapPanelCollapsed(false)}
+                        className="absolute top-3 left-1/2 -translate-x-1/2 z-10 bg-slate-800/80 backdrop-blur-sm hover:bg-slate-700 text-white px-3 py-1 rounded-lg transition-all duration-300 shadow-lg border border-slate-600/50 flex items-center gap-1 text-xs"
+                        title="展开热力图面板"
+                      >
+                        <Layers className="w-3 h-3" />
+                        <ChevronDown className="w-3 h-3" />
+                      </button>
+                    )}
 
           <div className="absolute top-3 right-14 z-10 flex flex-col gap-1">
             <Button size="sm" variant="outline" onClick={() => getCurrentLocation()} disabled={isLocating} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-8 w-8 p-0" title={isLocating ? zhCN.locating : zhCN.myLocation}>
@@ -1764,46 +1789,67 @@ function App() {
             </div>
           )}
 
-          {/* Flight Status Filter - Bottom Left */}
-          <div className="absolute bottom-3 left-3 z-10 bg-slate-800/80 backdrop-blur-sm rounded-lg p-2 max-w-xs border border-slate-600/50">
-            <div className="flex items-center gap-1 text-xs text-slate-300 mb-1">
-              {zhCN.flightStatusFilter}
-            </div>
-            <div className="flex items-center gap-2 text-xs mb-2">
-              <Button size="sm" variant={selectedFlightStatus.has('flying') ? 'default' : 'outline'} onClick={() => toggleFlightStatus('flying')} className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${selectedFlightStatus.has('flying') ? 'bg-green-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>
-                <div className="w-2 h-2 rounded-full bg-green-400"></div>{zhCN.flyingStatus}
-              </Button>
-              <Button size="sm" variant={selectedFlightStatus.has('idle') ? 'default' : 'outline'} onClick={() => toggleFlightStatus('idle')} className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${selectedFlightStatus.has('idle') ? 'bg-gray-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>
-                <div className="w-2 h-2 rounded-full bg-gray-400"></div>{zhCN.idleStatus}
-              </Button>
-            </div>
-            
-            {/* Team Member Visibility Filter */}
-            {teams.length > 0 && (
-              <>
-                <div className="flex items-center gap-1 text-xs text-slate-300 mb-1 mt-2 pt-2 border-t border-slate-600/50">
-                  <Users className="w-3 h-3" />{zhCN.teamMemberFilter}
-                </div>
-                <div className="flex flex-wrap items-center gap-1 text-xs">
-                  {teams.map((team, teamIndex) => (
-                    <Button 
-                      key={team.teamId}
-                      size="sm" 
-                      variant={visibleTeamIds.has(team.teamId) ? 'default' : 'outline'} 
-                      onClick={() => toggleTeamVisibility(team.teamId)} 
-                      className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${visibleTeamIds.has(team.teamId) ? 'text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}
-                      style={{ backgroundColor: visibleTeamIds.has(team.teamId) ? TEAM_COLORS[teamIndex % TEAM_COLORS.length] : undefined }}
-                    >
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: TEAM_COLORS[teamIndex % TEAM_COLORS.length] }}></div>
-                      {team.teamName}
-                    </Button>
-                  ))}
-                </div>
-              </>
-            )}
-            
-            <div className="text-xs text-slate-400 mt-2">{zhCN.clickForDetails}</div>
-          </div>
+                    {/* Flight Status Filter - Bottom Left with Collapse Button */}
+                    <div className={`absolute left-3 z-10 bg-slate-800/80 backdrop-blur-sm rounded-lg max-w-xs border border-slate-600/50 transition-all duration-300 ${flightStatusPanelCollapsed ? 'bottom-0 translate-y-full opacity-0 pointer-events-none' : 'bottom-3'}`}>
+                      {/* Collapse button - top center of panel */}
+                      <button
+                        onClick={() => setFlightStatusPanelCollapsed(true)}
+                        className="absolute -top-3 left-1/2 -translate-x-1/2 bg-slate-700/90 hover:bg-slate-600 text-white p-1 rounded-full transition-all duration-300 shadow-lg backdrop-blur-sm border border-slate-600/50"
+                        title="收起飞行状态面板"
+                      >
+                        <ChevronDown className="w-3 h-3" />
+                      </button>
+                      <div className="p-2">
+                        <div className="flex items-center gap-1 text-xs text-slate-300 mb-1">
+                          {zhCN.flightStatusFilter}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs mb-2">
+                          <Button size="sm" variant={selectedFlightStatus.has('flying') ? 'default' : 'outline'} onClick={() => toggleFlightStatus('flying')} className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${selectedFlightStatus.has('flying') ? 'bg-green-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>
+                            <div className="w-2 h-2 rounded-full bg-green-400"></div>{zhCN.flyingStatus}
+                          </Button>
+                          <Button size="sm" variant={selectedFlightStatus.has('idle') ? 'default' : 'outline'} onClick={() => toggleFlightStatus('idle')} className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${selectedFlightStatus.has('idle') ? 'bg-gray-600 text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}>
+                            <div className="w-2 h-2 rounded-full bg-gray-400"></div>{zhCN.idleStatus}
+                          </Button>
+                        </div>
+              
+                        {/* Team Member Visibility Filter */}
+                        {teams.length > 0 && (
+                          <>
+                            <div className="flex items-center gap-1 text-xs text-slate-300 mb-1 mt-2 pt-2 border-t border-slate-600/50">
+                              <Users className="w-3 h-3" />{zhCN.teamMemberFilter}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1 text-xs">
+                              {teams.map((team, teamIndex) => (
+                                <Button 
+                                  key={team.teamId}
+                                  size="sm" 
+                                  variant={visibleTeamIds.has(team.teamId) ? 'default' : 'outline'} 
+                                  onClick={() => toggleTeamVisibility(team.teamId)} 
+                                  className={`text-xs px-2 py-1 h-6 flex items-center gap-1 ${visibleTeamIds.has(team.teamId) ? 'text-white' : 'bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50'}`}
+                                  style={{ backgroundColor: visibleTeamIds.has(team.teamId) ? TEAM_COLORS[teamIndex % TEAM_COLORS.length] : undefined }}
+                                >
+                                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: TEAM_COLORS[teamIndex % TEAM_COLORS.length] }}></div>
+                                  {team.teamName}
+                                </Button>
+                              ))}
+                            </div>
+                          </>
+                        )}
+              
+                        <div className="text-xs text-slate-400 mt-2">{zhCN.clickForDetails}</div>
+                      </div>
+                    </div>
+                    {/* Flight Status Panel Expand Button - shown when collapsed */}
+                    {flightStatusPanelCollapsed && (
+                      <button
+                        onClick={() => setFlightStatusPanelCollapsed(false)}
+                        className="absolute bottom-3 left-3 z-10 bg-slate-800/80 backdrop-blur-sm hover:bg-slate-700 text-white px-3 py-1 rounded-lg transition-all duration-300 shadow-lg border border-slate-600/50 flex items-center gap-1 text-xs"
+                        title="展开飞行状态面板"
+                      >
+                        <ChevronUp className="w-3 h-3" />
+                        {zhCN.flightStatusFilter}
+                      </button>
+                    )}
         </div>
 
         {/* Right Sidebar Collapse Button - On Boundary Line */}
