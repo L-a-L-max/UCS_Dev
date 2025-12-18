@@ -910,15 +910,15 @@ function App() {
                     // Store drone.uavId in closure for click handler
                     const droneId = drone.uavId;
         
-                    // Handle popup state persistence with singleton popup management and tracking mode
+                    // Handle popup state persistence with singleton popup management
+                    // Note: Map marker click only shows details, does NOT start tracking
+                    // Tracking is only started from the right sidebar drone list
                     el.addEventListener('click', () => {
                       const popupKey = `drone:${droneId}`;
           
-                      // If clicking the same marker that's already open, toggle tracking and reset timer
+                      // If clicking the same marker that's already open, just reset timer
                       if (activePopupKeyRef.current === popupKey && popupRef.current) {
                         popupDeadlineRef.current = Date.now() + POPUP_DEFAULT_TIMEOUT;
-                        // Toggle tracking mode on same marker click
-                        setTrackingDroneId(prev => prev === droneId ? null : droneId);
                         return;
                       }
           
@@ -929,9 +929,6 @@ function App() {
           
                       setSelectedDroneId(droneId);
                       popupRef.current = popup;
-            
-                      // Enable tracking mode when clicking on a drone marker
-                      setTrackingDroneId(droneId);
           
                       // Start watchdog timer with popup key
                       startPopupWatchdog(popupKey);
@@ -1113,9 +1110,12 @@ function App() {
     });
   };
 
-    // Click on drone in list - fly to, auto-open popup with timer, and toggle tracking mode
+    // Click on drone in list - fly to, open popup, and start tracking mode
+    // This is the ONLY place where tracking mode is started (not from map marker click)
     const handleDroneListClick = (drone: DroneStatus) => {
       if (!map.current || !drone.lat || !drone.lng) return;
+    
+      const popupKey = `drone:${drone.uavId}`;
     
       // Toggle tracking mode: if clicking the same drone that's being tracked, stop tracking
       if (trackingDroneId === drone.uavId) {
@@ -1132,11 +1132,29 @@ function App() {
         duration: 1000
       });
     
-      // Set selected drone to trigger popup
-      setSelectedDroneId(drone.uavId);
+      // Close any existing popup before opening new one
+      if (popupRef.current) {
+        popupRef.current.remove();
+        popupRef.current = null;
+      }
     
-      // Start auto-close timer
-      startPopupTimer(POPUP_DEFAULT_TIMEOUT);
+      // Find the marker and open its popup
+      const markerData = droneMarkersMapRef.current.get(drone.uavId);
+      if (markerData) {
+        // Open the popup
+        markerData.marker.togglePopup();
+        popupRef.current = markerData.popup;
+        setSelectedDroneId(drone.uavId);
+        
+        // Attach hover listeners for watchdog mechanism
+        attachPopupHoverListeners(markerData.popup);
+        
+        // Start watchdog timer with popup key
+        startPopupWatchdog(popupKey);
+      } else {
+        // Marker not yet created, just set selected drone
+        setSelectedDroneId(drone.uavId);
+      }
     };
 
   // Click on team member - fly to and show popup (with singleton popup management)
@@ -1292,6 +1310,7 @@ function App() {
     }, [drones, selectedHeatmapLayers, selectedFlightStatus]);
 
     // Flight simulation - update drone positions in circular orbits
+    // Note: Popup position update is handled in a separate useEffect to avoid extra setDrones calls
     useEffect(() => {
       if (!isLoggedIn || drones.length === 0) return;
     
@@ -1323,39 +1342,7 @@ function App() {
             };
           });
         });
-      
-              // Update popup position if a drone popup is open
-              if (popupRef.current && activePopupKeyRef.current?.startsWith('drone:')) {
-                const droneId = activePopupKeyRef.current.replace('drone:', '');
-                setDrones(currentDrones => {
-                  const drone = currentDrones.find(d => d.uavId === droneId);
-                  if (drone && popupRef.current) {
-                    popupRef.current.setLngLat([drone.lng, drone.lat]);
-                    // Update popup content with new position
-                    const popupContent = `
-                      <div style="background: linear-gradient(135deg, rgba(30, 58, 138, 0.95), rgba(59, 130, 246, 0.9)); padding: 12px; border-radius: 8px; min-width: 200px; color: white; font-family: system-ui, -apple-system, sans-serif; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
-                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 8px;">
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>
-                          <h3 style="margin: 0; font-size: 14px; font-weight: bold;">${drone.uavId}</h3>
-                          <span style="margin-left: auto; background: ${drone.flightStatus === 'FLYING' ? '#22c55e' : '#64748b'}; padding: 2px 8px; border-radius: 4px; font-size: 11px;">${drone.flightStatus === 'FLYING' ? '飞行中' : '待机'}</span>
-                        </div>
-                        <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px;">
-                          <span style="opacity: 0.8;">型号</span><span>${drone.model}</span>
-                          <span style="opacity: 0.8;">电量</span><span>${drone.battery}%</span>
-                          <span style="opacity: 0.8;">高度</span><span>${drone.altitude}m</span>
-                          <span style="opacity: 0.8;">位置</span><span>${drone.lat.toFixed(4)}, ${drone.lng.toFixed(4)}</span>
-                          <span style="opacity: 0.8;">当前任务</span><span>${drone.taskStatus || 'N/A'}</span>
-                          <span style="opacity: 0.8;">所属小队</span><span>${drone.teamName || drone.owner || 'N/A'}</span>
-                        </div>
-                      </div>
-                    `;
-                    popupRef.current.setHTML(popupContent);
-                  }
-                  return currentDrones;
-                });
-              }
-      
-                          }, FLIGHT_SIMULATION_INTERVAL);
+      }, FLIGHT_SIMULATION_INTERVAL);
     
       return () => {
         if (flightSimulationRef.current) {
@@ -1364,6 +1351,40 @@ function App() {
         }
       };
     }, [isLoggedIn, drones.length > 0]);
+
+    // Update popup position and content when drones move (separate from flight simulation)
+    // This avoids the extra setDrones call that was causing performance issues
+    useEffect(() => {
+      if (!popupRef.current || !activePopupKeyRef.current?.startsWith('drone:')) return;
+      
+      const droneId = activePopupKeyRef.current.replace('drone:', '');
+      const drone = drones.find(d => d.uavId === droneId);
+      
+      if (drone && drone.lat && drone.lng) {
+        // Update popup position
+        popupRef.current.setLngLat([drone.lng, drone.lat]);
+        
+        // Update popup content with new position (throttled to reduce DOM updates)
+        const popupContent = `
+          <div style="background: linear-gradient(135deg, rgba(30, 58, 138, 0.95), rgba(59, 130, 246, 0.9)); padding: 12px; border-radius: 8px; min-width: 200px; color: white; font-family: system-ui, -apple-system, sans-serif; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 8px;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>
+              <h3 style="margin: 0; font-size: 14px; font-weight: bold;">${drone.uavId}</h3>
+              <span style="margin-left: auto; background: ${drone.flightStatus === 'FLYING' ? '#22c55e' : '#64748b'}; padding: 2px 8px; border-radius: 4px; font-size: 11px;">${drone.flightStatus === 'FLYING' ? '飞行中' : '待机'}</span>
+            </div>
+            <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px;">
+              <span style="opacity: 0.8;">型号</span><span>${drone.model}</span>
+              <span style="opacity: 0.8;">电量</span><span>${drone.battery}%</span>
+              <span style="opacity: 0.8;">高度</span><span>${drone.altitude}m</span>
+              <span style="opacity: 0.8;">位置</span><span>${drone.lat.toFixed(4)}, ${drone.lng.toFixed(4)}</span>
+              <span style="opacity: 0.8;">当前任务</span><span>${drone.taskStatus || 'N/A'}</span>
+              <span style="opacity: 0.8;">所属小队</span><span>${drone.teamName || drone.owner || 'N/A'}</span>
+            </div>
+          </div>
+        `;
+        popupRef.current.setHTML(popupContent);
+      }
+    }, [drones]);
 
       // Resize map when sidebars collapse/expand
       useEffect(() => {
