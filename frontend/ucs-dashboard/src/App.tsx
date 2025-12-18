@@ -36,6 +36,25 @@ import './App.css';
 const POPUP_DEFAULT_TIMEOUT = 6000; // 6 seconds default
 const POPUP_WATCHDOG_INTERVAL = 3000; // Check every 3 seconds (half of default)
 
+// Drone flight simulation constants
+const FLIGHT_SIMULATION_INTERVAL = 100; // Update every 100ms for smooth animation
+const BEIJING_CENTER = { lat: 39.9042, lng: 116.4074 }; // Beijing center coordinates
+
+// Pre-defined flight paths for each drone (circular orbits around Beijing)
+// Each drone has its own orbit radius and starting angle to prevent collisions
+const DRONE_FLIGHT_PATHS = [
+  { centerLat: 39.92, centerLng: 116.42, radius: 0.02, speed: 0.5, startAngle: 0 },      // UAV_001
+  { centerLat: 39.88, centerLng: 116.38, radius: 0.025, speed: 0.4, startAngle: 45 },    // UAV_002
+  { centerLat: 39.95, centerLng: 116.45, radius: 0.018, speed: 0.6, startAngle: 90 },    // UAV_003
+  { centerLat: 39.85, centerLng: 116.42, radius: 0.022, speed: 0.45, startAngle: 135 },  // UAV_004
+  { centerLat: 39.90, centerLng: 116.35, radius: 0.03, speed: 0.35, startAngle: 180 },   // UAV_005
+  { centerLat: 39.93, centerLng: 116.50, radius: 0.02, speed: 0.55, startAngle: 225 },   // UAV_006
+  { centerLat: 39.87, centerLng: 116.48, radius: 0.024, speed: 0.42, startAngle: 270 },  // UAV_007
+  { centerLat: 39.96, centerLng: 116.38, radius: 0.019, speed: 0.58, startAngle: 315 },  // UAV_008
+  { centerLat: 39.82, centerLng: 116.45, radius: 0.026, speed: 0.38, startAngle: 30 },   // UAV_009
+  { centerLat: 39.91, centerLng: 116.52, radius: 0.021, speed: 0.48, startAngle: 150 },  // UAV_010
+];
+
 // Team colors for member markers
 const TEAM_COLORS = [
   '#3b82f6', // blue
@@ -322,9 +341,13 @@ function App() {
   const popupHoveredRef = useRef<boolean>(false);
   const activePopupKeyRef = useRef<string | null>(null);
   
-  const memberMarkersRef = useRef<maplibregl.Marker[]>([]);
+    const memberMarkersRef = useRef<maplibregl.Marker[]>([]);
   
-  const mapContainer = useRef<HTMLDivElement>(null);
+    // Flight simulation refs
+    const flightAnglesRef = useRef<number[]>(DRONE_FLIGHT_PATHS.map(path => path.startAngle));
+    const flightSimulationRef = useRef<NodeJS.Timeout | null>(null);
+  
+    const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const popupRef = useRef<maplibregl.Popup | null>(null);
@@ -1184,12 +1207,85 @@ function App() {
     }
   }, [drones, selectedHeatmapLayers, selectedFlightStatus]);
 
-  // Resize map when sidebars collapse/expand
-  useEffect(() => {
-    if (map.current) {
-      setTimeout(() => { map.current?.resize(); }, 300);
-    }
-  }, [leftSidebarCollapsed, rightSidebarCollapsed]);
+    // Flight simulation - update drone positions in circular orbits
+    useEffect(() => {
+      if (!isLoggedIn || drones.length === 0) return;
+    
+      // Start flight simulation
+      flightSimulationRef.current = setInterval(() => {
+        setDrones(prevDrones => {
+          return prevDrones.map((drone, index) => {
+            // Get flight path for this drone (use modulo to handle more drones than paths)
+            const pathIndex = index % DRONE_FLIGHT_PATHS.length;
+            const path = DRONE_FLIGHT_PATHS[pathIndex];
+          
+            // Update angle for this drone
+            flightAnglesRef.current[pathIndex] += path.speed;
+            if (flightAnglesRef.current[pathIndex] >= 360) {
+              flightAnglesRef.current[pathIndex] -= 360;
+            }
+          
+            // Calculate new position on circular orbit
+            const angleRad = (flightAnglesRef.current[pathIndex] * Math.PI) / 180;
+            const newLat = path.centerLat + path.radius * Math.sin(angleRad);
+            const newLng = path.centerLng + path.radius * Math.cos(angleRad);
+          
+            // Return updated drone with new position
+            return {
+              ...drone,
+              lat: newLat,
+              lng: newLng,
+              flightStatus: 'FLYING', // All drones are flying in simulation
+            };
+          });
+        });
+      
+        // Update popup position if a drone popup is open
+        if (popupRef.current && activePopupKeyRef.current?.startsWith('drone:')) {
+          const droneId = activePopupKeyRef.current.replace('drone:', '');
+          setDrones(currentDrones => {
+            const drone = currentDrones.find(d => d.uavId === droneId);
+            if (drone && popupRef.current) {
+              popupRef.current.setLngLat([drone.lng, drone.lat]);
+              // Update popup content with new position
+              const popupContent = `
+                <div style="background: linear-gradient(135deg, rgba(30, 58, 138, 0.95), rgba(59, 130, 246, 0.9)); padding: 12px; border-radius: 8px; min-width: 200px; color: white; font-family: system-ui, -apple-system, sans-serif; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 8px;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>
+                    <h3 style="margin: 0; font-size: 14px; font-weight: bold;">${drone.uavId}</h3>
+                    <span style="margin-left: auto; background: ${drone.flightStatus === 'FLYING' ? '#22c55e' : '#64748b'}; padding: 2px 8px; border-radius: 4px; font-size: 11px;">${drone.flightStatus === 'FLYING' ? '飞行中' : '待机'}</span>
+                  </div>
+                  <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px;">
+                    <span style="opacity: 0.8;">型号</span><span>${drone.model}</span>
+                    <span style="opacity: 0.8;">电量</span><span>${drone.battery}%</span>
+                    <span style="opacity: 0.8;">高度</span><span>${drone.altitude}m</span>
+                    <span style="opacity: 0.8;">位置</span><span>${drone.lat.toFixed(4)}, ${drone.lng.toFixed(4)}</span>
+                    <span style="opacity: 0.8;">当前任务</span><span>${drone.taskStatus || 'N/A'}</span>
+                    <span style="opacity: 0.8;">所属小队</span><span>${drone.teamName || drone.owner || 'N/A'}</span>
+                  </div>
+                </div>
+              `;
+              popupRef.current.setHTML(popupContent);
+            }
+            return currentDrones;
+          });
+        }
+      }, FLIGHT_SIMULATION_INTERVAL);
+    
+      return () => {
+        if (flightSimulationRef.current) {
+          clearInterval(flightSimulationRef.current);
+          flightSimulationRef.current = null;
+        }
+      };
+    }, [isLoggedIn, drones.length > 0]);
+
+    // Resize map when sidebars collapse/expand
+    useEffect(() => {
+      if (map.current) {
+        setTimeout(() => { map.current?.resize(); }, 300);
+      }
+    }, [leftSidebarCollapsed, rightSidebarCollapsed]);
 
   if (!isLoggedIn) {
     return (
@@ -1351,7 +1447,7 @@ function App() {
             <CardContent className="px-3 pb-3">
               {weather && (
                 <div className="space-y-2 text-sm">
-                  <div className="flex justify-between"><span className="text-slate-400">{zhCN.location}</span><span>{weather.location || '北京'}{locationSource === 'default' ? ` ${zhCN.defaultLocation}` : ''}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">{zhCN.location}</span><span>{weather.location || '北京'}</span></div>
                   <div className="flex justify-between"><span className="text-slate-400">{zhCN.temperature}</span><span className="text-lg font-bold">{weather.temperature?.toFixed(1)}°C</span></div>
                   <div className="flex justify-between"><span className="text-slate-400">{zhCN.humidity}</span><span>{weather.humidity?.toFixed(0)}%</span></div>
                   <div className="flex justify-between"><span className="text-slate-400">{zhCN.wind}</span><span>{weather.windSpeed?.toFixed(1)} m/s</span></div>
