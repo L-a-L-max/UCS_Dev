@@ -38,7 +38,7 @@ const POPUP_WATCHDOG_INTERVAL = 3000; // Check every 3 seconds (half of default)
 
 // Drone flight simulation constants
 const FLIGHT_SIMULATION_INTERVAL = 100; // Update every 100ms for smooth animation
-const BEIJING_CENTER = { lat: 39.9042, lng: 116.4074 }; // Beijing center coordinates
+// Note: Beijing center coordinates are defined in DRONE_FLIGHT_PATHS below
 
 // Pre-defined flight paths for each drone (circular orbits around Beijing)
 // Each drone has its own orbit radius and starting angle to prevent collisions
@@ -188,6 +188,11 @@ const zhCN = {
   
   // Team visibility filter
   teamMemberFilter: '小队成员显示',
+  
+  // Chart view types
+  listView: '列表',
+  pieChart: '饼图',
+  barChart: '柱状图',
 };
 
 // Map tile source configurations
@@ -306,7 +311,7 @@ function App() {
   const [password, setPassword] = useState('');
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
-  const [userRoles, setUserRoles] = useState<string[]>([]);
+  const [_userRoles, setUserRoles] = useState<string[]>([]);
   
   const [drones, setDrones] = useState<DroneStatus[]>([]);
   const [taskSummary, setTaskSummary] = useState<TaskSummary | null>(null);
@@ -326,7 +331,7 @@ function App() {
   const [showWeatherOverlay, setShowWeatherOverlay] = useState(false);
   const [taskChartType, setTaskChartType] = useState<ChartType>('list');
   const [statsChartType, setStatsChartType] = useState<ChartType>('list');
-  const [selectedDroneId, setSelectedDroneId] = useState<string | null>(null);
+  const [_selectedDroneId, setSelectedDroneId] = useState<string | null>(null);
   
     // New state for UI refinements
     const [isLocating, setIsLocating] = useState(false);
@@ -353,6 +358,15 @@ function App() {
     // Flight simulation refs
     const flightAnglesRef = useRef<number[]>(DRONE_FLIGHT_PATHS.map(path => path.startAngle));
     const flightSimulationRef = useRef<NodeJS.Timeout | null>(null);
+    
+    // Drone heading and trail refs for direction calibration and flight path display
+    const droneHeadingsRef = useRef<Map<string, number>>(new Map()); // uavId -> heading in degrees (0 = north, 90 = east)
+    const dronePrevPositionsRef = useRef<Map<string, { lng: number; lat: number }>>(new Map()); // uavId -> previous position
+    const droneTrailsRef = useRef<Map<string, Array<{ lng: number; lat: number; timestamp: number }>>>(new Map()); // uavId -> trail points
+    const lastTrailUpdateRef = useRef<number>(0);
+    const TRAIL_UPDATE_THROTTLE = 200; // Update trail every 200ms
+    const TRAIL_MAX_POINTS = 50; // Maximum number of trail points per drone
+    const TRAIL_MAX_DISTANCE_KM = 2; // Maximum trail distance in km
   
       const mapContainer = useRef<HTMLDivElement>(null);
     const map = useRef<maplibregl.Map | null>(null);
@@ -364,7 +378,7 @@ function App() {
     const HEATMAP_UPDATE_THROTTLE = 500; // Only update heatmap every 500ms
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
-  const [locationSource, setLocationSource] = useState<'geolocation' | 'default'>('default');
+  const [_locationSource, setLocationSource] = useState<'geolocation' | 'default'>('default');
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
 
@@ -417,7 +431,7 @@ function App() {
               return newDrones;
             }
             // Merge: update non-position fields from backend, keep simulated lat/lng
-            return newDrones.map(newDrone => {
+            return newDrones.map((newDrone: DroneStatus) => {
               const existingDrone = prevDrones.find(d => d.uavId === newDrone.uavId);
               if (existingDrone && flightSimulationRef.current) {
                 // During flight simulation, preserve simulated position but update other fields
@@ -716,6 +730,27 @@ function App() {
         }
       });
 
+      // Add drone trail source and layer (dashed line with arrows)
+      map.current?.addSource('drone-trails-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+      });
+      map.current?.addLayer({
+        id: 'drone-trails-layer',
+        type: 'line',
+        source: 'drone-trails-source',
+        layout: {
+          'line-join': 'round',
+          'line-cap': 'round'
+        },
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': 2,
+          'line-opacity': 0.7,
+          'line-dasharray': [2, 2]
+        }
+      });
+
       getCurrentLocation();
     });
   };
@@ -725,6 +760,64 @@ function App() {
     setShowTileSelector(false);
     await initMap(newSource);
   };
+
+  // Calculate bearing (heading) between two points in degrees (0 = north, 90 = east)
+  const calculateBearing = (from: { lng: number; lat: number }, to: { lng: number; lat: number }): number => {
+    const dLng = (to.lng - from.lng) * Math.PI / 180;
+    const lat1 = from.lat * Math.PI / 180;
+    const lat2 = to.lat * Math.PI / 180;
+    const y = Math.sin(dLng) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+    let bearing = Math.atan2(y, x) * 180 / Math.PI;
+    return (bearing + 360) % 360; // Normalize to 0-360
+  };
+
+  // Calculate distance between two points in km (Haversine formula)
+  const calculateDistance = (from: { lng: number; lat: number }, to: { lng: number; lat: number }): number => {
+    const R = 6371; // Earth's radius in km
+    const dLat = (to.lat - from.lat) * Math.PI / 180;
+    const dLng = (to.lng - from.lng) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(from.lat * Math.PI / 180) * Math.cos(to.lat * Math.PI / 180) *
+              Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  // Update drone trails on the map
+  const updateDroneTrails = useCallback(() => {
+    if (!map.current) return;
+    
+    const trailSource = map.current.getSource('drone-trails-source') as maplibregl.GeoJSONSource;
+    if (!trailSource) return;
+
+    const features: GeoJSON.Feature[] = [];
+    
+    droneTrailsRef.current.forEach((trail, uavId) => {
+      if (trail.length < 2) return;
+      
+      // Create a LineString feature for each drone's trail
+      const coordinates = trail.map(point => [point.lng, point.lat]);
+      const isFlying = drones.find(d => d.uavId === uavId)?.flightStatus === 'FLYING';
+      
+      features.push({
+        type: 'Feature',
+        properties: {
+          uavId,
+          color: isFlying ? '#22c55e' : '#6b7280'
+        },
+        geometry: {
+          type: 'LineString',
+          coordinates
+        }
+      });
+    });
+
+    trailSource.setData({
+      type: 'FeatureCollection',
+      features
+    });
+  }, [drones]);
 
   // Clear all popup timers (watchdog and deadline)
   const clearAllPopupTimers = useCallback(() => {
@@ -817,23 +910,14 @@ function App() {
     });
   }, [clearAllPopupTimers]);
 
-  // Legacy function for backward compatibility
-  const startPopupTimer = useCallback((timeout: number) => {
-    // Use the new watchdog mechanism
-    if (activePopupKeyRef.current) {
-      popupDeadlineRef.current = Date.now() + timeout;
-    }
-  }, []);
-
-  // Legacy function for backward compatibility
-  const clearPopupTimer = useCallback(() => {
-    // Extend deadline when clearing (mouse entered)
-    popupDeadlineRef.current = Date.now() + POPUP_DEFAULT_TIMEOUT;
-  }, []);
+  // Note: Legacy popup timer functions removed - now using watchdog mechanism via startPopupWatchdog
 
     // Incremental marker update - only update positions, don't recreate markers
     const updateMapMarkers = useCallback(() => {
       if (!map.current) return;
+
+      const now = Date.now();
+      const shouldUpdateTrails = now - lastTrailUpdateRef.current >= TRAIL_UPDATE_THROTTLE;
 
       // Filter drones based on selected flight status
       const filteredDrones = drones.filter(drone => {
@@ -857,16 +941,65 @@ function App() {
 
       // Update or create markers for visible drones
       filteredDrones.forEach(drone => {
+        const currentPos = { lng: drone.lng, lat: drone.lat };
+        const prevPos = dronePrevPositionsRef.current.get(drone.uavId);
+        const isFlying = drone.flightStatus === 'FLYING';
+        
+        // Calculate heading based on movement direction
+        let heading = droneHeadingsRef.current.get(drone.uavId) || 0;
+        if (prevPos && isFlying) {
+          const distance = calculateDistance(prevPos, currentPos);
+          // Only update heading if drone moved significantly (> 1 meter)
+          if (distance > 0.001) {
+            heading = calculateBearing(prevPos, currentPos);
+            droneHeadingsRef.current.set(drone.uavId, heading);
+          }
+        }
+        
+        // Update previous position
+        dronePrevPositionsRef.current.set(drone.uavId, currentPos);
+        
+        // Update trail data (throttled)
+        if (shouldUpdateTrails && isFlying) {
+          let trail = droneTrailsRef.current.get(drone.uavId) || [];
+          trail.push({ lng: drone.lng, lat: drone.lat, timestamp: now });
+          
+          // Remove old points (older than 30 seconds or beyond max distance)
+          const cutoffTime = now - 30000;
+          trail = trail.filter((point, index) => {
+            if (point.timestamp < cutoffTime) return false;
+            if (index > 0) {
+              const totalDist = trail.slice(0, index).reduce((acc, p, i) => {
+                if (i === 0) return 0;
+                return acc + calculateDistance(trail[i - 1], p);
+              }, 0);
+              if (totalDist > TRAIL_MAX_DISTANCE_KM) return false;
+            }
+            return true;
+          });
+          
+          // Limit max points
+          if (trail.length > TRAIL_MAX_POINTS) {
+            trail = trail.slice(-TRAIL_MAX_POINTS);
+          }
+          
+          droneTrailsRef.current.set(drone.uavId, trail);
+        }
+        
         const existingMarkerData = droneMarkersMapRef.current.get(drone.uavId);
       
         if (existingMarkerData) {
           // INCREMENTAL UPDATE: Just update position, don't recreate marker
           existingMarkerData.marker.setLngLat([drone.lng, drone.lat]);
+          
+          // Update rotation based on heading
+          const svgElement = existingMarkerData.element.querySelector('svg');
+          if (svgElement) {
+            svgElement.style.transform = `rotate(${heading}deg)`;
+          }
         
           // Update marker style if flight status changed (less frequent)
-          const isFlying = drone.flightStatus === 'FLYING';
           const currentBg = existingMarkerData.element.style.background;
-          const expectedBg = isFlying ? 'linear-gradient(135deg, rgb(34, 197, 94) 0%, rgb(22, 163, 74) 100%)' : 'linear-gradient(135deg, rgb(107, 114, 128) 0%, rgb(75, 85, 99) 100%)';
           if (!currentBg.includes(isFlying ? '34, 197, 94' : '107, 114, 128')) {
             existingMarkerData.element.style.background = isFlying ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)' : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
             existingMarkerData.element.style.boxShadow = `0 4px 12px rgba(0,0,0,0.4), 0 0 20px ${isFlying ? 'rgba(34, 197, 94, 0.5)' : 'rgba(107, 114, 128, 0.3)'}`;
@@ -875,9 +1008,20 @@ function App() {
           // CREATE NEW MARKER: Only for drones that don't have a marker yet
           const el = document.createElement('div');
           el.className = 'drone-marker';
-          const isFlying = drone.flightStatus === 'FLYING';
-          el.style.cssText = `width: 36px; height: 36px; background: ${isFlying ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)' : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'}; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.4), 0 0 20px ${isFlying ? 'rgba(34, 197, 94, 0.5)' : 'rgba(107, 114, 128, 0.3)'}; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.3s ease;`;
-          el.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>';
+          // Drone-shaped SVG icon (quadcopter style) with rotation based on heading
+          el.style.cssText = `width: 40px; height: 40px; background: ${isFlying ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)' : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'}; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.4), 0 0 20px ${isFlying ? 'rgba(34, 197, 94, 0.5)' : 'rgba(107, 114, 128, 0.3)'}; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 0.3s ease, box-shadow 0.3s ease;`;
+          // Drone icon SVG - quadcopter shape pointing up (north = 0 degrees)
+          el.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="white" style="transform: rotate(${heading}deg); transition: transform 0.1s linear;">
+            <circle cx="12" cy="12" r="3" fill="white"/>
+            <path d="M12 2 L14 6 L12 5 L10 6 Z" fill="white"/>
+            <path d="M22 12 L18 14 L19 12 L18 10 Z" fill="white"/>
+            <path d="M12 22 L10 18 L12 19 L14 18 Z" fill="white"/>
+            <path d="M2 12 L6 10 L5 12 L6 14 Z" fill="white"/>
+            <line x1="12" y1="5" x2="12" y2="9" stroke="white" stroke-width="1.5"/>
+            <line x1="19" y1="12" x2="15" y2="12" stroke="white" stroke-width="1.5"/>
+            <line x1="12" y1="19" x2="12" y2="15" stroke="white" stroke-width="1.5"/>
+            <line x1="5" y1="12" x2="9" y2="12" stroke="white" stroke-width="1.5"/>
+          </svg>`;
 
           // Enhanced popup with tech-blue styling (no white border)
           const popup = new maplibregl.Popup({ offset: 25, closeButton: true, closeOnClick: false, className: 'drone-popup tech-blue-popup' }).setHTML(`
@@ -955,7 +1099,13 @@ function App() {
           }
         }
       });
-    }, [drones, selectedFlightStatus, startPopupWatchdog, attachPopupHoverListeners]);
+      
+      // Update trail timestamp and render trails
+      if (shouldUpdateTrails) {
+        lastTrailUpdateRef.current = now;
+        updateDroneTrails();
+      }
+    }, [drones, selectedFlightStatus, startPopupWatchdog, attachPopupHoverListeners, updateDroneTrails]);
 
   // Update heatmap layers based on selected layers (multi-select support)
   const updateHeatmap = () => {
@@ -1633,10 +1783,19 @@ function App() {
                       const idleCount = drones.filter(d => d.flightStatus !== 'FLYING').length;
                       const total = flyingCount + idleCount;
                       if (total === 0) return <circle cx="50" cy="50" r="40" fill="#475569" />;
+                      
+                      // Handle 100% cases - when one category is 100%, draw a full circle
+                      if (flyingCount === total) {
+                        return <circle cx="50" cy="50" r="40" fill="#22c55e" />;
+                      }
+                      if (idleCount === total) {
+                        return <circle cx="50" cy="50" r="40" fill="#6b7280" />;
+                      }
+                      
                       const flyingAngle = (flyingCount / total) * 360;
                       const idleAngle = (idleCount / total) * 360;
                       let currentAngle = 0;
-                      const createArc = (angle: number, color: string) => {
+                      const createArc = (angle: number, color: string, key: string) => {
                         if (angle === 0) return null;
                         const startAngle = currentAngle;
                         const endAngle = currentAngle + angle;
@@ -1648,12 +1807,12 @@ function App() {
                         const x2 = 50 + 40 * Math.cos(endRad);
                         const y2 = 50 + 40 * Math.sin(endRad);
                         const largeArc = angle > 180 ? 1 : 0;
-                        return <path d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`} fill={color} />;
+                        return <path key={key} d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`} fill={color} />;
                       };
                       return (
                         <>
-                          {createArc(flyingAngle, '#22c55e')}
-                          {createArc(idleAngle, '#6b7280')}
+                          {createArc(flyingAngle, '#22c55e', 'flying')}
+                          {createArc(idleAngle, '#6b7280', 'idle')}
                         </>
                       );
                     })()}
@@ -1991,7 +2150,9 @@ function App() {
                           <div className="text-xs text-slate-400">{zhCN.leader}: {team.leader}</div>
                         </div>
                         <div className="flex items-center gap-2">
-                          <Badge className="text-xs bg-slate-500">{team.memberCount} {zhCN.teamMembers}</Badge>
+                          <Badge className="text-xs bg-slate-500">
+                            {teamMembers[team.teamId] ? teamMembers[team.teamId].length : team.memberCount} {zhCN.teamMembers}
+                          </Badge>
                           {expandedTeamId === team.teamId ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                         </div>
                       </div>
