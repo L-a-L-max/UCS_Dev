@@ -36,10 +36,10 @@ public class DroneStatus {
     @Column
     private Float battery;
     
-    @Column(name = "health_status", columnDefinition = "TINYINT DEFAULT 0")
+    @Column(name = "health_status", columnDefinition = "SMALLINT DEFAULT 0")
     private Integer healthStatus = 0;
     
-    @Column(name = "risk_level", columnDefinition = "TINYINT DEFAULT 0")
+    @Column(name = "risk_level", columnDefinition = "SMALLINT DEFAULT 0")
     private Integer riskLevel = 0;
     
     @Column(name = "payload_state", columnDefinition = "JSON")
