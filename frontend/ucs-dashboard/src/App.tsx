@@ -365,7 +365,8 @@ function App() {
     const droneTrailsRef = useRef<Map<string, Array<{ lng: number; lat: number; timestamp: number }>>>(new Map()); // uavId -> trail points
     const lastTrailUpdateRef = useRef<number>(0);
     const TRAIL_UPDATE_THROTTLE = 200; // Update trail every 200ms
-    const TRAIL_MAX_POINTS = 50; // Maximum number of trail points per drone
+    const TRAIL_MAX_POINTS = 200; // Maximum number of trail points per drone (increased for longer trails)
+    const TRAIL_MAX_AGE_MS = 90000; // Trail points older than 90 seconds will be removed
   
       const mapContainer = useRef<HTMLDivElement>(null);
     const map = useRef<maplibregl.Map | null>(null);
@@ -729,11 +730,13 @@ function App() {
         }
       });
 
-      // Add drone trail source and layer (dashed line with arrows)
+      // Add drone trail source and layers (base line + chevron arrows)
       map.current?.addSource('drone-trails-source', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] }
       });
+      
+      // Base trail line layer - thicker and more visible
       map.current?.addLayer({
         id: 'drone-trails-layer',
         type: 'line',
@@ -743,10 +746,49 @@ function App() {
           'line-cap': 'round'
         },
         paint: {
-          'line-color': ['get', 'color'],
-          'line-width': 2,
-          'line-opacity': 0.7,
-          'line-dasharray': [2, 2]
+          'line-color': '#a855f7', // Purple color for better visibility
+          'line-width': 4, // Thicker line
+          'line-opacity': 0.6
+        }
+      });
+      
+      // Create chevron arrow image for trail arrows
+      const chevronSize = 24;
+      const chevronCanvas = document.createElement('canvas');
+      chevronCanvas.width = chevronSize;
+      chevronCanvas.height = chevronSize;
+      const ctx = chevronCanvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, chevronSize, chevronSize);
+        ctx.strokeStyle = '#c084fc'; // Light purple
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        // Draw chevron arrow pointing right (will be rotated along line)
+        ctx.beginPath();
+        ctx.moveTo(6, 4);
+        ctx.lineTo(18, 12);
+        ctx.lineTo(6, 20);
+        ctx.stroke();
+        
+        // Add the image to the map
+        const imageData = ctx.getImageData(0, 0, chevronSize, chevronSize);
+        map.current?.addImage('trail-chevron', imageData, { sdf: false });
+      }
+      
+      // Chevron arrow symbol layer along the trail
+      map.current?.addLayer({
+        id: 'drone-trails-arrows',
+        type: 'symbol',
+        source: 'drone-trails-source',
+        layout: {
+          'symbol-placement': 'line',
+          'symbol-spacing': 30, // Space between chevrons in pixels
+          'icon-image': 'trail-chevron',
+          'icon-size': 0.8,
+          'icon-rotation-alignment': 'map',
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true
         }
       });
 
@@ -958,20 +1000,21 @@ function App() {
         // Update previous position
         dronePrevPositionsRef.current.set(drone.uavId, currentPos);
         
-        // Update trail data (throttled) - simplified to time-based cleanup only
+        // Update trail data (throttled) - time-based cleanup with longer duration
         if (shouldUpdateTrails && isFlying) {
           const trail = droneTrailsRef.current.get(drone.uavId) || [];
           
-          // Only add point if drone has moved significantly (> 5 meters) to avoid duplicate points
+          // Only add point if drone has moved significantly (> 2 meters) to avoid duplicate points
+          // Reduced from 5m to 2m for smoother trail curves
           const lastPoint = trail[trail.length - 1];
-          const shouldAddPoint = !lastPoint || calculateDistance(lastPoint, currentPos) > 0.005;
+          const shouldAddPoint = !lastPoint || calculateDistance(lastPoint, currentPos) > 0.002;
           
           if (shouldAddPoint) {
             trail.push({ lng: drone.lng, lat: drone.lat, timestamp: now });
           }
           
-          // Simple time-based cleanup: remove points older than 30 seconds from the front
-          const cutoffTime = now - 30000;
+          // Time-based cleanup: remove points older than TRAIL_MAX_AGE_MS (90 seconds) from the front
+          const cutoffTime = now - TRAIL_MAX_AGE_MS;
           while (trail.length > 0 && trail[0].timestamp < cutoffTime) {
             trail.shift();
           }
@@ -997,16 +1040,17 @@ function App() {
           }
         
           // Update marker style if flight status changed (update filter for glow effect)
+          // Using orange (#f97316) for flying and gray (#6b7280) for idle - better contrast with map
           const currentFilter = existingMarkerData.element.style.filter;
-          const expectedGlow = isFlying ? 'rgba(34, 197, 94' : 'rgba(107, 114, 128';
+          const expectedGlow = isFlying ? 'rgba(249, 115, 22' : 'rgba(107, 114, 128';
           if (!currentFilter.includes(expectedGlow)) {
-            existingMarkerData.element.style.filter = `drop-shadow(0 2px 4px rgba(0,0,0,0.5)) drop-shadow(0 0 8px ${isFlying ? 'rgba(34, 197, 94, 0.6)' : 'rgba(107, 114, 128, 0.4)'})`;
-            // Update SVG colors
+            existingMarkerData.element.style.filter = `drop-shadow(0 2px 4px rgba(0,0,0,0.5)) drop-shadow(0 0 10px ${isFlying ? 'rgba(249, 115, 22, 0.8)' : 'rgba(107, 114, 128, 0.4)'})`;
+            // Update SVG colors - orange for flying, gray for idle
             const gElement = existingMarkerData.element.querySelector('g');
             if (gElement) {
-              gElement.setAttribute('fill', isFlying ? '#22c55e' : '#6b7280');
+              gElement.setAttribute('fill', isFlying ? '#f97316' : '#6b7280');
               const circles = gElement.querySelectorAll('circle[fill]');
-              circles.forEach(circle => circle.setAttribute('fill', isFlying ? '#22c55e' : '#6b7280'));
+              circles.forEach(circle => circle.setAttribute('fill', isFlying ? '#f97316' : '#6b7280'));
             }
           }
         } else {
@@ -1014,8 +1058,9 @@ function App() {
           const el = document.createElement('div');
           el.className = 'drone-marker';
           // Pure drone icon without circular background - just the drone SVG with drop shadow
-          const droneColor = isFlying ? '#22c55e' : '#6b7280';
-          el.style.cssText = `width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)) drop-shadow(0 0 8px ${isFlying ? 'rgba(34, 197, 94, 0.6)' : 'rgba(107, 114, 128, 0.4)'}); transition: filter 0.3s ease;`;
+          // Using orange (#f97316) for flying and gray (#6b7280) for idle - better contrast with map
+          const droneColor = isFlying ? '#f97316' : '#6b7280';
+          el.style.cssText = `width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)) drop-shadow(0 0 10px ${isFlying ? 'rgba(249, 115, 22, 0.8)' : 'rgba(107, 114, 128, 0.4)'}); transition: filter 0.3s ease;`;
           // Pure drone icon SVG - quadcopter shape (from iconfont style) pointing up (north = 0 degrees)
           // No circular background, just the drone shape with stroke for visibility
           el.innerHTML = `<svg width="32" height="32" viewBox="0 0 1024 1024" style="transform: rotate(${heading}deg); transition: transform 0.1s linear;">
@@ -1048,12 +1093,12 @@ function App() {
           const popup = new maplibregl.Popup({ offset: 25, closeButton: true, closeOnClick: false, className: 'drone-popup tech-blue-popup' }).setHTML(`
             <div class="drone-popup-content" style="padding: 12px; font-family: system-ui, -apple-system, sans-serif; min-width: 220px; background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 50%, #172554 100%); color: white; border-radius: 8px; box-shadow: 0 4px 20px rgba(30, 64, 175, 0.5);">
               <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(96, 165, 250, 0.3);">
-                <div style="width: 32px; height: 32px; background: ${isFlying ? 'linear-gradient(135deg, #22c55e, #16a34a)' : 'linear-gradient(135deg, #6b7280, #4b5563)'}; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
+                <div style="width: 32px; height: 32px; background: ${isFlying ? 'linear-gradient(135deg, #f97316, #ea580c)' : 'linear-gradient(135deg, #6b7280, #4b5563)'}; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M12 2L4 12l8 10 8-10L12 2z"/></svg>
                 </div>
                 <div>
                   <h3 style="margin: 0; font-size: 16px; font-weight: bold; color: #93c5fd;">${drone.uavId}</h3>
-                  <span style="font-size: 11px; color: ${isFlying ? '#86efac' : '#d1d5db'};">${isFlying ? zhCN.flyingStatus : zhCN.idleStatus}</span>
+                  <span style="font-size: 11px; color: ${isFlying ? '#fdba74' : '#d1d5db'};">${isFlying ? zhCN.flyingStatus : zhCN.idleStatus}</span>
                 </div>
               </div>
               <div style="display: grid; gap: 8px; font-size: 12px;">
