@@ -28,9 +28,12 @@ import {
   Loader2,
   User,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 import './App.css';
+import { useTelemetryWebSocket, TelemetryBatch } from './hooks/useTelemetryWebSocket';
 
 // Popup auto-close timing constants (watchdog mechanism)
 const POPUP_DEFAULT_TIMEOUT = 6000; // 6 seconds default
@@ -345,7 +348,11 @@ function App() {
   
         // Drone tracking state - track which drone the map view should follow
         const [trackingDroneId, setTrackingDroneId] = useState<string | null>(null);
-  
+
+        // WebSocket telemetry state
+        const [useLiveTelemetry, setUseLiveTelemetry] = useState(false); // Toggle between simulation and live data
+        const [wsConnected, setWsConnected] = useState(false);
+
   // Popup watchdog timer refs
   const popupTimerRef = useRef<NodeJS.Timeout | null>(null);
   const popupWatchdogRef = useRef<NodeJS.Timeout | null>(null);
@@ -496,6 +503,61 @@ function App() {
     await Promise.all([fetchDroneData(), fetchWeatherData(), fetchTaskData(), fetchTeamData(), fetchEventData()]);
     setLoading(false);
   }, [fetchDroneData, fetchWeatherData, fetchTaskData, fetchTeamData, fetchEventData]);
+
+  // Handle incoming telemetry data from WebSocket
+  const handleTelemetryReceived = useCallback((batch: TelemetryBatch) => {
+    if (!useLiveTelemetry) return; // Only process if live telemetry mode is enabled
+    
+    // Convert telemetry data to DroneStatus format and update drones
+    setDrones(prevDrones => {
+      const updatedDrones = [...prevDrones];
+      
+      batch.uavs.forEach(uav => {
+        const uavIdStr = `UAV_${String(uav.uavId).padStart(3, '0')}`;
+        const existingIndex = updatedDrones.findIndex(d => d.uavId === uavIdStr);
+        
+        const droneData: DroneStatus = {
+          uavId: uavIdStr,
+          droneSn: `SN${String(uav.uavId).padStart(6, '0')}`,
+          lat: uav.lat,
+          lng: uav.lon,
+          altitude: uav.alt,
+          battery: 85, // Default battery (not in telemetry)
+          hardwareStatus: 'NORMAL',
+          flightStatus: uav.isActive ? 'FLYING' : 'IDLE',
+          taskStatus: uav.isActive ? 'EXECUTING' : 'IDLE',
+          color: '#22c55e',
+          model: 'DJI Mavic 3',
+          owner: 'System',
+          currentTask: uav.isActive ? 'Live Mission' : undefined,
+          teamName: 'Alpha'
+        };
+        
+        if (existingIndex >= 0) {
+          // Update existing drone
+          updatedDrones[existingIndex] = {
+            ...updatedDrones[existingIndex],
+            lat: uav.lat,
+            lng: uav.lon,
+            altitude: uav.alt,
+            flightStatus: uav.isActive ? 'FLYING' : 'IDLE',
+          };
+        } else {
+          // Add new drone
+          updatedDrones.push(droneData);
+        }
+      });
+      
+      return updatedDrones;
+    });
+  }, [useLiveTelemetry]);
+
+  // WebSocket hook for real-time telemetry
+  const { connected: telemetryConnected } = useTelemetryWebSocket({
+    enabled: isLoggedIn && useLiveTelemetry,
+    onTelemetryReceived: handleTelemetryReceived,
+    onConnectionChange: setWsConnected,
+  });
 
   const getCurrentLocation = (flyToLocation = true) => {
     if (navigator.geolocation) {
