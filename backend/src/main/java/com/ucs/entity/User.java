@@ -36,7 +36,7 @@ public class User {
     @Column(name = "team_id")
     private Long teamId;
     
-    @Column(columnDefinition = "TINYINT DEFAULT 1")
+    @Column(columnDefinition = "SMALLINT DEFAULT 1")
     private Integer status = 1;
     
     @Column(name = "created_at")

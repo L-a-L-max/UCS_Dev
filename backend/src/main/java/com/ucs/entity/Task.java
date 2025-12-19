@@ -18,10 +18,10 @@ public class Task {
     @Column(name = "task_type", length = 50)
     private String taskType;
     
-    @Column(columnDefinition = "TINYINT DEFAULT 0")
+    @Column(columnDefinition = "SMALLINT DEFAULT 0")
     private Integer status = 0;
     
-    @Column(columnDefinition = "TINYINT DEFAULT 0")
+    @Column(columnDefinition = "SMALLINT DEFAULT 0")
     private Integer priority = 0;
     
     @Column(name = "start_time")
