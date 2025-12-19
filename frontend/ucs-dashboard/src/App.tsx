@@ -365,8 +365,8 @@ function App() {
     const droneTrailsRef = useRef<Map<string, Array<{ lng: number; lat: number; timestamp: number }>>>(new Map()); // uavId -> trail points
     const lastTrailUpdateRef = useRef<number>(0);
     const TRAIL_UPDATE_THROTTLE = 200; // Update trail every 200ms
-    const TRAIL_MAX_POINTS = 200; // Maximum number of trail points per drone (increased for longer trails)
-    const TRAIL_MAX_AGE_MS = 90000; // Trail points older than 90 seconds will be removed
+    const TRAIL_MAX_POINTS = 50; // Maximum number of trail points per drone
+    const TRAIL_MAX_AGE_MS = 10000; // Trail points older than 10 seconds will be removed (shorter trails to avoid map clutter)
   
       const mapContainer = useRef<HTMLDivElement>(null);
     const map = useRef<maplibregl.Map | null>(null);
@@ -736,19 +736,20 @@ function App() {
         data: { type: 'FeatureCollection', features: [] }
       });
       
-      // Base trail line layer - thicker and more visible
+      // Base trail line layer - dashed style for better visibility
       map.current?.addLayer({
         id: 'drone-trails-layer',
         type: 'line',
         source: 'drone-trails-source',
         layout: {
           'line-join': 'round',
-          'line-cap': 'round'
+          'line-cap': 'butt' // Use butt cap for proper dash appearance
         },
         paint: {
-          'line-color': '#a855f7', // Purple color for better visibility
-          'line-width': 4, // Thicker line
-          'line-opacity': 0.6
+          'line-color': '#3b82f6', // Blue color for trail
+          'line-width': 3,
+          'line-opacity': 0.7,
+          'line-dasharray': [2, 3] // Dashed line pattern: 2 units dash, 3 units gap
         }
       });
       
@@ -760,7 +761,7 @@ function App() {
       const ctx = chevronCanvas.getContext('2d');
       if (ctx) {
         ctx.clearRect(0, 0, chevronSize, chevronSize);
-        ctx.strokeStyle = '#c084fc'; // Light purple
+        ctx.strokeStyle = '#60a5fa'; // Light blue to match trail color
         ctx.lineWidth = 3;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
