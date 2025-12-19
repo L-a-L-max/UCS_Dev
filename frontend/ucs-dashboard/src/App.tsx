@@ -366,7 +366,6 @@ function App() {
     const lastTrailUpdateRef = useRef<number>(0);
     const TRAIL_UPDATE_THROTTLE = 200; // Update trail every 200ms
     const TRAIL_MAX_POINTS = 50; // Maximum number of trail points per drone
-    const TRAIL_MAX_DISTANCE_KM = 2; // Maximum trail distance in km
   
       const mapContainer = useRef<HTMLDivElement>(null);
     const map = useRef<maplibregl.Map | null>(null);
@@ -797,14 +796,14 @@ function App() {
       if (trail.length < 2) return;
       
       // Create a LineString feature for each drone's trail
+      // Trail follows the exact path the drone has taken
       const coordinates = trail.map(point => [point.lng, point.lat]);
-      const isFlying = drones.find(d => d.uavId === uavId)?.flightStatus === 'FLYING';
       
       features.push({
         type: 'Feature',
         properties: {
           uavId,
-          color: isFlying ? '#22c55e' : '#6b7280'
+          color: '#3b82f6' // Blue color for all trails as requested
         },
         geometry: {
           type: 'LineString',
@@ -959,28 +958,27 @@ function App() {
         // Update previous position
         dronePrevPositionsRef.current.set(drone.uavId, currentPos);
         
-        // Update trail data (throttled)
+        // Update trail data (throttled) - simplified to time-based cleanup only
         if (shouldUpdateTrails && isFlying) {
-          let trail = droneTrailsRef.current.get(drone.uavId) || [];
-          trail.push({ lng: drone.lng, lat: drone.lat, timestamp: now });
+          const trail = droneTrailsRef.current.get(drone.uavId) || [];
           
-          // Remove old points (older than 30 seconds or beyond max distance)
+          // Only add point if drone has moved significantly (> 5 meters) to avoid duplicate points
+          const lastPoint = trail[trail.length - 1];
+          const shouldAddPoint = !lastPoint || calculateDistance(lastPoint, currentPos) > 0.005;
+          
+          if (shouldAddPoint) {
+            trail.push({ lng: drone.lng, lat: drone.lat, timestamp: now });
+          }
+          
+          // Simple time-based cleanup: remove points older than 30 seconds from the front
           const cutoffTime = now - 30000;
-          trail = trail.filter((point, index) => {
-            if (point.timestamp < cutoffTime) return false;
-            if (index > 0) {
-              const totalDist = trail.slice(0, index).reduce((acc, p, i) => {
-                if (i === 0) return 0;
-                return acc + calculateDistance(trail[i - 1], p);
-              }, 0);
-              if (totalDist > TRAIL_MAX_DISTANCE_KM) return false;
-            }
-            return true;
-          });
+          while (trail.length > 0 && trail[0].timestamp < cutoffTime) {
+            trail.shift();
+          }
           
-          // Limit max points
-          if (trail.length > TRAIL_MAX_POINTS) {
-            trail = trail.slice(-TRAIL_MAX_POINTS);
+          // Limit max points (keep most recent)
+          while (trail.length > TRAIL_MAX_POINTS) {
+            trail.shift();
           }
           
           droneTrailsRef.current.set(drone.uavId, trail);
@@ -998,29 +996,52 @@ function App() {
             svgElement.style.transform = `rotate(${heading}deg)`;
           }
         
-          // Update marker style if flight status changed (less frequent)
-          const currentBg = existingMarkerData.element.style.background;
-          if (!currentBg.includes(isFlying ? '34, 197, 94' : '107, 114, 128')) {
-            existingMarkerData.element.style.background = isFlying ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)' : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
-            existingMarkerData.element.style.boxShadow = `0 4px 12px rgba(0,0,0,0.4), 0 0 20px ${isFlying ? 'rgba(34, 197, 94, 0.5)' : 'rgba(107, 114, 128, 0.3)'}`;
+          // Update marker style if flight status changed (update filter for glow effect)
+          const currentFilter = existingMarkerData.element.style.filter;
+          const expectedGlow = isFlying ? 'rgba(34, 197, 94' : 'rgba(107, 114, 128';
+          if (!currentFilter.includes(expectedGlow)) {
+            existingMarkerData.element.style.filter = `drop-shadow(0 2px 4px rgba(0,0,0,0.5)) drop-shadow(0 0 8px ${isFlying ? 'rgba(34, 197, 94, 0.6)' : 'rgba(107, 114, 128, 0.4)'})`;
+            // Update SVG colors
+            const gElement = existingMarkerData.element.querySelector('g');
+            if (gElement) {
+              gElement.setAttribute('fill', isFlying ? '#22c55e' : '#6b7280');
+              const circles = gElement.querySelectorAll('circle[fill]');
+              circles.forEach(circle => circle.setAttribute('fill', isFlying ? '#22c55e' : '#6b7280'));
+            }
           }
         } else {
           // CREATE NEW MARKER: Only for drones that don't have a marker yet
           const el = document.createElement('div');
           el.className = 'drone-marker';
-          // Drone-shaped SVG icon (quadcopter style) with rotation based on heading
-          el.style.cssText = `width: 40px; height: 40px; background: ${isFlying ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)' : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'}; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.4), 0 0 20px ${isFlying ? 'rgba(34, 197, 94, 0.5)' : 'rgba(107, 114, 128, 0.3)'}; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 0.3s ease, box-shadow 0.3s ease;`;
-          // Drone icon SVG - quadcopter shape pointing up (north = 0 degrees)
-          el.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="white" style="transform: rotate(${heading}deg); transition: transform 0.1s linear;">
-            <circle cx="12" cy="12" r="3" fill="white"/>
-            <path d="M12 2 L14 6 L12 5 L10 6 Z" fill="white"/>
-            <path d="M22 12 L18 14 L19 12 L18 10 Z" fill="white"/>
-            <path d="M12 22 L10 18 L12 19 L14 18 Z" fill="white"/>
-            <path d="M2 12 L6 10 L5 12 L6 14 Z" fill="white"/>
-            <line x1="12" y1="5" x2="12" y2="9" stroke="white" stroke-width="1.5"/>
-            <line x1="19" y1="12" x2="15" y2="12" stroke="white" stroke-width="1.5"/>
-            <line x1="12" y1="19" x2="12" y2="15" stroke="white" stroke-width="1.5"/>
-            <line x1="5" y1="12" x2="9" y2="12" stroke="white" stroke-width="1.5"/>
+          // Pure drone icon without circular background - just the drone SVG with drop shadow
+          const droneColor = isFlying ? '#22c55e' : '#6b7280';
+          el.style.cssText = `width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)) drop-shadow(0 0 8px ${isFlying ? 'rgba(34, 197, 94, 0.6)' : 'rgba(107, 114, 128, 0.4)'}); transition: filter 0.3s ease;`;
+          // Pure drone icon SVG - quadcopter shape (from iconfont style) pointing up (north = 0 degrees)
+          // No circular background, just the drone shape with stroke for visibility
+          el.innerHTML = `<svg width="32" height="32" viewBox="0 0 1024 1024" style="transform: rotate(${heading}deg); transition: transform 0.1s linear;">
+            <!-- Quadcopter drone icon - 4 rotors with arms and central body -->
+            <defs>
+              <filter id="droneGlow${drone.uavId}" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="2" result="blur"/>
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+            <g fill="${droneColor}" stroke="#ffffff" stroke-width="20" filter="url(#droneGlow${drone.uavId})">
+              <!-- Central body -->
+              <circle cx="512" cy="512" r="80"/>
+              <!-- Arms -->
+              <line x1="512" y1="432" x2="512" y2="200" stroke-width="40" stroke-linecap="round"/>
+              <line x1="512" y1="592" x2="512" y2="824" stroke-width="40" stroke-linecap="round"/>
+              <line x1="432" y1="512" x2="200" y2="512" stroke-width="40" stroke-linecap="round"/>
+              <line x1="592" y1="512" x2="824" y2="512" stroke-width="40" stroke-linecap="round"/>
+              <!-- Rotors (circles at the end of arms) -->
+              <circle cx="512" cy="150" r="100" fill="${droneColor}" stroke="#ffffff" stroke-width="16"/>
+              <circle cx="512" cy="874" r="100" fill="${droneColor}" stroke="#ffffff" stroke-width="16"/>
+              <circle cx="150" cy="512" r="100" fill="${droneColor}" stroke="#ffffff" stroke-width="16"/>
+              <circle cx="874" cy="512" r="100" fill="${droneColor}" stroke="#ffffff" stroke-width="16"/>
+              <!-- Direction indicator (front arrow) -->
+              <path d="M512 100 L480 180 L512 150 L544 180 Z" fill="#ffffff" stroke="none"/>
+            </g>
           </svg>`;
 
           // Enhanced popup with tech-blue styling (no white border)
