@@ -19,7 +19,7 @@ def generate_launch_description():
     
     topic_name_arg = DeclareLaunchArgument(
         'topic_name',
-        default_value='/uav_gps_array',
+        default_value='/all_uavs_gps',
         description='ROS 2 topic name to subscribe to'
     )
     
