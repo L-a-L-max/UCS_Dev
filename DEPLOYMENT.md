@@ -10,7 +10,7 @@
 │   (Gazebo)      │────▶│   (Python)      │────▶│   (Spring Boot) │
 │                 │     │                 │     │                 │
 │  发布话题:      │     │  订阅话题       │     │  REST API       │
-│  /uav_gps_array │     │  转发HTTP       │     │  WebSocket      │
+│  /all_uavs_gps  │     │  转发HTTP       │     │  WebSocket      │
 └─────────────────┘     └─────────────────┘     └────────┬────────┘
                                                          │
                                                          ▼
@@ -340,13 +340,13 @@ source ~/.bashrc
 ros2 run uav_telemetry_gateway gateway_node \
     --ros-args \
     -p backend_url:=http://localhost:8080 \
-    -p topic_name:=/uav_gps_array \
+    -p topic_name:=/all_uavs_gps \
     -p message_type:=uav_msgs/msg/UavGpsArray
 
 # 方式2: 使用 launch 文件
 ros2 launch uav_telemetry_gateway gateway.launch.py \
     backend_url:=http://localhost:8080 \
-    topic_name:=/uav_gps_array
+    topic_name:=/all_uavs_gps
 ```
 
 ### 5.3 使用 systemd 管理网关服务
@@ -362,7 +362,7 @@ After=network.target ucs-backend.service
 Type=simple
 User=ubuntu
 Environment="ROS_DOMAIN_ID=0"
-ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash && source /home/ubuntu/ucs_ws/install/setup.bash && ros2 run uav_telemetry_gateway gateway_node --ros-args -p backend_url:=http://localhost:8080 -p topic_name:=/uav_gps_array"
+ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash && source /home/ubuntu/ucs_ws/install/setup.bash && ros2 run uav_telemetry_gateway gateway_node --ros-args -p backend_url:=http://localhost:8080 -p topic_name:=/all_uavs_gps"
 Restart=always
 RestartSec=10
 
@@ -431,7 +431,7 @@ curl http://localhost:8080/api/v1/telemetry/latest
 
 ```bash
 # 在一个终端发布测试消息
-ros2 topic pub /uav_gps_array uav_msgs/msg/UavGpsArray "{
+ros2 topic pub /all_uavs_gps uav_msgs/msg/UavGpsArray "{
     timestamp: {sec: 0, nanosec: 0},
     msg_seq_number: 1,
     home_lat: 39.9042,

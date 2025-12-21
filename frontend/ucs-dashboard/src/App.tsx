@@ -39,24 +39,6 @@ import { useTelemetryWebSocket, TelemetryBatch } from './hooks/useTelemetryWebSo
 const POPUP_DEFAULT_TIMEOUT = 6000; // 6 seconds default
 const POPUP_WATCHDOG_INTERVAL = 3000; // Check every 3 seconds (half of default)
 
-// Drone flight simulation constants
-const FLIGHT_SIMULATION_INTERVAL = 100; // Update every 100ms for smooth animation
-// Note: Beijing center coordinates are defined in DRONE_FLIGHT_PATHS below
-
-// Pre-defined flight paths for each drone (circular orbits around Beijing)
-// Each drone has its own orbit radius and starting angle to prevent collisions
-const DRONE_FLIGHT_PATHS = [
-  { centerLat: 39.92, centerLng: 116.42, radius: 0.02, speed: 0.5, startAngle: 0 },      // UAV_001
-  { centerLat: 39.88, centerLng: 116.38, radius: 0.025, speed: 0.4, startAngle: 45 },    // UAV_002
-  { centerLat: 39.95, centerLng: 116.45, radius: 0.018, speed: 0.6, startAngle: 90 },    // UAV_003
-  { centerLat: 39.85, centerLng: 116.42, radius: 0.022, speed: 0.45, startAngle: 135 },  // UAV_004
-  { centerLat: 39.90, centerLng: 116.35, radius: 0.03, speed: 0.35, startAngle: 180 },   // UAV_005
-  { centerLat: 39.93, centerLng: 116.50, radius: 0.02, speed: 0.55, startAngle: 225 },   // UAV_006
-  { centerLat: 39.87, centerLng: 116.48, radius: 0.024, speed: 0.42, startAngle: 270 },  // UAV_007
-  { centerLat: 39.96, centerLng: 116.38, radius: 0.019, speed: 0.58, startAngle: 315 },  // UAV_008
-  { centerLat: 39.82, centerLng: 116.45, radius: 0.026, speed: 0.38, startAngle: 30 },   // UAV_009
-  { centerLat: 39.91, centerLng: 116.52, radius: 0.021, speed: 0.48, startAngle: 150 },  // UAV_010
-];
 
 // Team colors for member markers
 const TEAM_COLORS = [
@@ -350,7 +332,7 @@ function App() {
         const [trackingDroneId, setTrackingDroneId] = useState<string | null>(null);
 
         // WebSocket telemetry state
-        const [useLiveTelemetry, setUseLiveTelemetry] = useState(false); // Toggle between simulation and live data
+        const [useLiveTelemetry, setUseLiveTelemetry] = useState(true); // Enable live telemetry data from WebSocket
         const [wsConnected, setWsConnected] = useState(false);
 
   // Popup watchdog timer refs
@@ -361,12 +343,8 @@ function App() {
   const activePopupKeyRef = useRef<string | null>(null);
   
     const memberMarkersRef = useRef<maplibregl.Marker[]>([]);
-  
-    // Flight simulation refs
-    const flightAnglesRef = useRef<number[]>(DRONE_FLIGHT_PATHS.map(path => path.startAngle));
-    const flightSimulationRef = useRef<NodeJS.Timeout | null>(null);
     
-    // Drone heading and trail refs for direction calibration and flight path display
+    // Drone heading and trail refsfor direction calibration and flight path display
     const droneHeadingsRef = useRef<Map<string, number>>(new Map()); // uavId -> heading in degrees (0 = north, 90 = east)
     const dronePrevPositionsRef = useRef<Map<string, { lng: number; lat: number }>>(new Map()); // uavId -> previous position
     const droneTrailsRef = useRef<Map<string, Array<{ lng: number; lat: number; timestamp: number }>>>(new Map()); // uavId -> trail points
@@ -417,8 +395,7 @@ function App() {
     }
   };
 
-    // Separate fetch functions with useCallback for different refresh intervals
-    // Note: During flight simulation, we merge backend data but preserve simulated lat/lng positions
+    // Fetch drone data from backend API
     const fetchDroneData = useCallback(async () => {
       if (!token) return;
       const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
@@ -430,28 +407,7 @@ function App() {
         }
         const data = await response.json();
         if (data.code === 0) {
-          const newDrones = data.data || [];
-          // Merge with existing drones to preserve simulated positions during flight simulation
-          setDrones(prevDrones => {
-            if (prevDrones.length === 0) {
-              // First load - use backend data directly
-              return newDrones;
-            }
-            // Merge: update non-position fields from backend, keep simulated lat/lng
-            return newDrones.map((newDrone: DroneStatus) => {
-              const existingDrone = prevDrones.find(d => d.uavId === newDrone.uavId);
-              if (existingDrone && flightSimulationRef.current) {
-                // During flight simulation, preserve simulated position but update other fields
-                return {
-                  ...newDrone,
-                  lat: existingDrone.lat,
-                  lng: existingDrone.lng,
-                  flightStatus: existingDrone.flightStatus, // Keep flying status during simulation
-                };
-              }
-              return newDrone;
-            });
-          });
+          setDrones(data.data || []);
         }
       } catch (err) { console.error('Failed to fetch drone data:', err); }
     }, [token]);
@@ -1348,17 +1304,6 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to fetch team members:', err);
-      // Generate mock members if API not available
-      const mockMembers: TeamMember[] = Array.from({ length: 3 }, (_, i) => ({
-        userId: `${teamId}-member-${i + 1}`,
-        username: `user${i + 1}`,
-        realName: `队员${i + 1}`,
-        role: i === 0 ? '队长' : '队员',
-        teamId,
-        lat: 39.9042 + (Math.random() - 0.5) * 0.1,
-        lng: 116.4074 + (Math.random() - 0.5) * 0.1
-      }));
-      setTeamMembers(prev => ({ ...prev, [teamId]: mockMembers }));
     }
   };
 
@@ -1579,7 +1524,7 @@ function App() {
     useEffect(() => {
       if (map.current && drones.length > 0) {
         updateMapMarkers();
-        // Throttle heatmap updates to reduce performance impact during flight simulation
+        // Throttle heatmap updates to reduce performance impact
         const now = Date.now();
         if (now - lastHeatmapUpdateRef.current >= HEATMAP_UPDATE_THROTTLE) {
           updateHeatmap();
@@ -1588,50 +1533,7 @@ function App() {
       }
     }, [drones, selectedHeatmapLayers, selectedFlightStatus]);
 
-    // Flight simulation - update drone positions in circular orbits
-    // Note: Popup position update is handled in a separate useEffect to avoid extra setDrones calls
-    useEffect(() => {
-      if (!isLoggedIn || drones.length === 0) return;
-    
-      // Start flight simulation
-      flightSimulationRef.current = setInterval(() => {
-        setDrones(prevDrones => {
-          return prevDrones.map((drone, index) => {
-            // Get flight path for this drone (use modulo to handle more drones than paths)
-            const pathIndex = index % DRONE_FLIGHT_PATHS.length;
-            const path = DRONE_FLIGHT_PATHS[pathIndex];
-          
-            // Update angle for this drone
-            flightAnglesRef.current[pathIndex] += path.speed;
-            if (flightAnglesRef.current[pathIndex] >= 360) {
-              flightAnglesRef.current[pathIndex] -= 360;
-            }
-          
-            // Calculate new position on circular orbit
-            const angleRad = (flightAnglesRef.current[pathIndex] * Math.PI) / 180;
-            const newLat = path.centerLat + path.radius * Math.sin(angleRad);
-            const newLng = path.centerLng + path.radius * Math.cos(angleRad);
-          
-            // Return updated drone with new position
-            return {
-              ...drone,
-              lat: newLat,
-              lng: newLng,
-              flightStatus: 'FLYING', // All drones are flying in simulation
-            };
-          });
-        });
-      }, FLIGHT_SIMULATION_INTERVAL);
-    
-      return () => {
-        if (flightSimulationRef.current) {
-          clearInterval(flightSimulationRef.current);
-          flightSimulationRef.current = null;
-        }
-      };
-    }, [isLoggedIn, drones.length > 0]);
-
-    // Update popup position and content when drones move (separate from flight simulation)
+    // Update popup position and content when drones move
     // This avoids the extra setDrones call that was causing performance issues
     useEffect(() => {
       if (!popupRef.current || !activePopupKeyRef.current?.startsWith('drone:')) return;
@@ -1673,7 +1575,6 @@ function App() {
       }, [leftSidebarCollapsed, rightSidebarCollapsed]);
 
             // Drone tracking effect - update map center when tracked drone moves
-            // This is separate from flight simulation to avoid closure issues
             useEffect(() => {
               if (!map.current || !trackingDroneId) return;
         

@@ -33,7 +33,7 @@ class TelemetryGatewayNode(Node):
         
         # Declare parameters
         self.declare_parameter('backend_url', 'http://localhost:8080')
-        self.declare_parameter('topic_name', '/uav_gps_array')
+        self.declare_parameter('topic_name', '/all_uavs_gps')
         self.declare_parameter('message_type', 'uav_msgs/msg/UavGpsArray')
         self.declare_parameter('batch_size', 1)  # Send immediately by default
         self.declare_parameter('batch_timeout_ms', 100)  # Max wait time for batching
