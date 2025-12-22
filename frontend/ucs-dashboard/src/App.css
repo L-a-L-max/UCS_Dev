@@ -51,3 +51,159 @@
 .drone-marker {
   transition: transform 100ms linear;
 }
+
+/* Sci-fi login background */
+.login-bg {
+  position: relative;
+  overflow: hidden;
+  background: 
+    radial-gradient(ellipse at 20% 80%, rgba(59, 130, 246, 0.15) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(6, 182, 212, 0.15) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 50%, rgba(30, 41, 59, 1) 0%, rgba(15, 23, 42, 1) 100%);
+}
+
+.login-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: 
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 50px,
+      rgba(59, 130, 246, 0.03) 50px,
+      rgba(59, 130, 246, 0.03) 51px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 50px,
+      rgba(59, 130, 246, 0.03) 50px,
+      rgba(59, 130, 246, 0.03) 51px
+    );
+  animation: grid-move 20s linear infinite;
+}
+
+@keyframes grid-move {
+  0% { transform: translate(0, 0); }
+  100% { transform: translate(50px, 50px); }
+}
+
+.login-bg::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 600px;
+  height: 600px;
+  transform: translate(-50%, -50%);
+  background: 
+    conic-gradient(from 0deg, transparent 0deg, rgba(59, 130, 246, 0.1) 60deg, transparent 120deg),
+    conic-gradient(from 180deg, transparent 0deg, rgba(6, 182, 212, 0.1) 60deg, transparent 120deg);
+  border-radius: 50%;
+  animation: radar-sweep 8s linear infinite;
+  opacity: 0.5;
+}
+
+@keyframes radar-sweep {
+  0% { transform: translate(-50%, -50%) rotate(0deg); }
+  100% { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+/* Floating particles effect */
+.login-particles {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.login-particles::before,
+.login-particles::after {
+  content: '';
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: rgba(59, 130, 246, 0.6);
+  border-radius: 50%;
+  box-shadow: 
+    100px 200px 0 rgba(59, 130, 246, 0.4),
+    200px 100px 0 rgba(6, 182, 212, 0.4),
+    300px 300px 0 rgba(59, 130, 246, 0.3),
+    400px 150px 0 rgba(6, 182, 212, 0.5),
+    500px 250px 0 rgba(59, 130, 246, 0.4),
+    150px 400px 0 rgba(6, 182, 212, 0.3),
+    250px 50px 0 rgba(59, 130, 246, 0.5),
+    350px 350px 0 rgba(6, 182, 212, 0.4),
+    450px 450px 0 rgba(59, 130, 246, 0.3),
+    50px 300px 0 rgba(6, 182, 212, 0.5);
+  animation: float-particles 15s ease-in-out infinite;
+}
+
+.login-particles::after {
+  animation-delay: -7.5s;
+  animation-direction: reverse;
+}
+
+@keyframes float-particles {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.6; }
+  25% { transform: translate(20px, -30px) scale(1.1); opacity: 0.8; }
+  50% { transform: translate(-10px, 20px) scale(0.9); opacity: 0.5; }
+  75% { transform: translate(30px, 10px) scale(1.05); opacity: 0.7; }
+}
+
+/* HUD corner decorations */
+.hud-corner {
+  position: absolute;
+  width: 60px;
+  height: 60px;
+  border: 2px solid rgba(59, 130, 246, 0.3);
+  pointer-events: none;
+}
+
+.hud-corner-tl {
+  top: 20px;
+  left: 20px;
+  border-right: none;
+  border-bottom: none;
+}
+
+.hud-corner-tr {
+  top: 20px;
+  right: 20px;
+  border-left: none;
+  border-bottom: none;
+}
+
+.hud-corner-bl {
+  bottom: 20px;
+  left: 20px;
+  border-right: none;
+  border-top: none;
+}
+
+.hud-corner-br {
+  bottom: 20px;
+  right: 20px;
+  border-left: none;
+  border-top: none;
+}
+
+/* Scanning line effect */
+.scan-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.5), transparent);
+  animation: scan 4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes scan {
+  0%, 100% { top: 0; opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
