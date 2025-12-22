@@ -70,7 +70,6 @@ public class DataInitService {
         initRoles();
         initTeams();
         initUsers();
-        initDrones();
         initTasks();
         initWeather();
     }
