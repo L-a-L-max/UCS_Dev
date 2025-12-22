@@ -12,6 +12,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 /**
@@ -28,6 +29,7 @@ public class DroneServiceImpl implements IDroneService {
     private final UserRepository userRepository;
     private final CommandLogRepository commandLogRepository;
     private final EventLogRepository eventLogRepository;
+    private final UavLatestStateRepository uavLatestStateRepository;
     
     public DroneServiceImpl(DroneRepository droneRepository,
                             DroneStatusRepository droneStatusRepository,
@@ -35,7 +37,8 @@ public class DroneServiceImpl implements IDroneService {
                             TeamDroneMapRepository teamDroneMapRepository,
                             UserRepository userRepository,
                             CommandLogRepository commandLogRepository,
-                            EventLogRepository eventLogRepository) {
+                            EventLogRepository eventLogRepository,
+                            UavLatestStateRepository uavLatestStateRepository) {
         this.droneRepository = droneRepository;
         this.droneStatusRepository = droneStatusRepository;
         this.droneOwnershipRepository = droneOwnershipRepository;
@@ -43,6 +46,7 @@ public class DroneServiceImpl implements IDroneService {
         this.userRepository = userRepository;
         this.commandLogRepository = commandLogRepository;
         this.eventLogRepository = eventLogRepository;
+        this.uavLatestStateRepository = uavLatestStateRepository;
     }
     
     @Override
@@ -65,9 +69,28 @@ public class DroneServiceImpl implements IDroneService {
     
     @Override
     public List<DroneStatusDTO> getAllDrones() {
-        List<Drone> drones = droneRepository.findAll();
-        List<Long> droneIds = drones.stream().map(Drone::getId).collect(Collectors.toList());
-        return getDroneStatusList(droneIds);
+        List<UavLatestState> latestStates = uavLatestStateRepository.findAllByOrderByUavIdAsc();
+        return latestStates.stream()
+                .map(this::convertToDto)
+                .collect(Collectors.toList());
+    }
+    
+    private DroneStatusDTO convertToDto(UavLatestState state) {
+        DroneStatusDTO dto = new DroneStatusDTO();
+        dto.setUavId("UAV_" + String.format("%03d", state.getUavId()));
+        dto.setDroneSn("UAV-" + state.getUavId());
+        dto.setLat(state.getLat());
+        dto.setLng(state.getLon());
+        dto.setAltitude(state.getAlt());
+        dto.setVelocity(state.getGroundSpeed() != null ? state.getGroundSpeed().floatValue() : 0f);
+        dto.setHeading(state.getHeading() != null ? state.getHeading().floatValue() : 0f);
+        dto.setFlightStatus(Boolean.TRUE.equals(state.getIsActive()) ? "FLYING" : "IDLE");
+        dto.setTaskStatus("IDLE");
+        dto.setHardwareStatus("NORMAL");
+        dto.setColor(Boolean.TRUE.equals(state.getIsActive()) ? "#00FF00" : "#808080");
+        dto.setModel("ROS2-UAV");
+        dto.setOwner("ROS2");
+        return dto;
     }
     
     private List<DroneStatusDTO> getDroneStatusList(List<Long> droneIds) {
@@ -205,11 +228,11 @@ public class DroneServiceImpl implements IDroneService {
     
     @Override
     public List<HeatmapPointDTO> getHeatmapData() {
-        List<DroneStatus> allLatest = droneStatusRepository.findAllLatest();
+        List<UavLatestState> allLatest = uavLatestStateRepository.findAllByOrderByUavIdAsc();
         
         return allLatest.stream()
-                .filter(s -> s.getLat() != null && s.getLng() != null)
-                .map(s -> new HeatmapPointDTO(s.getLat(), s.getLng(), 0.8))
+                .filter(s -> s.getLat() != null && s.getLon() != null)
+                .map(s -> new HeatmapPointDTO(s.getLat(), s.getLon(), 0.8))
                 .collect(Collectors.toList());
     }
     
