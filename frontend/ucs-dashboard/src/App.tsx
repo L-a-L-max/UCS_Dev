@@ -28,9 +28,7 @@ import {
   Loader2,
   User,
   ChevronDown,
-  ChevronUp,
-  Wifi,
-  WifiOff
+  ChevronUp
 } from 'lucide-react';
 import './App.css';
 import { useTelemetryWebSocket, TelemetryBatch } from './hooks/useTelemetryWebSocket';
@@ -50,7 +48,17 @@ const TEAM_COLORS = [
   '#06b6d4', // cyan
 ];
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const getApiBase = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return `${window.location.protocol}//${window.location.hostname}:8080`;
+  }
+  return 'http://localhost:8080';
+};
+
+const API_BASE = getApiBase();
 
 // Chinese localization dictionary
 const zhCN = {
@@ -332,8 +340,8 @@ function App() {
         const [trackingDroneId, setTrackingDroneId] = useState<string | null>(null);
 
         // WebSocket telemetry state
-        const [useLiveTelemetry, setUseLiveTelemetry] = useState(true); // Enable live telemetry data from WebSocket
-        const [wsConnected, setWsConnected] = useState(false);
+        const [useLiveTelemetry, _setUseLiveTelemetry] = useState(true); // Enable live telemetry data from WebSocket
+        const [_wsConnected, setWsConnected] = useState(false);
 
   // Popup watchdog timer refs
   const popupTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -509,7 +517,7 @@ function App() {
   }, [useLiveTelemetry]);
 
   // WebSocket hook for real-time telemetry
-  const { connected: telemetryConnected } = useTelemetryWebSocket({
+  const { connected: _telemetryConnected } = useTelemetryWebSocket({
     enabled: isLoggedIn && useLiveTelemetry,
     onTelemetryReceived: handleTelemetryReceived,
     onConnectionChange: setWsConnected,
