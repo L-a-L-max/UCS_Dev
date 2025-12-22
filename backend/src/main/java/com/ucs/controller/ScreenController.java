@@ -84,4 +84,11 @@ public class ScreenController {
         List<EventDTO> alerts = eventService.getAlerts(limit);
         return ApiResponse.success(alerts);
     }
+    
+    @GetMapping("/team/{teamId}/members")
+    public ApiResponse<List<TeamMemberDTO>> getTeamMembers(@PathVariable String teamId) {
+        Long id = Long.parseLong(teamId.replace("T", ""));
+        List<TeamMemberDTO> members = teamService.getTeamMembers(id);
+        return ApiResponse.success(members);
+    }
 }
