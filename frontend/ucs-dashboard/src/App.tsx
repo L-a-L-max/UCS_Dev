@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -28,7 +28,8 @@ import {
   Loader2,
   User,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Navigation
 } from 'lucide-react';
 import './App.css';
 import { useTelemetryWebSocket, TelemetryBatch } from './hooks/useTelemetryWebSocket';
@@ -239,6 +240,89 @@ const REFRESH_INTERVALS = {
   event: 5000,      // 5 seconds - event logs
 };
 
+// China administrative regions data with center coordinates and zoom levels
+interface RegionData {
+  name: string;
+  center: [number, number]; // [lng, lat]
+  zoom: number;
+  children?: Record<string, RegionData>;
+}
+
+const CHINA_REGIONS: Record<string, RegionData> = {
+  '中国': {
+    name: '中国',
+    center: [105, 35],
+    zoom: 4,
+    children: {
+      '北京市': { name: '北京市', center: [116.4074, 39.9042], zoom: 10 },
+      '上海市': { name: '上海市', center: [121.4737, 31.2304], zoom: 10 },
+      '天津市': { name: '天津市', center: [117.1901, 39.1256], zoom: 10 },
+      '重庆市': { name: '重庆市', center: [106.5516, 29.5630], zoom: 8 },
+      '河北省': { name: '河北省', center: [114.5149, 38.0428], zoom: 7, children: {
+        '石家庄市': { name: '石家庄市', center: [114.5149, 38.0428], zoom: 10 },
+        '唐山市': { name: '唐山市', center: [118.1802, 39.6306], zoom: 10 },
+        '保定市': { name: '保定市', center: [115.4646, 38.8737], zoom: 10 },
+      }},
+      '山西省': { name: '山西省', center: [112.5489, 37.8706], zoom: 7, children: {
+        '太原市': { name: '太原市', center: [112.5489, 37.8706], zoom: 10 },
+        '大同市': { name: '大同市', center: [113.2951, 40.0903], zoom: 10 },
+      }},
+      '内蒙古': { name: '内蒙古自治区', center: [111.7656, 40.8175], zoom: 5 },
+      '辽宁省': { name: '辽宁省', center: [123.4291, 41.7968], zoom: 7, children: {
+        '沈阳市': { name: '沈阳市', center: [123.4291, 41.7968], zoom: 10 },
+        '大连市': { name: '大连市', center: [121.6147, 38.9140], zoom: 10 },
+      }},
+      '吉林省': { name: '吉林省', center: [125.3245, 43.8868], zoom: 7 },
+      '黑龙江省': { name: '黑龙江省', center: [126.6424, 45.7570], zoom: 6 },
+      '江苏省': { name: '江苏省', center: [118.7969, 32.0603], zoom: 7, children: {
+        '南京市': { name: '南京市', center: [118.7969, 32.0603], zoom: 10 },
+        '苏州市': { name: '苏州市', center: [120.6195, 31.2990], zoom: 10 },
+        '无锡市': { name: '无锡市', center: [120.3119, 31.4912], zoom: 10 },
+      }},
+      '浙江省': { name: '浙江省', center: [120.1536, 30.2875], zoom: 7, children: {
+        '杭州市': { name: '杭州市', center: [120.1536, 30.2875], zoom: 10 },
+        '宁波市': { name: '宁波市', center: [121.5440, 29.8683], zoom: 10 },
+        '温州市': { name: '温州市', center: [120.6994, 28.0003], zoom: 10 },
+      }},
+      '安徽省': { name: '安徽省', center: [117.2830, 31.8612], zoom: 7 },
+      '福建省': { name: '福建省', center: [119.2965, 26.0789], zoom: 7 },
+      '江西省': { name: '江西省', center: [115.8922, 28.6765], zoom: 7 },
+      '山东省': { name: '山东省', center: [117.0009, 36.6758], zoom: 7, children: {
+        '济南市': { name: '济南市', center: [117.0009, 36.6758], zoom: 10 },
+        '青岛市': { name: '青岛市', center: [120.3826, 36.0671], zoom: 10 },
+      }},
+      '河南省': { name: '河南省', center: [113.6254, 34.7466], zoom: 7 },
+      '湖北省': { name: '湖北省', center: [114.3055, 30.5928], zoom: 7, children: {
+        '武汉市': { name: '武汉市', center: [114.3055, 30.5928], zoom: 10 },
+      }},
+      '湖南省': { name: '湖南省', center: [112.9823, 28.1941], zoom: 7 },
+      '广东省': { name: '广东省', center: [113.2644, 23.1291], zoom: 7, children: {
+        '广州市': { name: '广州市', center: [113.2644, 23.1291], zoom: 10 },
+        '深圳市': { name: '深圳市', center: [114.0579, 22.5431], zoom: 10 },
+        '东莞市': { name: '东莞市', center: [113.7518, 23.0207], zoom: 10 },
+      }},
+      '广西': { name: '广西壮族自治区', center: [108.3200, 22.8240], zoom: 7 },
+      '海南省': { name: '海南省', center: [110.3312, 20.0310], zoom: 8 },
+      '四川省': { name: '四川省', center: [104.0657, 30.6595], zoom: 6, children: {
+        '成都市': { name: '成都市', center: [104.0657, 30.6595], zoom: 10 },
+      }},
+      '贵州省': { name: '贵州省', center: [106.7135, 26.5783], zoom: 7 },
+      '云南省': { name: '云南省', center: [102.7123, 25.0406], zoom: 6 },
+      '西藏': { name: '西藏自治区', center: [91.1322, 29.6604], zoom: 5 },
+      '陕西省': { name: '陕西省', center: [108.9540, 34.2658], zoom: 7, children: {
+        '西安市': { name: '西安市', center: [108.9540, 34.2658], zoom: 10 },
+      }},
+      '甘肃省': { name: '甘肃省', center: [103.8236, 36.0594], zoom: 6 },
+      '青海省': { name: '青海省', center: [101.7782, 36.6171], zoom: 6 },
+      '宁夏': { name: '宁夏回族自治区', center: [106.2782, 38.4664], zoom: 7 },
+      '新疆': { name: '新疆维吾尔自治区', center: [87.6177, 43.7928], zoom: 5 },
+      '香港': { name: '香港特别行政区', center: [114.1694, 22.3193], zoom: 11 },
+      '澳门': { name: '澳门特别行政区', center: [113.5439, 22.1987], zoom: 13 },
+      '台湾省': { name: '台湾省', center: [121.5654, 25.0330], zoom: 8 },
+    }
+  }
+};
+
 interface DroneStatus {
   uavId: string;
   droneSn: string;
@@ -313,7 +397,7 @@ function App() {
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(false);
   // Multi-select for heatmap layers (can show multiple at once)
-  const [selectedHeatmapLayers, setSelectedHeatmapLayers] = useState<Set<HeatmapLayerType>>(new Set(['drone']));
+  const [selectedHeatmapLayers, setSelectedHeatmapLayers] = useState<Set<HeatmapLayerType>>(new Set());
   // Multi-select for flight status filter (can show both flying and idle)
   const [selectedFlightStatus, setSelectedFlightStatus] = useState<Set<FlightStatusType>>(new Set(['flying', 'idle']));
   const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(null);
@@ -374,6 +458,23 @@ function App() {
   const [_locationSource, setLocationSource] = useState<'geolocation' | 'default'>('default');
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
+  
+  // Location selector state
+  const [showLocationSelector, setShowLocationSelector] = useState(false);
+  const [locationMode, setLocationMode] = useState<'coordinate' | 'region'>('coordinate');
+  const [coordLat, setCoordLat] = useState('');
+  const [coordLng, setCoordLng] = useState('');
+  const [coordZoom, setCoordZoom] = useState('');
+  const [selectedCountry, setSelectedCountry] = useState('');
+  const [selectedProvince, setSelectedProvince] = useState('');
+  const [selectedCity, setSelectedCity] = useState('');
+  const [selectedDistrict, setSelectedDistrict] = useState('');
+  
+  // Scroll position refs for preserving scroll during data refresh
+  const droneListScrollRef = useRef<HTMLDivElement>(null);
+  const teamListScrollRef = useRef<HTMLDivElement>(null);
+  const droneListScrollTopRef = useRef<number>(0);
+  const teamListScrollTopRef = useRef<number>(0);
 
   const handleLogin = async () => {
     try {
@@ -406,6 +507,10 @@ function App() {
     // Fetch drone data from backend API
     const fetchDroneData = useCallback(async () => {
       if (!token) return;
+      // Save scroll position before updating
+      if (droneListScrollRef.current) {
+        droneListScrollTopRef.current = droneListScrollRef.current.scrollTop;
+      }
       const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
       try {
         const response = await fetch(`${API_BASE}/api/v1/screen/uav/list`, { headers });
@@ -415,7 +520,9 @@ function App() {
         }
         const data = await response.json();
         if (data.code === 0) {
-          setDrones(data.data || []);
+          // Sort by uavId to maintain stable order
+          const sortedData = (data.data || []).sort((a: DroneStatus, b: DroneStatus) => a.uavId.localeCompare(b.uavId));
+          setDrones(sortedData);
         }
       } catch (err) { console.error('Failed to fetch drone data:', err); }
     }, [token]);
@@ -444,11 +551,19 @@ function App() {
 
   const fetchTeamData = useCallback(async () => {
     if (!token) return;
+    // Save scroll position before updating
+    if (teamListScrollRef.current) {
+      teamListScrollTopRef.current = teamListScrollRef.current.scrollTop;
+    }
     const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
     try {
       const response = await fetch(`${API_BASE}/api/v1/screen/team/status`, { headers });
       const data = await response.json();
-      if (data.code === 0) setTeams(data.data || []);
+      if (data.code === 0) {
+        // Sort by teamId to maintain stable order
+        const sortedData = (data.data || []).sort((a: TeamInfo, b: TeamInfo) => a.teamId.localeCompare(b.teamId));
+        setTeams(sortedData);
+      }
     } catch (err) { console.error('Failed to fetch team data:', err); }
   }, [token]);
 
@@ -644,9 +759,9 @@ function App() {
           maxzoom: 19
         }]
       },
-      center: [116.4074, 39.9042],
-      zoom: 5,
-      minZoom: 2,
+      center: [105, 35],
+      zoom: 1.5,
+      minZoom: 1,
       maxZoom: 18
     });
 
@@ -1486,6 +1601,85 @@ function App() {
     updateMemberMarkers();
   }, [teamMembers, visibleTeamIds, updateMemberMarkers]);
 
+  // Restore scroll positions after data updates (useLayoutEffect to avoid visual flicker)
+  useLayoutEffect(() => {
+    if (droneListScrollRef.current && droneListScrollTopRef.current > 0) {
+      const maxScroll = droneListScrollRef.current.scrollHeight - droneListScrollRef.current.clientHeight;
+      droneListScrollRef.current.scrollTop = Math.min(droneListScrollTopRef.current, maxScroll);
+    }
+  }, [drones]);
+
+  useLayoutEffect(() => {
+    if (teamListScrollRef.current && teamListScrollTopRef.current > 0) {
+      const maxScroll = teamListScrollRef.current.scrollHeight - teamListScrollRef.current.clientHeight;
+      teamListScrollRef.current.scrollTop = Math.min(teamListScrollTopRef.current, maxScroll);
+    }
+  }, [teams]);
+
+  // Navigate to location by coordinates
+  const navigateToCoordinates = useCallback(() => {
+    if (!map.current) return;
+    const lat = parseFloat(coordLat);
+    const lng = parseFloat(coordLng);
+    const zoom = coordZoom ? parseFloat(coordZoom) : 12;
+    
+    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      setError('请输入有效的经纬度坐标');
+      return;
+    }
+    
+    map.current.flyTo({ center: [lng, lat], zoom: Math.min(Math.max(zoom, 1), 18), duration: 1500 });
+    setShowLocationSelector(false);
+    setError('');
+  }, [coordLat, coordLng, coordZoom]);
+
+  // Navigate to region by selection
+  const navigateToRegion = useCallback(() => {
+    if (!map.current) return;
+    
+    let region: RegionData | undefined;
+    
+    if (selectedCountry && CHINA_REGIONS[selectedCountry]) {
+      region = CHINA_REGIONS[selectedCountry];
+      
+      if (selectedProvince && region.children?.[selectedProvince]) {
+        region = region.children[selectedProvince];
+        
+        if (selectedCity && region.children?.[selectedCity]) {
+          region = region.children[selectedCity];
+          
+          if (selectedDistrict && region.children?.[selectedDistrict]) {
+            region = region.children[selectedDistrict];
+          }
+        }
+      }
+    }
+    
+    if (region) {
+      map.current.flyTo({ center: region.center, zoom: region.zoom, duration: 1500 });
+      setShowLocationSelector(false);
+    }
+  }, [selectedCountry, selectedProvince, selectedCity, selectedDistrict]);
+
+  // Get available provinces based on selected country
+  const getProvinces = useCallback(() => {
+    if (selectedCountry && CHINA_REGIONS[selectedCountry]?.children) {
+      return Object.keys(CHINA_REGIONS[selectedCountry].children!);
+    }
+    return [];
+  }, [selectedCountry]);
+
+  // Get available cities based on selected province
+  const getCities = useCallback(() => {
+    if (selectedCountry && selectedProvince) {
+      const province = CHINA_REGIONS[selectedCountry]?.children?.[selectedProvince];
+      if (province?.children) {
+        return Object.keys(province.children);
+      }
+    }
+    return [];
+  }, [selectedCountry, selectedProvince]);
+
   useEffect(() => {
     const savedToken = localStorage.getItem('token');
     const savedRoles = localStorage.getItem('roles');
@@ -1504,8 +1698,6 @@ function App() {
   useEffect(() => {
     if (isLoggedIn) {
       initMap().catch(console.error);
-      // Get location on login for weather data
-      getCurrentLocation(false);
     }
     return () => { if (map.current) { map.current.remove(); map.current = null; } };
   }, [isLoggedIn]);
@@ -1619,19 +1811,32 @@ function App() {
 
     if (!isLoggedIn) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-        <Card className="w-96 bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white text-center flex items-center justify-center gap-2">
-              <Plane className="w-6 h-6" />
+      <div className="min-h-screen login-bg flex items-center justify-center">
+        {/* Sci-fi background effects */}
+        <div className="login-particles"></div>
+        <div className="hud-corner hud-corner-tl"></div>
+        <div className="hud-corner hud-corner-tr"></div>
+        <div className="hud-corner hud-corner-bl"></div>
+        <div className="hud-corner hud-corner-br"></div>
+        <div className="scan-line"></div>
+        
+        <Card className="w-96 bg-slate-800/90 backdrop-blur-md border-slate-600 shadow-2xl shadow-blue-500/10 relative z-10">
+          <CardHeader className="pb-2">
+            <div className="flex justify-center mb-4">
+              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-500/30">
+                <Plane className="w-8 h-8 text-white" />
+              </div>
+            </div>
+            <CardTitle className="text-white text-center text-xl">
               {zhCN.platformTitle}
             </CardTitle>
+            <p className="text-slate-400 text-xs text-center mt-1">UAV Integrated Control System</p>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <Input placeholder={zhCN.username} value={username} onChange={(e) => setUsername(e.target.value)} className="bg-slate-700 border-slate-600 text-white" />
-            <Input type="password" placeholder={zhCN.password} value={password} onChange={(e) => setPassword(e.target.value)} className="bg-slate-700 border-slate-600 text-white" onKeyPress={(e) => e.key === 'Enter' && handleLogin()} />
+          <CardContent className="space-y-4 pt-2">
+            <Input placeholder={zhCN.username} value={username} onChange={(e) => setUsername(e.target.value)} className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-400" />
+            <Input type="password" placeholder={zhCN.password} value={password} onChange={(e) => setPassword(e.target.value)} className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-400" onKeyPress={(e) => e.key === 'Enter' && handleLogin()} />
             {error && <p className="text-red-400 text-sm">{error}</p>}
-            <Button onClick={handleLogin} className="w-full bg-blue-600 hover:bg-blue-700">
+            <Button onClick={handleLogin} className="w-full bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 shadow-lg shadow-blue-500/20">
               <LogIn className="w-4 h-4 mr-2" />{zhCN.login}
             </Button>
             <p className="text-slate-400 text-xs text-center">{zhCN.loginHint}</p>
@@ -1658,7 +1863,7 @@ function App() {
 
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar */}
-        <div className={`${leftSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-72'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
+        <div className={`${leftSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-64'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center justify-between text-white">
@@ -1961,6 +2166,147 @@ function App() {
               </div>
             </div>
           )}
+
+          {showLocationSelector && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 z-30">
+              <div className="bg-slate-800 p-4 rounded-lg w-80">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-white font-bold flex items-center gap-2">
+                    <Navigation className="w-4 h-4" />地图定位
+                  </h3>
+                  <button onClick={() => setShowLocationSelector(false)} className="text-slate-400 hover:text-white">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                
+                <div className="flex gap-2 mb-4">
+                  <Button 
+                    size="sm" 
+                    onClick={() => setLocationMode('coordinate')} 
+                    className={`flex-1 ${locationMode === 'coordinate' ? 'bg-blue-600' : 'bg-slate-700'}`}
+                  >
+                    坐标输入
+                  </Button>
+                  <Button 
+                    size="sm" 
+                    onClick={() => setLocationMode('region')} 
+                    className={`flex-1 ${locationMode === 'region' ? 'bg-blue-600' : 'bg-slate-700'}`}
+                  >
+                    地区选择
+                  </Button>
+                </div>
+
+                {locationMode === 'coordinate' && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-slate-400 mb-1 block">纬度 (Latitude)</label>
+                      <Input 
+                        type="number" 
+                        placeholder="例如: 39.9042" 
+                        value={coordLat} 
+                        onChange={(e) => setCoordLat(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white"
+                        step="0.0001"
+                        min="-90"
+                        max="90"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-400 mb-1 block">经度 (Longitude)</label>
+                      <Input 
+                        type="number" 
+                        placeholder="例如: 116.4074" 
+                        value={coordLng} 
+                        onChange={(e) => setCoordLng(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white"
+                        step="0.0001"
+                        min="-180"
+                        max="180"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-400 mb-1 block">缩放级别 (可选, 1-18)</label>
+                      <Input 
+                        type="number" 
+                        placeholder="默认: 12" 
+                        value={coordZoom} 
+                        onChange={(e) => setCoordZoom(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white"
+                        min="1"
+                        max="18"
+                      />
+                    </div>
+                    {error && <p className="text-red-400 text-xs">{error}</p>}
+                    <Button onClick={navigateToCoordinates} className="w-full bg-blue-600 hover:bg-blue-700">
+                      定位到坐标
+                    </Button>
+                  </div>
+                )}
+
+                {locationMode === 'region' && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-slate-400 mb-1 block">国家/地区</label>
+                      <select 
+                        value={selectedCountry} 
+                        onChange={(e) => { setSelectedCountry(e.target.value); setSelectedProvince(''); setSelectedCity(''); setSelectedDistrict(''); }}
+                        className="w-full bg-slate-700 border border-slate-600 text-white rounded-md px-3 py-2 text-sm"
+                      >
+                        <option value="">请选择</option>
+                        {Object.keys(CHINA_REGIONS).map(key => (
+                          <option key={key} value={key}>{CHINA_REGIONS[key].name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    
+                    {selectedCountry && getProvinces().length > 0 && (
+                      <div>
+                        <label className="text-xs text-slate-400 mb-1 block">省/直辖市/自治区</label>
+                        <select 
+                          value={selectedProvince} 
+                          onChange={(e) => { setSelectedProvince(e.target.value); setSelectedCity(''); setSelectedDistrict(''); }}
+                          className="w-full bg-slate-700 border border-slate-600 text-white rounded-md px-3 py-2 text-sm"
+                        >
+                          <option value="">请选择</option>
+                          {getProvinces().map(key => (
+                            <option key={key} value={key}>{key}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    
+                    {selectedProvince && getCities().length > 0 && (
+                      <div>
+                        <label className="text-xs text-slate-400 mb-1 block">城市</label>
+                        <select 
+                          value={selectedCity} 
+                          onChange={(e) => { setSelectedCity(e.target.value); setSelectedDistrict(''); }}
+                          className="w-full bg-slate-700 border border-slate-600 text-white rounded-md px-3 py-2 text-sm"
+                        >
+                          <option value="">请选择</option>
+                          {getCities().map(key => (
+                            <option key={key} value={key}>{key}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    
+                    <Button 
+                      onClick={navigateToRegion} 
+                      disabled={!selectedCountry}
+                      className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600"
+                    >
+                      定位到地区
+                    </Button>
+                  </div>
+                )}
+
+                <p className="text-slate-400 text-xs mt-3">
+                  提示：坐标输入支持精确定位，地区选择可快速跳转到省市
+                </p>
+              </div>
+            </div>
+          )}
           
                     {/* Heatmap Controls - Top Center with Collapse Button */}
                     <div className={`absolute left-1/2 -translate-x-1/2 z-10 bg-slate-800/80 backdrop-blur-sm rounded-lg border border-slate-600/50 transition-all duration-300 ${heatmapPanelCollapsed ? 'top-0 -translate-y-full opacity-0 pointer-events-none' : 'top-3'}`}>
@@ -2009,6 +2355,15 @@ function App() {
               title={zhCN.weather}
             >
               <Cloud className="w-4 h-4" />
+            </Button>
+            <Button 
+              size="sm" 
+              variant="outline" 
+              onClick={() => setShowLocationSelector(true)} 
+              className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-8 w-8 p-0"
+              title="地图定位"
+            >
+              <Navigation className="w-4 h-4" />
             </Button>
           </div>
 
@@ -2134,7 +2489,7 @@ function App() {
         </div>
 
         {/* Right Sidebar */}
-        <div className={`${rightSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-80'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
+        <div className={`${rightSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-72'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center gap-2 text-white">
@@ -2142,7 +2497,7 @@ function App() {
               </CardTitle>
             </CardHeader>
             <CardContent className="px-3 pb-3">
-              <div className="space-y-2 max-h-64 overflow-y-auto">
+              <div ref={droneListScrollRef} className="space-y-2 max-h-64 overflow-y-auto">
                 {drones.map((drone) => (
                   <div key={drone.uavId} className="bg-slate-600 p-2 rounded cursor-pointer hover:bg-slate-500 transition-colors" onClick={() => handleDroneListClick(drone)}>
                     <div className="flex justify-between items-start">
@@ -2174,7 +2529,7 @@ function App() {
               </CardTitle>
             </CardHeader>
             <CardContent className="px-3 pb-3">
-              <div className="space-y-2 max-h-64 overflow-y-auto">
+              <div ref={teamListScrollRef} className="space-y-2 max-h-64 overflow-y-auto">
                 {teams.map((team, teamIndex) => (
                   <div key={team.teamId}>
                     <div 
