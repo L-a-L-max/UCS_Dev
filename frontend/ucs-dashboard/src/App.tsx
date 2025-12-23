@@ -781,13 +781,13 @@ function App() {
           id: 'basemap',
           type: 'raster',
           source: 'basemap',
-          minzoom: 0,
+          minzoom: 2,
           maxzoom: 19
         }]
       },
       center: [105, 35],
-      zoom: 1.5,
-      minZoom: 1,
+      zoom: 2,
+      minZoom: 2,
       maxZoom: 18
     });
 
