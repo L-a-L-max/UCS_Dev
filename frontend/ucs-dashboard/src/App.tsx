@@ -133,7 +133,7 @@ const zhCN = {
   noEvents: '暂无事件',
   
   // Footer
-  footerInfo: 'UCS 平台 v1.1-global',
+  footerInfo: 'UCS 平台 v1.2',
   locationInfo: '当前位置',
   
   // Drone popup
@@ -197,39 +197,6 @@ interface TileSourceConfig {
   tiles: string[];
   attribution: string;
 }
-
-// Simplified world outline GeoJSON for low zoom levels (no political boundaries)
-// This provides a basic land/ocean view when zoomed out beyond Gaode tile coverage
-const WORLD_OUTLINE_GEOJSON = {
-  type: 'FeatureCollection' as const,
-  features: [
-    {
-      type: 'Feature' as const,
-      properties: { name: 'World Land' },
-      geometry: {
-        type: 'MultiPolygon' as const,
-        coordinates: [
-          // North America (simplified)
-          [[[-170, 70], [-60, 70], [-60, 25], [-100, 25], [-125, 35], [-170, 55], [-170, 70]]],
-          // South America (simplified)
-          [[[-80, 10], [-35, 0], [-35, -55], [-75, -55], [-80, 10]]],
-          // Europe (simplified)
-          [[[-10, 70], [60, 70], [60, 35], [-10, 35], [-10, 70]]],
-          // Africa (simplified)
-          [[[-20, 35], [50, 35], [50, -35], [10, -35], [-20, 5], [-20, 35]]],
-          // Asia (simplified)
-          [[[60, 70], [180, 70], [180, 10], [100, 10], [60, 35], [60, 70]]],
-          // Australia (simplified)
-          [[[110, -10], [155, -10], [155, -45], [110, -45], [110, -10]]],
-          // Antarctica (simplified)
-          [[[-180, -60], [180, -60], [180, -90], [-180, -90], [-180, -60]]],
-          // Greenland (simplified)
-          [[[-75, 83], [-10, 83], [-10, 60], [-45, 60], [-75, 83]]],
-        ]
-      }
-    }
-  ]
-};
 
 // Gaode (高德) Map - uses backend proxy to handle API key and security key
 const TILE_SOURCES: Record<TileSourceKey, TileSourceConfig> = {
@@ -792,12 +759,6 @@ function App() {
       style: {
         version: 8,
         sources: {
-          // World outline source for low zoom levels (no political boundaries)
-          'world-outline': {
-            type: 'geojson',
-            data: WORLD_OUTLINE_GEOJSON
-          },
-          // Gaode/other tile source for high zoom levels
           'basemap': {
             type: 'raster',
             tiles: tileConfig.tiles,
@@ -807,45 +768,16 @@ function App() {
         },
         layers: [
           {
-            id: 'ocean-background',
-            type: 'background',
-            paint: {
-              'background-color': '#a3c9e8'
-            },
-            maxzoom: 4
-          },
-          {
-            id: 'world-land',
-            type: 'fill',
-            source: 'world-outline',
-            paint: {
-              'fill-color': '#d4e6c3',
-              'fill-opacity': 0.9
-            },
-            maxzoom: 4
-          },
-          {
-            id: 'world-land-border',
-            type: 'line',
-            source: 'world-outline',
-            paint: {
-              'line-color': '#8fbc8f',
-              'line-width': 1
-            },
-            maxzoom: 4
-          },
-          {
             id: 'basemap',
             type: 'raster',
             source: 'basemap',
-            minzoom: 2,
             maxzoom: 19
           }
         ]
       },
-      center: [0, 20],
-      zoom: 1,
-      minZoom: 0,
+      center: [105, 30],
+      zoom: 3,
+      minZoom: 2,
       maxZoom: 18
     });
 
