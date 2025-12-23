@@ -187,6 +187,12 @@ const zhCN = {
   listView: '列表',
   pieChart: '饼图',
   barChart: '柱状图',
+  
+  // Location error
+  locationFailed: '无法获取您的位置',
+  locationDenied: '定位权限被拒绝，请在浏览器设置中允许定位',
+  locationUnsupported: '您的浏览器不支持定位功能',
+  retryLocation: '重新获取',
 };
 
 // Map tile source configurations
@@ -456,6 +462,7 @@ function App() {
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
   const [_locationSource, setLocationSource] = useState<'geolocation' | 'default' | 'failed' | 'unsupported'>('default');
+  const [locationErrorMessage, setLocationErrorMessage] = useState<string | null>(null);
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
   
@@ -665,6 +672,7 @@ function App() {
   });
 
   const getCurrentLocation = (flyToLocation = true) => {
+    setLocationErrorMessage(null);
     if (navigator.geolocation) {
       setIsLocating(true);
       navigator.geolocation.getCurrentPosition(
@@ -673,6 +681,7 @@ function App() {
           setCurrentLocation({ lat: latitude, lng: longitude });
           setLocationSource('geolocation');
           setIsLocating(false);
+          setLocationErrorMessage(null);
           if (flyToLocation && map.current) {
             map.current.flyTo({
               center: [longitude, latitude],
@@ -681,9 +690,14 @@ function App() {
             });
           }
         },
-        () => {
+        (error) => {
           setLocationSource('failed');
           setIsLocating(false);
+          if (error.code === error.PERMISSION_DENIED) {
+            setLocationErrorMessage(zhCN.locationDenied);
+          } else {
+            setLocationErrorMessage(zhCN.locationFailed);
+          }
         },
         {
           enableHighAccuracy: false,
@@ -693,6 +707,7 @@ function App() {
       );
     } else {
       setLocationSource('unsupported');
+      setLocationErrorMessage(zhCN.locationUnsupported);
     }
   };
   
@@ -2142,6 +2157,34 @@ function App() {
         <div className="flex-1 relative">
           <div ref={mapContainer} className="absolute inset-0 w-full h-full" style={{ minHeight: '100%' }} />
           
+          {locationErrorMessage && (
+            <div className="absolute top-0 left-0 right-0 z-30 bg-gradient-to-r from-amber-600/95 to-orange-600/95 backdrop-blur-sm shadow-lg animate-in slide-in-from-top duration-300">
+              <div className="flex items-center justify-between px-4 py-2">
+                <div className="flex items-center gap-2 text-white">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                  <span className="text-sm font-medium">{locationErrorMessage}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button 
+                    size="sm" 
+                    onClick={() => getCurrentLocation()} 
+                    disabled={isLocating}
+                    className="bg-white/20 hover:bg-white/30 text-white border-white/30 h-7 px-3 text-xs"
+                  >
+                    {isLocating ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Locate className="w-3 h-3 mr-1" />}
+                    {zhCN.retryLocation}
+                  </Button>
+                  <button 
+                    onClick={() => setLocationErrorMessage(null)} 
+                    className="text-white/80 hover:text-white p-1"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {mapError && (
             <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 z-20">
               <div className="bg-slate-800 p-4 rounded-lg text-center max-w-md">
