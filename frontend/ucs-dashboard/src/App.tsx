@@ -133,7 +133,7 @@ const zhCN = {
   noEvents: '暂无事件',
   
   // Footer
-  footerInfo: 'UCS 平台 v1.0',
+  footerInfo: 'UCS 平台 v1.1-global',
   locationInfo: '当前位置',
   
   // Drone popup
@@ -488,7 +488,7 @@ function App() {
     const HEATMAP_UPDATE_THROTTLE = 500; // Only update heatmap every 500ms
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
-  const [_locationSource, setLocationSource] = useState<'geolocation' | 'default'>('default');
+  const [_locationSource, setLocationSource] = useState<'geolocation' | 'default' | 'failed' | 'unsupported'>('default');
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
   
@@ -715,28 +715,17 @@ function App() {
           }
         },
         () => {
-          // Geolocation failed, use Beijing as default
-          setCurrentLocation({ lat: 39.9042, lng: 116.4074 });
-          setLocationSource('default');
+          setLocationSource('failed');
           setIsLocating(false);
-          if (flyToLocation && map.current) {
-            map.current.flyTo({
-              center: [116.4074, 39.9042],
-              zoom: 10,
-              duration: 2000
-            });
-          }
         },
         {
           enableHighAccuracy: false,
           timeout: 5000,
-          maximumAge: 60000 // Cache location for 1 minute to avoid cold-start delay
+          maximumAge: 60000
         }
       );
     } else {
-      // Geolocation not supported, use Beijing as default
-      setCurrentLocation({ lat: 39.9042, lng: 116.4074 });
-      setLocationSource('default');
+      setLocationSource('unsupported');
     }
   };
   
@@ -817,50 +806,46 @@ function App() {
           }
         },
         layers: [
-          // Ocean background layer (always visible at low zoom)
           {
             id: 'ocean-background',
             type: 'background',
             paint: {
-              'background-color': '#a3c9e8'  // Light blue ocean color
+              'background-color': '#a3c9e8'
             },
-            maxzoom: 3  // Only show at low zoom levels
+            maxzoom: 4
           },
-          // Land outline layer (visible at low zoom, no political boundaries)
           {
             id: 'world-land',
             type: 'fill',
             source: 'world-outline',
             paint: {
-              'fill-color': '#d4e6c3',  // Light green land color
+              'fill-color': '#d4e6c3',
               'fill-opacity': 0.9
             },
-            maxzoom: 3  // Only show at low zoom levels
+            maxzoom: 4
           },
-          // Land outline border
           {
             id: 'world-land-border',
             type: 'line',
             source: 'world-outline',
             paint: {
-              'line-color': '#8fbc8f',  // Darker green border
+              'line-color': '#8fbc8f',
               'line-width': 1
             },
-            maxzoom: 3  // Only show at low zoom levels
+            maxzoom: 4
           },
-          // Gaode/other tiles layer (visible at higher zoom levels)
           {
             id: 'basemap',
             type: 'raster',
             source: 'basemap',
-            minzoom: 2,  // Start showing Gaode tiles at zoom 2
+            minzoom: 2,
             maxzoom: 19
           }
         ]
       },
-      center: [0, 20],  // Center on world view
-      zoom: 1,  // Default to global view (highest altitude)
-      minZoom: 0,  // Allow maximum zoom out to see entire world
+      center: [0, 20],
+      zoom: 1,
+      minZoom: 0,
       maxZoom: 18
     });
 
