@@ -482,6 +482,10 @@ function App() {
   const teamListScrollRef = useRef<HTMLDivElement>(null);
   const droneListScrollTopRef = useRef<number>(0);
   const teamListScrollTopRef = useRef<number>(0);
+  
+  // Track when WebSocket data was last received to prevent REST API from overwriting it
+  const lastWsUpdateRef = useRef<number>(0);
+  const WS_DATA_PRIORITY_MS = 10000; // WebSocket data takes priority for 10 seconds after last update
 
   const handleLogin = async () => {
     try {
@@ -514,6 +518,14 @@ function App() {
     // Fetch drone data from backend API
     const fetchDroneData = useCallback(async () => {
       if (!token) return;
+      
+      // Skip REST API update if WebSocket data was received recently
+      // This prevents REST API from overwriting real-time WebSocket data with stale database data
+      const timeSinceWsUpdate = Date.now() - lastWsUpdateRef.current;
+      if (timeSinceWsUpdate < WS_DATA_PRIORITY_MS && lastWsUpdateRef.current > 0) {
+        return; // WebSocket data takes priority
+      }
+      
       // Save scroll position before updating
       if (droneListScrollRef.current) {
         droneListScrollTopRef.current = droneListScrollRef.current.scrollTop;
@@ -620,6 +632,10 @@ function App() {
   const handleTelemetryReceived = useCallback((batch: TelemetryBatch) => {
     if (!useLiveTelemetry) return; // Only process if live telemetry mode is enabled
     
+    // Update timestamp to indicate WebSocket data was received
+    // This prevents REST API from overwriting real-time data
+    lastWsUpdateRef.current = Date.now();
+    
     // Convert telemetry data to DroneStatus format and update drones
     setDrones(prevDrones => {
       let hasChanges = false;
@@ -682,7 +698,12 @@ function App() {
       });
       
       // Only return new array if there were actual changes to prevent flickering
-      return hasChanges ? updatedDrones : prevDrones;
+      // Sort by uavId to maintain stable order and prevent list reordering flicker
+      if (hasChanges) {
+        updatedDrones.sort((a, b) => a.uavId.localeCompare(b.uavId));
+        return updatedDrones;
+      }
+      return prevDrones;
     });
   }, [useLiveTelemetry]);
 
