@@ -622,45 +622,67 @@ function App() {
     
     // Convert telemetry data to DroneStatus format and update drones
     setDrones(prevDrones => {
+      let hasChanges = false;
       const updatedDrones = [...prevDrones];
       
       batch.uavs.forEach(uav => {
         const uavIdStr = `UAV_${String(uav.uavId).padStart(3, '0')}`;
         const existingIndex = updatedDrones.findIndex(d => d.uavId === uavIdStr);
         
-        const droneData: DroneStatus = {
-          uavId: uavIdStr,
-          droneSn: `SN${String(uav.uavId).padStart(6, '0')}`,
-          lat: uav.lat,
-          lng: uav.lon,
-          altitude: uav.alt,
-          battery: 85, // Default battery (not in telemetry)
-          hardwareStatus: 'NORMAL',
-          flightStatus: uav.isActive ? 'FLYING' : 'IDLE',
-          taskStatus: uav.isActive ? 'EXECUTING' : 'IDLE',
-          color: '#22c55e',
-          model: 'DJI Mavic 3',
-          owner: 'System',
-          currentTask: uav.isActive ? 'Live Mission' : undefined,
-          teamName: 'Alpha'
-        };
+        // Validate and normalize coordinates
+        // Latitude must be in [-90, 90], Longitude must be in [-180, 180]
+        // If lat is outside [-90, 90] but lon is within [-90, 90], they are likely swapped
+        let normalizedLat = uav.lat;
+        let normalizedLng = uav.lon;
+        
+        if (Math.abs(uav.lat) > 90 && Math.abs(uav.lon) <= 90) {
+          // Coordinates appear to be swapped - swap them back
+          normalizedLat = uav.lon;
+          normalizedLng = uav.lat;
+        }
         
         if (existingIndex >= 0) {
-          // Update existing drone
-          updatedDrones[existingIndex] = {
-            ...updatedDrones[existingIndex],
-            lat: uav.lat,
-            lng: uav.lon,
-            altitude: uav.alt,
-            flightStatus: uav.isActive ? 'FLYING' : 'IDLE',
-          };
+          // Check if data actually changed before updating
+          const existing = updatedDrones[existingIndex];
+          const newFlightStatus = uav.isActive ? 'FLYING' : 'IDLE';
+          if (existing.lat !== normalizedLat || 
+              existing.lng !== normalizedLng || 
+              existing.altitude !== uav.alt ||
+              existing.flightStatus !== newFlightStatus) {
+            hasChanges = true;
+            updatedDrones[existingIndex] = {
+              ...existing,
+              lat: normalizedLat,
+              lng: normalizedLng,
+              altitude: uav.alt,
+              flightStatus: newFlightStatus,
+            };
+          }
         } else {
           // Add new drone
+          hasChanges = true;
+          const droneData: DroneStatus = {
+            uavId: uavIdStr,
+            droneSn: `SN${String(uav.uavId).padStart(6, '0')}`,
+            lat: normalizedLat,
+            lng: normalizedLng,
+            altitude: uav.alt,
+            battery: 85,
+            hardwareStatus: 'NORMAL',
+            flightStatus: uav.isActive ? 'FLYING' : 'IDLE',
+            taskStatus: uav.isActive ? 'EXECUTING' : 'IDLE',
+            color: '#22c55e',
+            model: 'DJI Mavic 3',
+            owner: 'System',
+            currentTask: uav.isActive ? 'Live Mission' : undefined,
+            teamName: 'Alpha'
+          };
           updatedDrones.push(droneData);
         }
       });
       
-      return updatedDrones;
+      // Only return new array if there were actual changes to prevent flickering
+      return hasChanges ? updatedDrones : prevDrones;
     });
   }, [useLiveTelemetry]);
 
@@ -1213,16 +1235,17 @@ function App() {
             svgElement.style.transform = `rotate(${heading}deg)`;
           }
         
-          // Update marker style if flight status changed (update filter for glow effect)
+          // Update marker style if flight status changed (simple shadow, no glow)
           // Using orange (#f97316) for flying and gray (#6b7280) for idle - better contrast with map
           const currentFilter = existingMarkerData.element.style.filter;
-          const expectedGlow = isFlying ? 'rgba(249, 115, 22' : 'rgba(107, 114, 128';
-          if (!currentFilter.includes(expectedGlow)) {
-            existingMarkerData.element.style.filter = `drop-shadow(0 2px 4px rgba(0,0,0,0.5)) drop-shadow(0 0 10px ${isFlying ? 'rgba(249, 115, 22, 0.8)' : 'rgba(107, 114, 128, 0.4)'})`;
+          const expectedFilter = 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))';
+          if (currentFilter !== expectedFilter) {
+            existingMarkerData.element.style.filter = expectedFilter;
             // Update SVG colors - orange for flying, gray for idle
             const gElement = existingMarkerData.element.querySelector('g');
             if (gElement) {
               gElement.setAttribute('fill', isFlying ? '#f97316' : '#6b7280');
+              gElement.removeAttribute('filter');
               const circles = gElement.querySelectorAll('circle[fill]');
               circles.forEach(circle => circle.setAttribute('fill', isFlying ? '#f97316' : '#6b7280'));
             }
@@ -1231,21 +1254,15 @@ function App() {
           // CREATE NEW MARKER: Only for drones that don't have a marker yet
           const el = document.createElement('div');
           el.className = 'drone-marker';
-          // Pure drone icon without circular background - just the drone SVG with drop shadow
+          // Pure drone icon without circular background - simple shadow, no glow
           // Using orange (#f97316) for flying and gray (#6b7280) for idle - better contrast with map
           const droneColor = isFlying ? '#f97316' : '#6b7280';
-          el.style.cssText = `width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)) drop-shadow(0 0 10px ${isFlying ? 'rgba(249, 115, 22, 0.8)' : 'rgba(107, 114, 128, 0.4)'}); transition: filter 0.3s ease;`;
+          el.style.cssText = `width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3)); transition: filter 0.3s ease;`;
           // Pure drone icon SVG - quadcopter shape (from iconfont style) pointing up (north = 0 degrees)
           // No circular background, just the drone shape with stroke for visibility
           el.innerHTML = `<svg width="32" height="32" viewBox="0 0 1024 1024" style="transform: rotate(${heading}deg); transition: transform 0.1s linear;">
             <!-- Quadcopter drone icon - 4 rotors with arms and central body -->
-            <defs>
-              <filter id="droneGlow${drone.uavId}" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="2" result="blur"/>
-                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-              </filter>
-            </defs>
-            <g fill="${droneColor}" stroke="#ffffff" stroke-width="20" filter="url(#droneGlow${drone.uavId})">
+            <g fill="${droneColor}" stroke="#ffffff" stroke-width="20">
               <!-- Central body -->
               <circle cx="512" cy="512" r="80"/>
               <!-- Arms -->
