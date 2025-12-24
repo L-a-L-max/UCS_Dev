@@ -483,9 +483,6 @@ function App() {
   const droneListScrollTopRef = useRef<number>(0);
   const teamListScrollTopRef = useRef<number>(0);
   
-  // Track when WebSocket data was last received to prevent REST API from overwriting it
-  const lastWsUpdateRef = useRef<number>(0);
-  const WS_DATA_PRIORITY_MS = 10000; // WebSocket data takes priority for 10 seconds after last update
 
   const handleLogin = async () => {
     try {
@@ -519,11 +516,11 @@ function App() {
     const fetchDroneData = useCallback(async () => {
       if (!token) return;
       
-      // Skip REST API update if WebSocket data was received recently
-      // This prevents REST API from overwriting real-time WebSocket data with stale database data
-      const timeSinceWsUpdate = Date.now() - lastWsUpdateRef.current;
-      if (timeSinceWsUpdate < WS_DATA_PRIORITY_MS && lastWsUpdateRef.current > 0) {
-        return; // WebSocket data takes priority
+      // When live telemetry mode is enabled, completely skip REST API for drone data
+      // User only cares about real-time data, not historical database data
+      // This prevents any possibility of stale data overwriting real-time telemetry
+      if (useLiveTelemetry) {
+        return; // Live telemetry mode - only use WebSocket data
       }
       
       // Save scroll position before updating
@@ -558,7 +555,7 @@ function App() {
           });
         }
       } catch (err) { console.error('Failed to fetch drone data:', err); }
-    }, [token]);
+    }, [token, useLiveTelemetry]);
 
   const fetchWeatherData = useCallback(async () => {
     if (!token) return;
@@ -631,10 +628,6 @@ function App() {
   // Handle incoming telemetry data from WebSocket
   const handleTelemetryReceived = useCallback((batch: TelemetryBatch) => {
     if (!useLiveTelemetry) return; // Only process if live telemetry mode is enabled
-    
-    // Update timestamp to indicate WebSocket data was received
-    // This prevents REST API from overwriting real-time data
-    lastWsUpdateRef.current = Date.now();
     
     // Convert telemetry data to DroneStatus format and update drones
     setDrones(prevDrones => {
