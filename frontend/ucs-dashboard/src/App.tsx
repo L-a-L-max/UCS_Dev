@@ -2545,7 +2545,7 @@ function App() {
                                   style={{ backgroundColor: visibleTeamIds.has(team.teamId) ? TEAM_COLORS[teamIndex % TEAM_COLORS.length] : undefined }}
                                 >
                                   <div className="w-2 h-2 rounded-full" style={{ backgroundColor: TEAM_COLORS[teamIndex % TEAM_COLORS.length] }}></div>
-                                  {team.teamName || `小队${teamIndex + 1}`}
+                                  {team.teamName}
                                 </Button>
                               ))}
                             </div>
