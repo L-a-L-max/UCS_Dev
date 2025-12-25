@@ -26,7 +26,7 @@ import {
   List,
   X,
   Loader2,
-  User,
+  User as _User,
   ChevronDown,
   ChevronUp,
   Navigation
@@ -64,7 +64,7 @@ const API_BASE = getApiBase();
 // Chinese localization dictionary
 const zhCN = {
   // Login page
-  platformTitle: '无人机综合管控平台',
+  platformTitle: '无人机综合业务平台',
   username: '用户名',
   password: '密码',
   login: '登录',
@@ -75,7 +75,7 @@ const zhCN = {
   accessDenied: '访问被拒绝：需要观察员角色',
   
   // Header
-  dashboardTitle: '无人机综合管控平台',
+  dashboardTitle: '无人机综合业务平台',
   refresh: '刷新',
   logout: '退出',
   
@@ -1307,7 +1307,6 @@ function App() {
                 </div>
               </div>
               <div style="display: grid; gap: 8px; font-size: 12px;">
-                <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.model}</span><span style="font-weight: 500;">${drone.model || 'N/A'}</span></div>
                 <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.battery}</span><span style="font-weight: 500; color: ${drone.battery > 50 ? '#86efac' : drone.battery > 20 ? '#fde047' : '#fca5a5'};">${drone.battery?.toFixed(0)}%</span></div>
                 <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.altitude}</span><span style="font-weight: 500;">${drone.altitude?.toFixed(0)}m</span></div>
                 <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.position}</span><span style="font-weight: 500; font-size: 10px;">${drone.lat?.toFixed(4)}, ${drone.lng?.toFixed(4)}</span></div>
@@ -1493,8 +1492,9 @@ function App() {
     }
   };
 
-  // Toggle team expansion and fetch members
-  const toggleTeamExpansion = (teamId: string) => {
+  // Toggle team expansion and fetch members - 暂时未使用，等待任务小队组件恢复后启用
+  // @ts-ignore - 暂时保留此函数，等待任务小队组件恢复后使用
+  const _toggleTeamExpansion = (teamId: string) => {
     if (expandedTeamId === teamId) {
       setExpandedTeamId(null);
     } else {
@@ -1817,7 +1817,6 @@ function App() {
               <span style="margin-left: auto; background: ${drone.flightStatus === 'FLYING' ? '#22c55e' : '#64748b'}; padding: 2px 8px; border-radius: 4px; font-size: 11px;">${drone.flightStatus === 'FLYING' ? '飞行中' : '待机'}</span>
             </div>
             <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px;">
-              <span style="opacity: 0.8;">型号</span><span>${drone.model}</span>
               <span style="opacity: 0.8;">电量</span><span>${drone.battery}%</span>
               <span style="opacity: 0.8;">高度</span><span>${drone.altitude}m</span>
               <span style="opacity: 0.8;">位置</span><span>${drone.lat.toFixed(4)}, ${drone.lng.toFixed(4)}</span>
@@ -2612,62 +2611,8 @@ function App() {
             </CardContent>
           </Card>
 
-          {/* Team List with Member Expansion */}
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <Users className="w-4 h-4 text-green-400" />{zhCN.teams}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
-              <div ref={teamListScrollRef} className="space-y-2 max-h-64 overflow-y-auto">
-                {teams.map((team, teamIndex) => (
-                  <div key={team.teamId}>
-                    <div 
-                      className="bg-slate-600 p-2 rounded cursor-pointer hover:bg-slate-500 transition-colors"
-                      style={{ borderLeft: `3px solid ${TEAM_COLORS[teamIndex % TEAM_COLORS.length]}` }}
-                      onClick={() => toggleTeamExpansion(team.teamId)}
-                    >
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <div className="text-xs font-bold">{team.teamName}</div>
-                          <div className="text-xs text-slate-400">{zhCN.leader}: {team.leader}</div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge className="text-xs bg-slate-500">
-                            {teamMembers[team.teamId] ? teamMembers[team.teamId].length : team.memberCount} {zhCN.teamMembers}
-                          </Badge>
-                          {expandedTeamId === team.teamId ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                        </div>
-                      </div>
-                    </div>
-                    {expandedTeamId === team.teamId && teamMembers[team.teamId] && (
-                      <div className="ml-3 mt-1 space-y-1">
-                        {teamMembers[team.teamId].map((member) => (
-                          <div 
-                            key={member.userId}
-                            className="bg-slate-500/50 p-2 rounded cursor-pointer hover:bg-slate-500 transition-colors flex items-center gap-2"
-                            onClick={() => handleMemberClick(member, teamIndex)}
-                          >
-                            <div 
-                              className="w-6 h-6 rounded-full flex items-center justify-center"
-                              style={{ backgroundColor: TEAM_COLORS[teamIndex % TEAM_COLORS.length] }}
-                            >
-                              <User className="w-3 h-3 text-white" />
-                            </div>
-                            <div className="flex-1">
-                              <div className="text-xs font-medium">{member.realName || member.username}</div>
-                              <div className="text-xs text-slate-400">{member.role}</div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+          {/* Team List with Member Expansion - 暂时隐藏，等待后续对接数据库或订阅话题后再显示 */}
+          {/* TODO: 当任务小队数据源确定后（数据库查询或话题订阅），取消注释以下组件 */}
 
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
