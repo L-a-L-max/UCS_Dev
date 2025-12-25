@@ -2506,7 +2506,7 @@ function App() {
           )}
 
                     {/* Flight Status Filter - Bottom Left with Collapse Button */}
-                    <div className={`absolute left-3 z-10 bg-slate-800/80 backdrop-blur-sm rounded-lg max-w-xs border border-slate-600/50 transition-all duration-300 ${flightStatusPanelCollapsed ? 'bottom-0 translate-y-full opacity-0 pointer-events-none' : 'bottom-3'}`}>
+                    <div className={`absolute left-3 z-10 bg-slate-800/80 backdrop-blur-sm rounded-lg border border-slate-600/50 transition-all duration-300 ${flightStatusPanelCollapsed ? 'bottom-0 translate-y-full opacity-0 pointer-events-none' : 'bottom-10'}`} style={{ maxWidth: '320px' }}>
                       {/* Collapse button - top center of panel */}
                       <button
                         onClick={() => setFlightStatusPanelCollapsed(true)}
@@ -2534,7 +2534,7 @@ function App() {
                             <div className="flex items-center gap-1 text-xs text-slate-300 mb-1 mt-2 pt-2 border-t border-slate-600/50">
                               <Users className="w-3 h-3" />{zhCN.teamMemberFilter}
                             </div>
-                            <div className="flex flex-wrap items-center gap-1 text-xs">
+                            <div className="flex flex-wrap items-center gap-1 text-xs max-h-24 overflow-y-auto">
                               {teams.map((team, teamIndex) => (
                                 <Button 
                                   key={team.teamId}
@@ -2559,7 +2559,7 @@ function App() {
                     {flightStatusPanelCollapsed && (
                       <button
                         onClick={() => setFlightStatusPanelCollapsed(false)}
-                        className="absolute bottom-3 left-3 z-10 bg-slate-800/80 backdrop-blur-sm hover:bg-slate-700 text-white px-3 py-1 rounded-lg transition-all duration-300 shadow-lg border border-slate-600/50 flex items-center gap-1 text-xs"
+                        className="absolute bottom-10 left-3 z-10 bg-slate-800/80 backdrop-blur-sm hover:bg-slate-700 text-white px-3 py-1 rounded-lg transition-all duration-300 shadow-lg border border-slate-600/50 flex items-center gap-1 text-xs"
                         title="展开飞行状态面板"
                       >
                         <ChevronUp className="w-3 h-3" />
