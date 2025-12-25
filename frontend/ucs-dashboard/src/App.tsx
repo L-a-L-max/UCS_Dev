@@ -1307,7 +1307,7 @@ function App() {
                 </div>
               </div>
               <div style="display: grid; gap: 8px; font-size: 12px;">
-                <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.battery}</span><span style="font-weight: 500; color: ${drone.battery > 50 ? '#86efac' : drone.battery > 20 ? '#fde047' : '#fca5a5'};">${drone.battery?.toFixed(0)}%</span></div>
+                ${drone.battery != null ? `<div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.battery}</span><span style="font-weight: 500; color: ${drone.battery > 50 ? '#86efac' : drone.battery > 20 ? '#fde047' : '#fca5a5'};">${drone.battery?.toFixed(0)}%</span></div>` : ''}
                 <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.altitude}</span><span style="font-weight: 500;">${drone.altitude?.toFixed(0)}m</span></div>
                 <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.position}</span><span style="font-weight: 500; font-size: 10px;">${drone.lat?.toFixed(4)}, ${drone.lng?.toFixed(4)}</span></div>
                 <div style="display: flex; justify-content: space-between;"><span style="color: #93c5fd;">${zhCN.task}</span><span style="font-weight: 500; color: ${drone.taskStatus === 'EXECUTING' ? '#93c5fd' : '#d1d5db'};">${drone.currentTask || drone.taskStatus || zhCN.noTask}</span></div>
@@ -1817,7 +1817,7 @@ function App() {
               <span style="margin-left: auto; background: ${drone.flightStatus === 'FLYING' ? '#22c55e' : '#64748b'}; padding: 2px 8px; border-radius: 4px; font-size: 11px;">${drone.flightStatus === 'FLYING' ? '飞行中' : '待机'}</span>
             </div>
             <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px;">
-              <span style="opacity: 0.8;">电量</span><span>${drone.battery}%</span>
+              ${drone.battery != null ? `<span style="opacity: 0.8;">电量</span><span>${drone.battery}%</span>` : ''}
               <span style="opacity: 0.8;">高度</span><span>${drone.altitude}m</span>
               <span style="opacity: 0.8;">位置</span><span>${drone.lat.toFixed(4)}, ${drone.lng.toFixed(4)}</span>
               <span style="opacity: 0.8;">当前任务</span><span>${drone.taskStatus || 'N/A'}</span>
@@ -1882,7 +1882,7 @@ function App() {
         <div className="hud-corner hud-corner-br"></div>
         <div className="scan-line"></div>
         
-        <Card className="w-96 bg-slate-800/90 backdrop-blur-md border-slate-600 shadow-2xl shadow-blue-500/10 relative z-10">
+        <Card className="w-96 login-card bg-slate-800/90 backdrop-blur-md border-slate-600 shadow-2xl shadow-blue-500/10 relative z-10">
           <CardHeader className="pb-2">
             <div className="flex justify-center mb-4">
               <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-500/30">
@@ -1925,7 +1925,7 @@ function App() {
 
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar */}
-        <div className={`${leftSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-64'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
+        <div className={`sidebar-left ${leftSidebarCollapsed ? 'w-0 overflow-hidden collapsed' : 'w-64'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center justify-between text-white">
@@ -2579,7 +2579,7 @@ function App() {
         </div>
 
         {/* Right Sidebar */}
-        <div className={`${rightSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-72'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
+        <div className={`sidebar-right ${rightSidebarCollapsed ? 'w-0 overflow-hidden collapsed' : 'w-72'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
           <Card className="bg-slate-700 border-slate-600">
             <CardHeader className="py-2 px-3">
               <CardTitle className="text-sm flex items-center gap-2 text-white">
@@ -2600,9 +2600,11 @@ function App() {
                       </Badge>
                     </div>
                     <div className="flex justify-between mt-1 text-xs">
-                      <span className={`flex items-center gap-1 ${drone.battery > 50 ? 'text-green-400' : drone.battery > 20 ? 'text-yellow-400' : 'text-red-400'}`}>
-                        <Battery className="w-3 h-3" />{drone.battery?.toFixed(0)}%
-                      </span>
+                      {drone.battery != null && (
+                        <span className={`flex items-center gap-1 ${drone.battery > 50 ? 'text-green-400' : drone.battery > 20 ? 'text-yellow-400' : 'text-red-400'}`}>
+                          <Battery className="w-3 h-3" />{drone.battery?.toFixed(0)}%
+                        </span>
+                      )}
                       <span className="text-slate-400">{drone.altitude?.toFixed(0)}m</span>
                     </div>
                   </div>
