@@ -16,4 +16,5 @@ public class LoginResponse {
     private List<String> roles;
     private Long teamId;
     private String teamName;
+    private List<Long> assignedDroneIds;
 }

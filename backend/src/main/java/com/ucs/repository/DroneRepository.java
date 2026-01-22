@@ -11,6 +11,8 @@ import java.util.Optional;
 public interface DroneRepository extends JpaRepository<Drone, Long> {
     Optional<Drone> findByDroneSn(String droneSn);
     List<Drone> findByDefaultTeamId(Long teamId);
+    List<Drone> findByBoundMemberId(Long boundMemberId);
+    Optional<Drone> findByMavlinkSystemId(Integer mavlinkSystemId);
     
     @Query("SELECT d FROM Drone d WHERE d.id IN :ids")
     List<Drone> findByIdIn(List<Long> ids);

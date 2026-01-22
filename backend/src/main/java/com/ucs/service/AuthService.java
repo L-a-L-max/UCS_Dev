@@ -2,10 +2,12 @@ package com.ucs.service;
 
 import com.ucs.dto.LoginRequest;
 import com.ucs.dto.LoginResponse;
+import com.ucs.entity.Drone;
 import com.ucs.entity.Role;
 import com.ucs.entity.Team;
 import com.ucs.entity.User;
 import com.ucs.entity.UserRoleMap;
+import com.ucs.repository.DroneRepository;
 import com.ucs.repository.RoleRepository;
 import com.ucs.repository.TeamRepository;
 import com.ucs.repository.UserRepository;
@@ -24,6 +26,7 @@ public class AuthService {
     private final UserRoleMapRepository userRoleMapRepository;
     private final TeamRepository teamRepository;
     private final RoleRepository roleRepository;
+    private final DroneRepository droneRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
     
@@ -31,12 +34,14 @@ public class AuthService {
                        UserRoleMapRepository userRoleMapRepository,
                        TeamRepository teamRepository,
                        RoleRepository roleRepository,
+                       DroneRepository droneRepository,
                        PasswordEncoder passwordEncoder, 
                        JwtUtil jwtUtil) {
         this.userRepository = userRepository;
         this.userRoleMapRepository = userRoleMapRepository;
         this.teamRepository = teamRepository;
         this.roleRepository = roleRepository;
+        this.droneRepository = droneRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtUtil = jwtUtil;
     }
@@ -72,6 +77,13 @@ public class AuthService {
             teamRepository.findById(user.getTeamId())
                     .ifPresent(team -> response.setTeamName(team.getTeamName()));
         }
+        
+        // Get assigned drone IDs for this user
+        List<Long> assignedDroneIds = droneRepository.findByBoundMemberId(user.getId())
+                .stream()
+                .map(Drone::getId)
+                .collect(Collectors.toList());
+        response.setAssignedDroneIds(assignedDroneIds);
         
         return response;
     }

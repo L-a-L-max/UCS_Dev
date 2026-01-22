@@ -27,6 +27,12 @@ public class Drone {
     @Column(name = "default_team_id")
     private Long defaultTeamId;
     
+    @Column(name = "bound_member_id")
+    private Long boundMemberId;
+    
+    @Column(name = "mavlink_system_id")
+    private Integer mavlinkSystemId;
+    
     @Column(name = "created_at")
     private LocalDateTime createdAt;
     

@@ -126,4 +126,18 @@ public class LeaderController {
             return ApiResponse.error(-1, e.getMessage());
         }
     }
+    
+    @PostMapping("/uav/revoke")
+    public ApiResponse<Object> revokeUav(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestBody Map<String, String> request) {
+        try {
+            String uavId = request.get("uavId");
+            Long droneId = droneService.parseDroneId(uavId);
+            droneService.revokeDroneFromUser(droneId, principal.getUserId());
+            return ApiResponse.success("revoked", null);
+        } catch (Exception e) {
+            return ApiResponse.error(-1, e.getMessage());
+        }
+    }
 }

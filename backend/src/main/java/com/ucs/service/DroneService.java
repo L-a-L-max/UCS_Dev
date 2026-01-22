@@ -189,7 +189,38 @@ public class DroneService {
             newOwnership.setUserId(userId);
             newOwnership.setAssignedBy(assignedBy);
             droneOwnershipRepository.save(newOwnership);
+            
+            // Also update the boundMemberId field in the Drone entity
+            Drone drone = droneRepository.findById(droneId)
+                    .orElseThrow(() -> new RuntimeException("Drone not found: " + droneId));
+            drone.setBoundMemberId(userId);
+            droneRepository.save(drone);
         }
+    }
+    
+    @Transactional
+    public void revokeDroneFromUser(Long droneId, Long revokedBy) {
+        // Expire the current ownership
+        droneOwnershipRepository.findActiveByDroneId(droneId)
+                .ifPresent(ownership -> {
+                    ownership.setExpiredAt(LocalDateTime.now());
+                    droneOwnershipRepository.save(ownership);
+                });
+        
+        // Clear the boundMemberId field in the Drone entity
+        Drone drone = droneRepository.findById(droneId)
+                .orElseThrow(() -> new RuntimeException("Drone not found: " + droneId));
+        drone.setBoundMemberId(null);
+        droneRepository.save(drone);
+        
+        // Log the revocation event
+        EventLog event = new EventLog();
+        event.setEventType("DRONE_REVOKED");
+        event.setDroneId(droneId);
+        event.setUserId(revokedBy);
+        event.setLevel("INFO");
+        event.setMessage("Drone " + drone.getDroneSn() + " revoked from user");
+        eventLogRepository.save(event);
     }
     
     public List<HeatmapPointDTO> getHeatmapData() {
