@@ -70,6 +70,7 @@ public class DataInitService {
         initRoles();
         initTeams();
         initUsers();
+        initDrones();
         initTasks();
         initWeather();
     }
@@ -122,8 +123,12 @@ public class DataInitService {
         Role operatorRole = roleRepository.findByRoleName("operator").orElseThrow();
         Role leaderRole = roleRepository.findByRoleName("leader").orElseThrow();
         Role observerRole = roleRepository.findByRoleName("observer").orElseThrow();
+        Role commanderRole = roleRepository.findByRoleName("commander").orElseThrow();
         
+        // Users: username, realName, teamId, role
+        // Commander has no team (global), observer has no team (read-only)
         String[][] users = {
+                {"commander", "指挥官", null, "commander"},
                 {"zhangsan", "张三", "1", "leader"},
                 {"lisi", "李四", "1", "operator"},
                 {"wangwu", "王五", "1", "operator"},
@@ -155,6 +160,7 @@ public class DataInitService {
             urm.setUserId(user.getId());
             
             switch (userData[3]) {
+                case "commander" -> urm.setRoleId(commanderRole.getId());
                 case "leader" -> urm.setRoleId(leaderRole.getId());
                 case "observer" -> urm.setRoleId(observerRole.getId());
                 default -> urm.setRoleId(operatorRole.getId());
@@ -180,60 +186,83 @@ public class DataInitService {
         }
     }
     
+    /**
+     * Initialize drones with uavId (unique identifier derived from MAC).
+     * The uavId format matches what PX4 simulation scripts will use.
+     * droneSn, uavId, model, manufacturer, teamId, mavlinkSystemId
+     */
     private void initDrones() {
         String[][] drones = {
-                {"DJI-M300-001", "M300 RTK", "DJI", "1"},
-                {"DJI-M300-002", "M300 RTK", "DJI", "1"},
-                {"DJI-M300-003", "M300 RTK", "DJI", "1"},
-                {"DJI-M30-001", "M30", "DJI", "1"},
-                {"DJI-M30-002", "M30", "DJI", "2"},
-                {"DJI-M30-003", "M30", "DJI", "2"},
-                {"DJI-AIR2S-001", "Air 2S", "DJI", "2"},
-                {"DJI-AIR2S-002", "Air 2S", "DJI", "3"},
-                {"DJI-MINI3-001", "Mini 3 Pro", "DJI", "3"},
-                {"DJI-MINI3-002", "Mini 3 Pro", "DJI", "3"}
+                {"PX4-SIM-001", "UAV_001", "PX4-SITL", "PX4", "1", "1"},
+                {"PX4-SIM-002", "UAV_002", "PX4-SITL", "PX4", "1", "2"},
+                {"PX4-SIM-003", "UAV_003", "PX4-SITL", "PX4", "1", "3"},
+                {"PX4-SIM-004", "UAV_004", "PX4-SITL", "PX4", "2", "4"},
+                {"PX4-SIM-005", "UAV_005", "PX4-SITL", "PX4", "2", "5"},
+                {"PX4-SIM-006", "UAV_006", "PX4-SITL", "PX4", "2", "6"},
+                {"PX4-SIM-007", "UAV_007", "PX4-SITL", "PX4", "3", "7"},
+                {"PX4-SIM-008", "UAV_008", "PX4-SITL", "PX4", "3", "8"}
         };
         
         double baseLat = 39.9042;
         double baseLng = 116.4074;
+        
+        // User IDs: 1=commander, 2=zhangsan(leader T1), 3=lisi(pilot T1), 4=wangwu(pilot T1)
+        // 5=zhaoliu(leader T2), 6=qianqi(pilot T2), 7=sunba(pilot T2)
+        // 8=zhoujiu(leader T3), 9=wushi(pilot T3)
+        // Assign drones to pilots in their respective teams
+        long[][] droneOwners = {
+                {3L, 1L},  // UAV_001 → lisi (pilot T1), assigned by commander
+                {3L, 1L},  // UAV_002 → lisi (pilot T1)
+                {4L, 1L},  // UAV_003 → wangwu (pilot T1)
+                {6L, 1L},  // UAV_004 → qianqi (pilot T2)
+                {6L, 1L},  // UAV_005 → qianqi (pilot T2)
+                {7L, 1L},  // UAV_006 → sunba (pilot T2)
+                {9L, 1L},  // UAV_007 → wushi (pilot T3)
+                {9L, 1L}   // UAV_008 → wushi (pilot T3)
+        };
         
         for (int i = 0; i < drones.length; i++) {
             String[] droneData = drones[i];
             
             Drone drone = new Drone();
             drone.setDroneSn(droneData[0]);
-            drone.setModel(droneData[1]);
-            drone.setManufacturer(droneData[2]);
-            drone.setDefaultTeamId(Long.parseLong(droneData[3]));
+            drone.setUavId(droneData[1]);
+            drone.setModel(droneData[2]);
+            drone.setManufacturer(droneData[3]);
+            drone.setDefaultTeamId(Long.parseLong(droneData[4]));
+            drone.setMavlinkSystemId(Integer.parseInt(droneData[5]));
+            drone.setOnlineStatus(false);
             drone.setCapabilities("{\"camera\": true, \"thermal\": " + (i < 4) + ", \"zoom\": true}");
             drone = droneRepository.save(drone);
             
+            // Assign drone to team
             TeamDroneMap tdm = new TeamDroneMap();
-            tdm.setTeamId(Long.parseLong(droneData[3]));
+            tdm.setTeamId(Long.parseLong(droneData[4]));
             tdm.setDroneId(drone.getId());
             teamDroneMapRepository.save(tdm);
             
-            Long userId = (long) (2 + (i % 6));
+            // Assign drone to pilot
             DroneOwnership ownership = new DroneOwnership();
             ownership.setDroneId(drone.getId());
-            ownership.setUserId(userId);
-            ownership.setAssignedBy(1L);
+            ownership.setUserId(droneOwners[i][0]);
+            ownership.setAssignedBy(droneOwners[i][1]);
             droneOwnershipRepository.save(ownership);
             
+            // Create initial drone status
             DroneStatus status = new DroneStatus();
             status.setDroneId(drone.getId());
-            status.setLat(baseLat + (random.nextDouble() - 0.5) * 0.1);
-            status.setLng(baseLng + (random.nextDouble() - 0.5) * 0.1);
-            status.setAlt(50.0 + random.nextDouble() * 150);
+            status.setLat(baseLat + (random.nextDouble() - 0.5) * 0.02);
+            status.setLng(baseLng + (random.nextDouble() - 0.5) * 0.02);
+            status.setAlt(0.0); // On ground initially
             status.setHeading((float) (random.nextDouble() * 360));
-            status.setVelocity((float) (random.nextDouble() * 15));
-            status.setBattery((float) (50 + random.nextDouble() * 50));
-            status.setHealthStatus(random.nextInt(10) < 8 ? 0 : 1);
-            status.setRiskLevel(random.nextInt(10) < 7 ? 0 : (random.nextInt(10) < 9 ? 1 : 2));
-            status.setFlightStatus(random.nextBoolean() ? "FLYING" : "IDLE");
-            status.setTaskStatus(random.nextBoolean() ? "EXECUTING" : "IDLE");
-            status.setGridX((int) ((status.getLng() - 121.0) * 100));
-            status.setGridY((int) ((status.getLat() - 31.0) * 100));
+            status.setVelocity(0f);
+            status.setBattery((float) (80 + random.nextDouble() * 20));
+            status.setHealthStatus(0);
+            status.setRiskLevel(0);
+            status.setFlightStatus("IDLE");
+            status.setTaskStatus("IDLE");
+            status.setGridX((int) ((status.getLng() - 116.0) * 1000));
+            status.setGridY((int) ((status.getLat() - 39.0) * 1000));
             droneStatusRepository.save(status);
         }
     }

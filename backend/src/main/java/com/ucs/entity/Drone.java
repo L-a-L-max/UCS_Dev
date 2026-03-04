@@ -15,6 +15,17 @@ public class Drone {
     @Column(name = "drone_sn", nullable = false, unique = true, length = 100)
     private String droneSn;
     
+    /**
+     * Unique identifier derived from MAC address on the onboard computer.
+     * This is the permanent drone identifier used throughout the Zenoh network.
+     * Format example: "UAV_001", "UAV_002", etc.
+     */
+    @Column(name = "uav_id", unique = true, length = 50)
+    private String uavId;
+    
+    @Column(name = "mavlink_system_id")
+    private Integer mavlinkSystemId;
+    
     @Column(length = 100)
     private String model;
     
@@ -26,6 +37,15 @@ public class Drone {
     
     @Column(name = "default_team_id")
     private Long defaultTeamId;
+    
+    /**
+     * Current online status based on Zenoh heartbeat.
+     */
+    @Column(name = "online_status", columnDefinition = "BOOLEAN DEFAULT FALSE")
+    private Boolean onlineStatus = false;
+    
+    @Column(name = "last_heartbeat")
+    private LocalDateTime lastHeartbeat;
     
     @Column(name = "created_at")
     private LocalDateTime createdAt;
