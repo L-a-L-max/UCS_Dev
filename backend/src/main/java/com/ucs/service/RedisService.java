@@ -162,13 +162,19 @@ public class RedisService {
      */
     public boolean releaseLock(String uavId, String lockValue) {
         String key = String.format(LOCK_DRONE_PREFIX, uavId);
-        String currentValue = stringRedisTemplate.opsForValue().get(key);
-        if (lockValue.equals(currentValue)) {
-            stringRedisTemplate.delete(key);
+        // Use Lua script for atomic compare-and-delete to prevent race conditions
+        String script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+        Long result = stringRedisTemplate.execute(
+                new org.springframework.data.redis.core.script.DefaultRedisScript<>(script, Long.class),
+                List.of(key),
+                lockValue
+        );
+        boolean released = result != null && result > 0;
+        if (released) {
             log.debug("Lock released for drone {}", uavId);
-            return true;
+        } else {
+            log.warn("Lock release failed for drone {} - value mismatch", uavId);
         }
-        log.warn("Lock release failed for drone {} - value mismatch", uavId);
-        return false;
+        return released;
     }
 }

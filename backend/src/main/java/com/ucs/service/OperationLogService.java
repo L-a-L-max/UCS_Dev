@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Service for recording and querying operation logs.
@@ -99,6 +100,13 @@ public class OperationLogService {
     public Page<OperationLog> getLogsByDroneId(Long targetDroneId, int page, int size) {
         Pageable pageable = PageRequest.of(page, size);
         return operationLogRepository.findByTargetDroneIdOrderByCreatedAtDesc(targetDroneId, pageable);
+    }
+    
+    /**
+     * Get a single operation log by ID.
+     */
+    public Optional<OperationLog> getLogById(Long id) {
+        return operationLogRepository.findById(id);
     }
     
     /**

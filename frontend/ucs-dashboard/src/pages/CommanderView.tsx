@@ -82,7 +82,8 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
     try {
       const res = await getFleetOverview(token);
       if (res.code === 0 && res.data) {
-        setDrones(Array.isArray(res.data) ? res.data : []);
+        const data = res.data as unknown as Record<string, unknown>;
+        setDrones(Array.isArray(data.drones) ? data.drones as DroneInfo[] : (Array.isArray(res.data) ? res.data : []));
       }
     } catch (err) {
       console.error('Failed to fetch fleet:', err);

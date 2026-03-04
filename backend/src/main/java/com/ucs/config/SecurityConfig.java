@@ -44,11 +44,11 @@ public class SecurityConfig {
                 .requestMatchers("/h2-console/**").permitAll()
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
                 // Role-based access control (RBAC)
-                .requestMatchers("/api/v1/screen/**").hasRole("OBSERVER")
-                .requestMatchers("/api/v1/pilot/**").hasAnyRole("PILOT", "LEADER", "COMMANDER")
+                .requestMatchers("/api/v1/screen/**").authenticated()
+                .requestMatchers("/api/v1/pilot/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
                 .requestMatchers("/api/v1/leader/**").hasAnyRole("LEADER", "COMMANDER")
-                // Zenoh control endpoints - pilots and above can send commands
-                .requestMatchers("/api/v1/control/**").hasAnyRole("PILOT", "LEADER", "COMMANDER")
+                // Zenoh control endpoints - pilots/operators and above can send commands
+                .requestMatchers("/api/v1/control/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
                 // Commander-only endpoints - permission transfer, global management
                 .requestMatchers("/api/v1/commander/**").hasRole("COMMANDER")
                 // Operation logs - all authenticated users can view

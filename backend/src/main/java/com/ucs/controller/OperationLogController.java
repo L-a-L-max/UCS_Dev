@@ -86,9 +86,7 @@ public class OperationLogController {
     @GetMapping("/logs/{logId}")
     @Operation(summary = "Get operation log detail by ID")
     public ApiResponse<OperationLogDTO> getLogDetail(@PathVariable Long logId) {
-        return operationLogService.getAllLogs(0, 1).stream()
-                .filter(log -> log.getId().equals(logId))
-                .findFirst()
+        return operationLogService.getLogById(logId)
                 .map(log -> ApiResponse.success(operationLogService.toDTO(log)))
                 .orElse(ApiResponse.error(-1, "Log not found"));
     }
