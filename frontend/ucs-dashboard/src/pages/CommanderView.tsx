@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+// Using simple state-based tabs instead of Radix UI Tabs for better compatibility
 import {
   Table,
   TableBody,
@@ -70,6 +70,9 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
   const [logTotalPages, setLogTotalPages] = useState(0);
   const [logFilter, setLogFilter] = useState('ALL');
   const [logLoading, setLogLoading] = useState(false);
+
+  // Active tab state
+  const [activeTab, setActiveTab] = useState<'fleet' | 'permission' | 'logs' | 'teams'>('fleet');
 
   // Teams state
   const [teams, setTeams] = useState<Array<{ teamId: string; teamName: string; leader: string; memberCount: number }>>([]);
@@ -248,24 +251,28 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
 
       {/* Main Content */}
       <div className="flex-1 overflow-hidden p-4">
-        <Tabs defaultValue="fleet" className="h-full flex flex-col">
-          <TabsList className="bg-slate-800 border border-slate-700 w-fit">
-            <TabsTrigger value="fleet" className="data-[state=active]:bg-slate-700 text-slate-300 data-[state=active]:text-white">
+        <div className="h-full flex flex-col">
+          <div className="flex gap-1 bg-slate-800 border border-slate-700 rounded-md p-1 w-fit">
+            <button onClick={() => setActiveTab('fleet')}
+              className={`flex items-center px-3 py-1.5 rounded text-sm transition-colors ${activeTab === 'fleet' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700/50'}`}>
               <Plane className="w-4 h-4 mr-1" />机队总览
-            </TabsTrigger>
-            <TabsTrigger value="permission" className="data-[state=active]:bg-slate-700 text-slate-300 data-[state=active]:text-white">
+            </button>
+            <button onClick={() => setActiveTab('permission')}
+              className={`flex items-center px-3 py-1.5 rounded text-sm transition-colors ${activeTab === 'permission' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700/50'}`}>
               <ArrowRightLeft className="w-4 h-4 mr-1" />权限管理
-            </TabsTrigger>
-            <TabsTrigger value="logs" className="data-[state=active]:bg-slate-700 text-slate-300 data-[state=active]:text-white">
+            </button>
+            <button onClick={() => setActiveTab('logs')}
+              className={`flex items-center px-3 py-1.5 rounded text-sm transition-colors ${activeTab === 'logs' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700/50'}`}>
               <FileText className="w-4 h-4 mr-1" />操作日志
-            </TabsTrigger>
-            <TabsTrigger value="teams" className="data-[state=active]:bg-slate-700 text-slate-300 data-[state=active]:text-white">
+            </button>
+            <button onClick={() => setActiveTab('teams')}
+              className={`flex items-center px-3 py-1.5 rounded text-sm transition-colors ${activeTab === 'teams' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700/50'}`}>
               <Users className="w-4 h-4 mr-1" />团队管理
-            </TabsTrigger>
-          </TabsList>
+            </button>
+          </div>
 
           {/* Fleet Overview */}
-          <TabsContent value="fleet" className="flex-1 overflow-auto mt-3">
+          {activeTab === 'fleet' && <div className="flex-1 overflow-auto mt-3">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
               <Card className="bg-slate-800 border-slate-700">
                 <CardContent className="p-4 text-center">
@@ -351,10 +358,10 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                 </Table>
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>}
 
           {/* Permission Management */}
-          <TabsContent value="permission" className="flex-1 overflow-auto mt-3">
+          {activeTab === 'permission' && <div className="flex-1 overflow-auto mt-3">
             <Card className="bg-slate-800 border-slate-700 mb-4">
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
@@ -471,10 +478,10 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                 </DialogFooter>
               </DialogContent>
             </Dialog>
-          </TabsContent>
+          </div>}
 
           {/* Operation Logs */}
-          <TabsContent value="logs" className="flex-1 overflow-auto mt-3">
+          {activeTab === 'logs' && <div className="flex-1 overflow-auto mt-3">
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center justify-between">
@@ -562,10 +569,10 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>}
 
           {/* Teams */}
-          <TabsContent value="teams" className="flex-1 overflow-auto mt-3">
+          {activeTab === 'teams' && <div className="flex-1 overflow-auto mt-3">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {teams.map(team => (
                 <Card key={team.teamId} className="bg-slate-800 border-slate-700">
@@ -613,8 +620,8 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                 </Card>
               )}
             </div>
-          </TabsContent>
-        </Tabs>
+          </div>}
+        </div>
       </div>
     </div>
   );

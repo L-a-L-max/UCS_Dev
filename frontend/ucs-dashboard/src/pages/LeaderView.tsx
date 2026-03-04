@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+// Using simple state-based tabs instead of Radix UI Tabs for better compatibility
 import {
   Plane,
   Users,
@@ -55,6 +55,7 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
   const [logPage, setLogPage] = useState(0);
   const [logTotalPages, setLogTotalPages] = useState(0);
   const [commandFeedback, setCommandFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
+  const [activeTab, setActiveTab] = useState<'drones' | 'members' | 'logs'>('drones');
 
   const fetchDrones = useCallback(async () => {
     setLoading(true);
@@ -158,21 +159,24 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
       </header>
 
       <div className="flex-1 overflow-hidden p-4">
-        <Tabs defaultValue="drones" className="h-full flex flex-col">
-          <TabsList className="bg-slate-800 border border-slate-700 w-fit">
-            <TabsTrigger value="drones" className="data-[state=active]:bg-slate-700 text-slate-300 data-[state=active]:text-white">
+        <div className="h-full flex flex-col">
+          <div className="flex gap-1 bg-slate-800 border border-slate-700 rounded-md p-1 w-fit">
+            <button onClick={() => setActiveTab('drones')}
+              className={`flex items-center px-3 py-1.5 rounded text-sm transition-colors ${activeTab === 'drones' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700/50'}`}>
               <Plane className="w-4 h-4 mr-1" />队伍无人机
-            </TabsTrigger>
-            <TabsTrigger value="members" className="data-[state=active]:bg-slate-700 text-slate-300 data-[state=active]:text-white">
+            </button>
+            <button onClick={() => setActiveTab('members')}
+              className={`flex items-center px-3 py-1.5 rounded text-sm transition-colors ${activeTab === 'members' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700/50'}`}>
               <Users className="w-4 h-4 mr-1" />队伍成员
-            </TabsTrigger>
-            <TabsTrigger value="logs" className="data-[state=active]:bg-slate-700 text-slate-300 data-[state=active]:text-white">
+            </button>
+            <button onClick={() => setActiveTab('logs')}
+              className={`flex items-center px-3 py-1.5 rounded text-sm transition-colors ${activeTab === 'logs' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700/50'}`}>
               <FileText className="w-4 h-4 mr-1" />操作日志
-            </TabsTrigger>
-          </TabsList>
+            </button>
+          </div>
 
           {/* Drones Tab */}
-          <TabsContent value="drones" className="flex-1 overflow-auto mt-3">
+          {activeTab === 'drones' && <div className="flex-1 overflow-auto mt-3">
             {/* Command feedback */}
             {commandFeedback && (
               <div className={`mb-3 p-3 rounded ${commandFeedback.success ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'}`}>
@@ -263,10 +267,10 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                 </Table>
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>}
 
           {/* Members Tab */}
-          <TabsContent value="members" className="flex-1 overflow-auto mt-3">
+          {activeTab === 'members' && <div className="flex-1 overflow-auto mt-3">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {teams.map(team => (
                 <Card key={team.teamId} className="bg-slate-800 border-slate-700">
@@ -300,10 +304,10 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                 </Card>
               )}
             </div>
-          </TabsContent>
+          </div>}
 
           {/* Logs Tab */}
-          <TabsContent value="logs" className="flex-1 overflow-auto mt-3">
+          {activeTab === 'logs' && <div className="flex-1 overflow-auto mt-3">
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2">
@@ -357,8 +361,8 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
-        </Tabs>
+          </div>}
+        </div>
       </div>
     </div>
   );
