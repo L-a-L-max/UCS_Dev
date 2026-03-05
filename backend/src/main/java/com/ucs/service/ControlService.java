@@ -109,10 +109,8 @@ public class ControlService {
         cmdLog.setStatus(published ? "SENT" : "FAILED");
         commandLogRepository.save(cmdLog);
         
-        // 7. Log to operation_log table
-        String detail = String.format("{\"commandType\":\"%s\",\"params\":%s,\"published\":%s}",
-                commandType, request.getParams() != null ? request.getParams() : "{}",
-                published);
+        // 7. Log to operation_log table (human-readable description)
+        String detail = buildHumanReadableDetail(commandType, request.getParams(), uavId);
         
         if (published) {
             operationLogService.logSuccess(userId, username, "CONTROL_COMMAND",
@@ -130,5 +128,71 @@ public class ControlService {
      */
     public Optional<Drone> getDroneByUavId(String uavId) {
         return droneRepository.findByUavId(uavId);
+    }
+    
+    /**
+     * Build human-readable operation detail instead of raw JSON.
+     * Converts command types to meaningful Chinese descriptions.
+     */
+    private String buildHumanReadableDetail(String commandType, String params, String uavId) {
+        String description;
+        switch (commandType.toUpperCase()) {
+            case "ARM":
+                description = "解锁无人机 " + uavId;
+                break;
+            case "DISARM":
+                description = "锁定无人机 " + uavId;
+                break;
+            case "TAKEOFF":
+                description = "起飞无人机 " + uavId;
+                if (params != null) {
+                    try {
+                        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                        @SuppressWarnings("unchecked")
+                        java.util.Map<String, Object> p = mapper.readValue(params, java.util.Map.class);
+                        Object alt = p.get("alt");
+                        if (alt != null) {
+                            description += ", 目标高度: " + alt + "m";
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+                break;
+            case "LAND":
+                description = "降落无人机 " + uavId;
+                break;
+            case "RTL":
+                description = "无人机 " + uavId + " 返航";
+                break;
+            case "HOLD":
+                description = "无人机 " + uavId + " 悬停";
+                break;
+            case "GOTO":
+                description = "无人机 " + uavId + " 飞向目标位置";
+                if (params != null) {
+                    try {
+                        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                        @SuppressWarnings("unchecked")
+                        java.util.Map<String, Object> p = mapper.readValue(params, java.util.Map.class);
+                        Object lat = p.get("lat");
+                        Object lon = p.get("lon");
+                        Object alt = p.get("alt");
+                        if (lat != null && lon != null) {
+                            description += String.format(" [%.6f, %.6f", 
+                                    ((Number) lat).doubleValue(), ((Number) lon).doubleValue());
+                            if (alt != null) {
+                                description += String.format(", 高度%.1fm", ((Number) alt).doubleValue());
+                            }
+                            description += "]";
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+                break;
+            default:
+                description = "执行指令 " + commandType + " 于无人机 " + uavId;
+                break;
+        }
+        return description;
     }
 }

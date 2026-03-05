@@ -1,18 +1,18 @@
 package com.ucs.controller;
 
 import com.ucs.dto.*;
+import com.ucs.entity.OperationLog;
 import com.ucs.entity.Task;
+import com.ucs.entity.TeamMember;
 import com.ucs.entity.User;
+import com.ucs.repository.TeamMemberRepository;
 import com.ucs.security.UserPrincipal;
-import com.ucs.service.DroneService;
-import com.ucs.service.TaskService;
-import com.ucs.service.TeamService;
-import com.ucs.service.UserService;
+import com.ucs.service.*;
+import org.springframework.data.domain.Page;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @RestController
@@ -23,15 +23,24 @@ public class LeaderController {
     private final TaskService taskService;
     private final TeamService teamService;
     private final UserService userService;
+    private final OperationLogService operationLogService;
+    private final PermissionService permissionService;
+    private final TeamMemberRepository teamMemberRepository;
     
     public LeaderController(DroneService droneService,
                            TaskService taskService,
                            TeamService teamService,
-                           UserService userService) {
+                           UserService userService,
+                           OperationLogService operationLogService,
+                           PermissionService permissionService,
+                           TeamMemberRepository teamMemberRepository) {
         this.droneService = droneService;
         this.taskService = taskService;
         this.teamService = teamService;
         this.userService = userService;
+        this.operationLogService = operationLogService;
+        this.permissionService = permissionService;
+        this.teamMemberRepository = teamMemberRepository;
     }
     
     @GetMapping("/uav/list")
@@ -125,5 +134,79 @@ public class LeaderController {
         } catch (Exception e) {
             return ApiResponse.error(-1, e.getMessage());
         }
+    }
+    
+    /**
+     * Get team-scoped operation logs (only logs from team members).
+     * Issue #7: Team leader interface needs team-filtered logs.
+     */
+    @GetMapping("/team/logs")
+    public ApiResponse<Map<String, Object>> getTeamLogs(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        User user = userService.getUserById(principal.getUserId());
+        if (user.getTeamId() == null) {
+            return ApiResponse.error(-1, "用户未分配到任何队伍");
+        }
+
+        // Get all team member user IDs
+        List<TeamMember> members = teamMemberRepository.findByTeamId(user.getTeamId());
+        List<Long> memberUserIds = members.stream()
+                .map(TeamMember::getUserId)
+                .collect(Collectors.toList());
+
+        // Fetch logs for team members
+        Page<OperationLog> logs = operationLogService.getLogsByUserIds(memberUserIds, page, size);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("content", logs.getContent().stream()
+                .map(operationLogService::toDTO)
+                .collect(Collectors.toList()));
+        result.put("totalElements", logs.getTotalElements());
+        result.put("totalPages", logs.getTotalPages());
+        result.put("currentPage", logs.getNumber());
+        result.put("pageSize", logs.getSize());
+
+        return ApiResponse.success(result);
+    }
+    
+    /**
+     * Transfer drone control within team (leader → team member).
+     * Issue #7: Team leader needs drone control transfer functionality.
+     */
+    @PostMapping("/uav/transfer")
+    public ApiResponse<Map<String, Object>> transferWithinTeam(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestBody PermissionTransferRequest request) {
+        User user = userService.getUserById(principal.getUserId());
+        if (user.getTeamId() == null) {
+            return ApiResponse.error(-1, "用户未分配到任何队伍");
+        }
+
+        // Verify target user is in the same team
+        Long targetUserId = request.getToUserId();
+        boolean targetInTeam = teamMemberRepository.findByTeamIdAndUserId(user.getTeamId(), targetUserId).isPresent();
+        if (!targetInTeam) {
+            return ApiResponse.error(-1, "目标用户不在当前队伍中");
+        }
+
+        // Perform the transfer
+        List<String> successList = permissionService.batchTransferPermission(
+                request.getUavIds(),
+                targetUserId,
+                principal.getUserId(),
+                principal.getUsername());
+
+        List<String> failedList = request.getUavIds().stream()
+                .filter(id -> !successList.contains(id))
+                .collect(Collectors.toList());
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("transferred", successList);
+        result.put("failed", failedList);
+        result.put("total", request.getUavIds().size());
+
+        return ApiResponse.success(result);
     }
 }

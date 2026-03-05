@@ -22,7 +22,7 @@ import {
 import {
   sendControlCommand,
   getDroneStatus,
-  getDroneList,
+  getPilotDrones,
   type DroneInfo,
   type ControlCommandResponse,
 } from '@/services/api';
@@ -60,14 +60,15 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
   // TAKEOFF params
   const [takeoffAlt, setTakeoffAlt] = useState('50');
 
+  // Issue #8: Only show drones the pilot has permission to control
   const fetchDrones = useCallback(async () => {
     try {
-      const res = await getDroneList(token);
+      const res = await getPilotDrones(token);
       if (res.code === 0 && res.data) {
-        setDrones(Array.isArray(res.data) ? res.data : []);
+        setDrones(Array.isArray(res.data) ? res.data as unknown as DroneInfo[] : []);
       }
     } catch (err) {
-      console.error('Failed to fetch drones:', err);
+      console.error('Failed to fetch pilot drones:', err);
     }
   }, [token]);
 
@@ -121,7 +122,7 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
       } else {
         setCommandError(res.msg || '指令发送失败');
       }
-    } catch (err) {
+    } catch {
       setCommandError('网络错误，请检查后端服务');
     } finally {
       setSendingCommand(null);

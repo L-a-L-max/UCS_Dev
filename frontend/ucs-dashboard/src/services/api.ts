@@ -263,3 +263,168 @@ export async function getTeamMembers(token: string, teamId: string): Promise<Api
   });
   return response.json();
 }
+
+// ==================== Commander Team API ====================
+
+/**
+ * Transfer drone control to a team (assigns to team leader).
+ * Issue #4: Permission transfer should target teams, not just users.
+ */
+export async function transferPermissionToTeam(
+  token: string,
+  uavIds: string[],
+  toTeamId: number
+): Promise<ApiResponse<{ transferred: string[]; failed: string[]; total: number }>> {
+  const response = await fetch(`${API_BASE}/api/v1/commander/permission/transfer-to-team`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ uavIds, toTeamId }),
+  });
+  return response.json();
+}
+
+/**
+ * Get all teams with status info (for commander team management).
+ * Fixes Issue #2: Commander sees "暂无团队数据".
+ */
+export async function getCommanderTeams(
+  token: string
+): Promise<ApiResponse<Array<{
+  teamId: string;
+  teamName: string;
+  leader: string;
+  memberCount: number;
+  droneCount: number;
+  description: string;
+}>>> {
+  const response = await fetch(`${API_BASE}/api/v1/commander/teams`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+// ==================== Leader Team API ====================
+
+/**
+ * Get team-scoped operation logs (only team members' logs).
+ * Issue #7: Leader needs team-filtered logs.
+ */
+export async function getLeaderTeamLogs(
+  token: string,
+  page: number = 0,
+  size: number = 10
+): Promise<ApiResponse<{
+  content: OperationLog[];
+  totalElements: number;
+  totalPages: number;
+  currentPage: number;
+  pageSize: number;
+}>> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/leader/team/logs?page=${page}&size=${size}`,
+    { headers: authHeaders(token) }
+  );
+  return response.json();
+}
+
+/**
+ * Transfer drone control within team (leader → team member).
+ * Issue #7: Leader needs intra-team drone control transfer.
+ */
+export async function leaderTransferDrone(
+  token: string,
+  uavIds: string[],
+  toUserId: number,
+  reason?: string
+): Promise<ApiResponse<{ transferred: string[]; failed: string[]; total: number }>> {
+  const response = await fetch(`${API_BASE}/api/v1/leader/uav/transfer`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ uavIds, toUserId, reason }),
+  });
+  return response.json();
+}
+
+/**
+ * Get leader's team drones.
+ */
+export async function getLeaderTeamDrones(
+  token: string
+): Promise<ApiResponse<Array<{
+  uavId: string;
+  droneSn: string;
+  model: string;
+  owner: string;
+  flightStatus: string;
+  lat: number;
+  lng: number;
+  altitude: number;
+  battery: number;
+}>>> {
+  const response = await fetch(`${API_BASE}/api/v1/leader/uav/list`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+/**
+ * Get leader's team members.
+ */
+export async function getLeaderTeamMembers(
+  token: string
+): Promise<ApiResponse<Array<{
+  userId: string;
+  name: string;
+  online: boolean;
+  role: string;
+  uavIds: string[];
+  currentTask: string;
+}>>> {
+  const response = await fetch(`${API_BASE}/api/v1/leader/member/list`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+/**
+ * Get leader's team info.
+ */
+export async function getLeaderTeamInfo(
+  token: string
+): Promise<ApiResponse<{
+  teamId: string;
+  teamName: string;
+  memberCount: number;
+  droneCount: number;
+  leader: string;
+}>> {
+  const response = await fetch(`${API_BASE}/api/v1/leader/team/info`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+// ==================== Pilot API ====================
+
+/**
+ * Get pilot's authorized drones only.
+ * Issue #8: Pilot should only see authorized drones, not all 8.
+ */
+export async function getPilotDrones(
+  token: string
+): Promise<ApiResponse<Array<{
+  uavId: string;
+  droneSn: string;
+  model: string;
+  owner: string;
+  flightStatus: string;
+  lat: number;
+  lng: number;
+  altitude: number;
+  battery: number;
+}>>> {
+  const response = await fetch(`${API_BASE}/api/v1/pilot/uav/list`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}

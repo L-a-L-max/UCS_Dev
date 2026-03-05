@@ -26,4 +26,7 @@ public interface OperationLogRepository extends JpaRepository<OperationLog, Long
     List<OperationLog> findByUserIdAndOperationType(Long userId, String operationType);
     
     Page<OperationLog> findAllByOrderByCreatedAtDesc(Pageable pageable);
+    
+    @Query("SELECT o FROM OperationLog o WHERE o.userId IN :userIds ORDER BY o.createdAt DESC")
+    Page<OperationLog> findByUserIdInOrderByCreatedAtDesc(List<Long> userIds, Pageable pageable);
 }

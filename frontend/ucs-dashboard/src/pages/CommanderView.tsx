@@ -37,9 +37,10 @@ import {
 import {
   getFleetOverview,
   transferPermission,
+  transferPermissionToTeam,
   getOperationLogs,
   getLogsByType,
-  getTeamList,
+  getCommanderTeams,
   getTeamMembers,
   type DroneInfo,
   type OperationLog,
@@ -60,6 +61,8 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
   const [selectedUavIds, setSelectedUavIds] = useState<string[]>([]);
   const [toUserId, setToUserId] = useState('');
+  const [toTeamId, setToTeamId] = useState('');
+  const [transferMode, setTransferMode] = useState<'user' | 'team'>('team');
   const [transferReason, setTransferReason] = useState('');
   const [transferLoading, setTransferLoading] = useState(false);
   const [transferResult, setTransferResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -75,7 +78,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
   const [activeTab, setActiveTab] = useState<'fleet' | 'permission' | 'logs' | 'teams'>('fleet');
 
   // Teams state
-  const [teams, setTeams] = useState<Array<{ teamId: string; teamName: string; leader: string; memberCount: number }>>([]);
+  const [teams, setTeams] = useState<Array<{ teamId: string; teamName: string; leader: string; memberCount: number; droneCount?: number; description?: string }>>([]);
   const [teamMembers, setTeamMembers] = useState<Record<string, Array<{ userId: string; username: string; realName: string; role: string }>>>({});
   const [expandedTeam, setExpandedTeam] = useState<string | null>(null);
 
@@ -114,10 +117,10 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
     }
   }, [token]);
 
-  // Fetch teams
+  // Fetch teams via commander API (fixes Issue #2: "暂无团队数据")
   const fetchTeams = useCallback(async () => {
     try {
-      const res = await getTeamList(token);
+      const res = await getCommanderTeams(token);
       if (res.code === 0 && res.data) {
         setTeams(Array.isArray(res.data) ? res.data : []);
       }
@@ -155,28 +158,38 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
     );
   };
 
-  // Handle permission transfer
+  // Handle permission transfer (supports both user and team targets)
   const handleTransfer = async () => {
-    if (!toUserId || selectedUavIds.length === 0) return;
+    if (selectedUavIds.length === 0) return;
+    if (transferMode === 'user' && !toUserId) return;
+    if (transferMode === 'team' && !toTeamId) return;
     setTransferLoading(true);
     setTransferResult(null);
     try {
-      const res = await transferPermission(token, {
-        uavIds: selectedUavIds,
-        toUserId: parseInt(toUserId),
-        reason: transferReason || '指挥员操作',
-      });
+      let res;
+      if (transferMode === 'team') {
+        // Issue #4: Transfer to team (assigns to team leader)
+        res = await transferPermissionToTeam(token, selectedUavIds, parseInt(toTeamId));
+      } else {
+        res = await transferPermission(token, {
+          uavIds: selectedUavIds,
+          toUserId: parseInt(toUserId),
+          reason: transferReason || '指挥员操作',
+        });
+      }
       if (res.code === 0) {
         setTransferResult({ success: true, message: '权限转移成功' });
         setSelectedUavIds([]);
         setToUserId('');
+        setToTeamId('');
         setTransferReason('');
         fetchFleet();
+        fetchTeams();
         fetchLogs(0, logFilter);
       } else {
         setTransferResult({ success: false, message: res.msg || '权限转移失败' });
       }
-    } catch (err) {
+    } catch {
       setTransferResult({ success: false, message: '网络错误' });
     } finally {
       setTransferLoading(false);
@@ -317,7 +330,8 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                       <TableHead className="text-slate-400">电量</TableHead>
                       <TableHead className="text-slate-400">高度</TableHead>
                       <TableHead className="text-slate-400">位置</TableHead>
-                      <TableHead className="text-slate-400">操作员</TableHead>
+                      <TableHead className="text-slate-400">归属人</TableHead>
+                      <TableHead className="text-slate-400">控制员</TableHead>
                       <TableHead className="text-slate-400">团队</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -343,13 +357,14 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                         <TableCell className="text-slate-400 text-xs font-mono">
                           {drone.lat?.toFixed(4)}, {drone.lng?.toFixed(4)}
                         </TableCell>
-                        <TableCell className="text-slate-300">{drone.owner || '-'}</TableCell>
+                        <TableCell className="text-slate-300">{(drone as unknown as Record<string, unknown>).ownerName as string || drone.owner || '-'}</TableCell>
+                        <TableCell className="text-slate-300">{(drone as unknown as Record<string, unknown>).controllerName as string || '-'}</TableCell>
                         <TableCell className="text-slate-300">{drone.teamName || '-'}</TableCell>
                       </TableRow>
                     ))}
                     {drones.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={8} className="text-center text-slate-500 py-8">
+                        <TableCell colSpan={9} className="text-center text-slate-500 py-8">
                           暂无无人机数据
                         </TableCell>
                       </TableRow>
@@ -371,7 +386,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-slate-400 mb-4">
-                  选择需要转移控制权的无人机，然后指定新的控制者。权限转移基于Redis分布式锁保证原子性。
+                  选择需要转移控制权的无人机，然后指定目标队伍或用户。转移至队伍时，控制权自动分配给队长。
                 </p>
 
                 {/* Drone selection */}
@@ -396,18 +411,52 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                   </div>
                 </div>
 
+                {/* Transfer mode toggle */}
+                <div className="flex gap-2 mb-4">
+                  <Button size="sm"
+                    variant={transferMode === 'team' ? 'default' : 'outline'}
+                    className={transferMode === 'team' ? 'bg-purple-600 hover:bg-purple-700 text-white' : 'bg-slate-700 border-slate-600 text-slate-300'}
+                    onClick={() => setTransferMode('team')}>
+                    转移至队伍
+                  </Button>
+                  <Button size="sm"
+                    variant={transferMode === 'user' ? 'default' : 'outline'}
+                    className={transferMode === 'user' ? 'bg-purple-600 hover:bg-purple-700 text-white' : 'bg-slate-700 border-slate-600 text-slate-300'}
+                    onClick={() => setTransferMode('user')}>
+                    转移至个人
+                  </Button>
+                </div>
+
                 {/* Transfer form */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                  <div>
-                    <label className="text-sm text-slate-300 mb-1 block">目标用户ID</label>
-                    <Input
-                      type="number"
-                      value={toUserId}
-                      onChange={e => setToUserId(e.target.value)}
-                      placeholder="输入用户ID"
-                      className="bg-slate-700 border-slate-600 text-white"
-                    />
-                  </div>
+                  {transferMode === 'team' ? (
+                    <div>
+                      <label className="text-sm text-slate-300 mb-1 block">目标队伍</label>
+                      <select
+                        value={toTeamId}
+                        onChange={e => setToTeamId(e.target.value)}
+                        className="w-full rounded-md bg-slate-700 border-slate-600 text-white px-3 py-2 text-sm"
+                      >
+                        <option value="">选择队伍...</option>
+                        {teams.map(team => (
+                          <option key={team.teamId} value={team.teamId.replace('T', '')}>
+                            {team.teamName} ({team.leader || '无队长'})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-sm text-slate-300 mb-1 block">目标用户ID</label>
+                      <Input
+                        type="number"
+                        value={toUserId}
+                        onChange={e => setToUserId(e.target.value)}
+                        placeholder="输入用户ID"
+                        className="bg-slate-700 border-slate-600 text-white"
+                      />
+                    </div>
+                  )}
                   <div className="md:col-span-2">
                     <label className="text-sm text-slate-300 mb-1 block">转移原因</label>
                     <Input
@@ -421,11 +470,11 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
 
                 <Button
                   onClick={() => setTransferDialogOpen(true)}
-                  disabled={selectedUavIds.length === 0 || !toUserId}
+                  disabled={selectedUavIds.length === 0 || (transferMode === 'user' ? !toUserId : !toTeamId)}
                   className="bg-purple-600 hover:bg-purple-700"
                 >
                   <ArrowRightLeft className="w-4 h-4 mr-1" />
-                  确认转移 ({selectedUavIds.length} 架)
+                  确认转移 ({selectedUavIds.length} 架) → {transferMode === 'team' ? '队伍' : '个人'}
                 </Button>
 
                 {transferResult && (
@@ -451,7 +500,9 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                 <DialogHeader>
                   <DialogTitle className="text-white">确认权限转移</DialogTitle>
                   <DialogDescription className="text-slate-400">
-                    将以下无人机的控制权转移给用户 ID: {toUserId}
+                    {transferMode === 'team'
+                      ? `将以下无人机的控制权转移给队伍 (ID: ${toTeamId})`
+                      : `将以下无人机的控制权转移给用户 ID: ${toUserId}`}
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-2">

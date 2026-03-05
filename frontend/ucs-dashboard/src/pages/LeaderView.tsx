@@ -20,12 +20,24 @@ import {
   FileText,
   ChevronLeft,
   ChevronRight,
+  ArrowRightLeft,
+  AlertTriangle,
+  Activity,
 } from 'lucide-react';
 import {
-  getDroneList,
-  getTeamList,
-  getTeamMembers,
-  getOperationLogs,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import {
+  getLeaderTeamDrones,
+  getLeaderTeamMembers,
+  getLeaderTeamLogs,
+  getLeaderTeamInfo,
+  leaderTransferDrone,
   sendControlCommand,
   type DroneInfo,
   type OperationLog,
@@ -48,8 +60,8 @@ const COMMANDS = [
 
 export default function LeaderView({ token, username, onLogout }: LeaderViewProps) {
   const [drones, setDrones] = useState<DroneInfo[]>([]);
-  const [teams, setTeams] = useState<Array<{ teamId: string; teamName: string; leader: string; memberCount: number }>>([]);
-  const [teamMembers, setTeamMembers] = useState<Record<string, Array<{ userId: string; username: string; realName: string; role: string }>>>({});
+  const [teamInfo, setTeamInfo] = useState<{ teamId: string; teamName: string; leader: string; memberCount: number } | null>(null);
+  const [members, setMembers] = useState<Array<{ userId: string; username: string; realName: string; role: string }>>([]);
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<OperationLog[]>([]);
   const [logPage, setLogPage] = useState(0);
@@ -57,59 +69,97 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
   const [commandFeedback, setCommandFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
   const [activeTab, setActiveTab] = useState<'drones' | 'members' | 'logs'>('drones');
 
+  // Transfer state
+  const [transferDialogOpen, setTransferDialogOpen] = useState(false);
+  const [transferUavId, setTransferUavId] = useState('');
+  const [transferToUserId, setTransferToUserId] = useState('');
+  const [transferLoading, setTransferLoading] = useState(false);
+  const [transferResult, setTransferResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Fetch team drones (Issue #7: team-scoped)
   const fetchDrones = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await getDroneList(token);
+      const res = await getLeaderTeamDrones(token);
       if (res.code === 0 && res.data) {
-        setDrones(Array.isArray(res.data) ? res.data : []);
+        setDrones(Array.isArray(res.data) ? res.data as unknown as DroneInfo[] : []);
       }
     } catch (err) {
-      console.error('Failed to fetch drones:', err);
+      console.error('Failed to fetch team drones:', err);
     } finally {
       setLoading(false);
     }
   }, [token]);
 
-  const fetchTeams = useCallback(async () => {
+  // Fetch team info and members
+  const fetchTeamInfo = useCallback(async () => {
     try {
-      const res = await getTeamList(token);
-      if (res.code === 0 && res.data) {
-        const teamList = Array.isArray(res.data) ? res.data : [];
-        setTeams(teamList);
-        // Auto-fetch members for all teams
-        for (const team of teamList) {
-          const membersRes = await getTeamMembers(token, team.teamId);
-          if (membersRes.code === 0 && membersRes.data) {
-            setTeamMembers(prev => ({ ...prev, [team.teamId]: membersRes.data }));
-          }
-        }
+      const [infoRes, membersRes] = await Promise.all([
+        getLeaderTeamInfo(token),
+        getLeaderTeamMembers(token),
+      ]);
+      if (infoRes.code === 0 && infoRes.data) {
+        setTeamInfo(infoRes.data);
+      }
+      if (membersRes.code === 0 && membersRes.data) {
+        const memberList = Array.isArray(membersRes.data) ? membersRes.data : [];
+        setMembers(memberList.map(m => ({
+          userId: m.userId,
+          username: m.name || m.userId,
+          realName: m.name || '',
+          role: m.role,
+        })));
       }
     } catch (err) {
-      console.error('Failed to fetch teams:', err);
+      console.error('Failed to fetch team info:', err);
     }
   }, [token]);
 
+  // Fetch team-scoped logs (Issue #7)
   const fetchLogs = useCallback(async (page: number = 0) => {
     try {
-      const res = await getOperationLogs(token, page, 10);
+      const res = await getLeaderTeamLogs(token, page, 10);
       if (res.code === 0 && res.data) {
         setLogs(res.data.content || []);
         setLogTotalPages(res.data.totalPages || 0);
         setLogPage(page);
       }
     } catch (err) {
-      console.error('Failed to fetch logs:', err);
+      console.error('Failed to fetch team logs:', err);
     }
   }, [token]);
 
   useEffect(() => {
     fetchDrones();
-    fetchTeams();
+    fetchTeamInfo();
     fetchLogs();
     const interval = setInterval(fetchDrones, 5000);
     return () => clearInterval(interval);
-  }, [fetchDrones, fetchTeams, fetchLogs]);
+  }, [fetchDrones, fetchTeamInfo, fetchLogs]);
+
+  // Handle intra-team drone transfer (Issue #7)
+  const handleTeamTransfer = async () => {
+    if (!transferUavId || !transferToUserId) return;
+    setTransferLoading(true);
+    setTransferResult(null);
+    try {
+      const res = await leaderTransferDrone(token, [transferUavId], parseInt(transferToUserId));
+      if (res.code === 0) {
+        setTransferResult({ success: true, message: '队内控制权转移成功' });
+        setTransferUavId('');
+        setTransferToUserId('');
+        setTransferDialogOpen(false);
+        fetchDrones();
+        fetchLogs();
+      } else {
+        setTransferResult({ success: false, message: res.msg || '转移失败' });
+      }
+    } catch {
+      setTransferResult({ success: false, message: '网络错误' });
+    } finally {
+      setTransferLoading(false);
+    }
+  };
 
   const handleQuickCommand = async (uavId: string, commandType: string) => {
     setCommandFeedback(null);
@@ -147,7 +197,7 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           <Badge variant="outline" className="ml-2 text-green-300 border-green-500">{username}</Badge>
         </h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => { fetchDrones(); fetchLogs(); }} disabled={loading}
+          <Button variant="outline" size="sm" onClick={() => { fetchDrones(); fetchTeamInfo(); fetchLogs(); }} disabled={loading}
             className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50">
             <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />刷新
           </Button>
@@ -226,6 +276,7 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                       <TableHead className="text-slate-400">高度</TableHead>
                       <TableHead className="text-slate-400">操作员</TableHead>
                       <TableHead className="text-slate-400">快捷指令</TableHead>
+                      <TableHead className="text-slate-400">转移</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -256,11 +307,18 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                             ))}
                           </div>
                         </TableCell>
+                        <TableCell>
+                          <Button size="sm" variant="outline"
+                            className="text-xs h-6 px-2 bg-purple-700/50 border-purple-600 text-purple-300 hover:bg-purple-600"
+                            onClick={() => { setTransferUavId(drone.uavId); setTransferDialogOpen(true); }}>
+                            <ArrowRightLeft className="w-3 h-3 mr-1" />转移
+                          </Button>
+                        </TableCell>
                       </TableRow>
                     ))}
                     {drones.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-slate-500 py-8">暂无数据</TableCell>
+                        <TableCell colSpan={7} className="text-center text-slate-500 py-8">暂无数据</TableCell>
                       </TableRow>
                     )}
                   </TableBody>
@@ -271,39 +329,36 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
 
           {/* Members Tab */}
           {activeTab === 'members' && <div className="flex-1 overflow-auto mt-3">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {teams.map(team => (
-                <Card key={team.teamId} className="bg-slate-800 border-slate-700">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="flex items-center justify-between text-sm">
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2">
+                    <Users className="w-4 h-4 text-green-400" />
+                    {teamInfo?.teamName || '我的队伍'}
+                  </div>
+                  <Badge variant="outline" className="text-slate-400 border-slate-600">{members.length} 人</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {teamInfo && (
+                  <div className="text-sm text-slate-400 mb-3">队长: <span className="text-slate-300">{teamInfo.leader}</span></div>
+                )}
+                <div className="space-y-1">
+                  {members.map(member => (
+                    <div key={member.userId} className="flex items-center justify-between text-sm p-2.5 rounded bg-slate-700/50">
                       <div className="flex items-center gap-2">
-                        <Users className="w-4 h-4 text-green-400" />
-                        {team.teamName}
+                        <span className="text-slate-300">{member.realName || member.username}</span>
+                        <span className="text-xs text-slate-500">ID: {member.userId}</span>
                       </div>
-                      <Badge variant="outline" className="text-slate-400 border-slate-600">{team.memberCount} 人</Badge>
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-sm text-slate-400 mb-2">队长: <span className="text-slate-300">{team.leader}</span></div>
-                    {teamMembers[team.teamId] && (
-                      <div className="space-y-1">
-                        {teamMembers[team.teamId].map(member => (
-                          <div key={member.userId} className="flex items-center justify-between text-xs p-2 rounded bg-slate-700/50">
-                            <span className="text-slate-300">{member.realName || member.username}</span>
-                            <Badge className="bg-slate-600 text-xs">{member.role}</Badge>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              ))}
-              {teams.length === 0 && (
-                <Card className="bg-slate-800 border-slate-700 col-span-3">
-                  <CardContent className="p-8 text-center text-slate-500">暂无团队数据</CardContent>
-                </Card>
-              )}
-            </div>
+                      <Badge className="bg-slate-600 text-xs">{member.role}</Badge>
+                    </div>
+                  ))}
+                  {members.length === 0 && (
+                    <div className="text-center text-slate-500 py-4">暂无成员数据</div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
           </div>}
 
           {/* Logs Tab */}
@@ -364,6 +419,54 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           </div>}
         </div>
       </div>
+
+      {/* Transfer Dialog */}
+      <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-white">
+          <DialogHeader>
+            <DialogTitle className="text-white">队内控制权转移</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              将无人机 {transferUavId} 的控制权转移给队内成员
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <label className="text-sm text-slate-300 mb-1 block">目标成员</label>
+              <select
+                value={transferToUserId}
+                onChange={e => setTransferToUserId(e.target.value)}
+                className="w-full rounded-md bg-slate-700 border-slate-600 text-white px-3 py-2 text-sm"
+              >
+                <option value="">选择队内成员...</option>
+                {members.map(m => (
+                  <option key={m.userId} value={m.userId}>
+                    {m.realName || m.username} ({m.role})
+                  </option>
+                ))}
+              </select>
+            </div>
+            {transferResult && (
+              <div className={`p-2 rounded ${transferResult.success ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'}`}>
+                <div className="flex items-center gap-2 text-sm">
+                  {transferResult.success
+                    ? <Activity className="w-4 h-4 text-green-400" />
+                    : <AlertTriangle className="w-4 h-4 text-red-400" />}
+                  <span className={transferResult.success ? 'text-green-300' : 'text-red-300'}>{transferResult.message}</span>
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setTransferDialogOpen(false); setTransferResult(null); }}
+              className="bg-slate-700 border-slate-600 text-slate-300">取消</Button>
+            <Button onClick={handleTeamTransfer} disabled={transferLoading || !transferToUserId}
+              className="bg-purple-600 hover:bg-purple-700">
+              {transferLoading ? <RefreshCw className="w-4 h-4 animate-spin mr-1" /> : null}
+              确认转移
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
