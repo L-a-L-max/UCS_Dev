@@ -272,7 +272,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
   const mapDrones: MapDrone[] = drones.map(d => ({
     uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
     battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
-    model: d.model, owner: d.owner, teamName: d.teamName,
+    model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
   }));
 
   // 事件日志格式化为地图面板使用
@@ -352,7 +352,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                       <div className="text-[10px] text-slate-400">飞行中</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-cyan-400">{drones.filter(d => d.onlineStatus).length}</div>
+                      <div className="text-lg font-bold text-cyan-400">{drones.filter(d => d.onlineStatus === true).length}</div>
                       <div className="text-[10px] text-slate-400">在线</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
@@ -363,7 +363,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                   {/* 无人机列表（在线优先排序） */}
                   <div className="space-y-1">
                     {[...drones].sort((a, b) => {
-                      const aO = a.onlineStatus ? 1 : 0, bO = b.onlineStatus ? 1 : 0;
+                      const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
                       if (aO !== bO) return bO - aO;
                       const aF = a.flightStatus === 'FLYING' ? 1 : 0, bF = b.flightStatus === 'FLYING' ? 1 : 0;
                       return bF - aF;
@@ -373,14 +373,27 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                         onClick={() => setSelectedMapDrone(drone.uavId)}>
                         <div className="flex items-center justify-between mb-0.5">
                           <span className="font-bold text-blue-300">{drone.uavId}</span>
-                          <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus ? 'bg-blue-600' : 'bg-slate-600'}`}>
-                            {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus ? '在线' : '离线'}
+                          <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus === true ? 'bg-blue-600' : 'bg-slate-600'}`}>
+                            {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
                           </Badge>
                         </div>
                         <div className="flex items-center gap-3 text-slate-400">
                           <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery}%` : 'N/A'}</span>
                           <span>{drone.altitude != null ? `${drone.altitude}m` : ''}</span>
                           <span className="text-slate-500">{drone.teamName || ''}</span>
+                          {drone.teamLeader && <span className="text-slate-500">队长:{drone.teamLeader}</span>}
+                        </div>
+                        {/* 快捷转接按钮 */}
+                        <div className="flex gap-0.5 mt-1">
+                          <Button size="sm" variant="outline"
+                            className="text-[10px] h-5 px-1.5 bg-purple-700/50 border-purple-600 text-purple-300 hover:bg-purple-600 flex-1"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setSelectedUavIds([drone.uavId]);
+                              setActiveTab('permission');
+                            }}>
+                            <ArrowRightLeft className="w-2.5 h-2.5 mr-0.5" />快捷转接
+                          </Button>
                         </div>
                       </div>
                     ))}

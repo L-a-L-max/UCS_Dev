@@ -51,6 +51,7 @@ export interface DroneInfo {
   battery: number;
   owner: string;
   teamName: string;
+  teamLeader?: string;
   onlineStatus: boolean;
   lastHeartbeat: string;
 }

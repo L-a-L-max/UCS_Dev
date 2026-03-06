@@ -74,6 +74,7 @@ export interface MapDrone {
   model?: string;
   owner?: string;
   teamName?: string;
+  teamLeader?: string;
 }
 
 interface MapPanelProps {
@@ -104,7 +105,7 @@ export default function MapPanel({
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const droneMarkersRef = useRef<Map<string, { marker: maplibregl.Marker; popup: maplibregl.Popup; element: HTMLDivElement }>>(new Map());
-  const [tileSource, setTileSource] = useState<TileSourceKey>('osm');
+  const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
 
@@ -237,7 +238,7 @@ export default function MapPanel({
 
   function createMarkerHTML(drone: MapDrone, isSelected: boolean): string {
     const isFlying = drone.flightStatus === 'FLYING';
-    const isOnline = drone.onlineStatus !== false;
+    const isOnline = drone.onlineStatus === true;
     const color = isFlying ? '#22c55e' : isOnline ? '#3b82f6' : '#64748b';
     const borderColor = isSelected ? '#f59e0b' : color;
     const size = isSelected ? 40 : 32;
@@ -282,6 +283,7 @@ export default function MapPanel({
           <span style="opacity: 0.8;">位置</span><span>${drone.lat?.toFixed(4)}, ${drone.lng?.toFixed(4)}</span>
           ${drone.owner ? `<span style="opacity: 0.8;">操作员</span><span>${drone.owner}</span>` : ''}
           ${drone.teamName ? `<span style="opacity: 0.8;">所属小队</span><span>${drone.teamName}</span>` : ''}
+          ${drone.teamLeader ? `<span style="opacity: 0.8;">队长</span><span>${drone.teamLeader}</span>` : ''}
         </div>
       </div>
     `;
@@ -328,8 +330,8 @@ export default function MapPanel({
 
   // 对无人机排序：在线优先
   const sortedDrones = [...drones].sort((a, b) => {
-    const aOnline = a.onlineStatus !== false ? 1 : 0;
-    const bOnline = b.onlineStatus !== false ? 1 : 0;
+    const aOnline = a.onlineStatus === true ? 1 : 0;
+    const bOnline = b.onlineStatus === true ? 1 : 0;
     if (aOnline !== bOnline) return bOnline - aOnline;
     const aFlying = a.flightStatus === 'FLYING' ? 1 : 0;
     const bFlying = b.flightStatus === 'FLYING' ? 1 : 0;
@@ -381,7 +383,7 @@ export default function MapPanel({
 
         {/* 统计信息 */}
         <div className="absolute bottom-6 left-2 z-10 bg-slate-800/80 rounded px-2 py-1 text-xs text-slate-300">
-          共 {drones.length} 架 | 在线 {drones.filter(d => d.onlineStatus !== false).length} | 飞行中 {drones.filter(d => d.flightStatus === 'FLYING').length}
+          共 {drones.length} 架 | 在线 {drones.filter(d => d.onlineStatus === true).length} | 飞行中 {drones.filter(d => d.flightStatus === 'FLYING').length}
         </div>
       </div>
 
@@ -421,11 +423,11 @@ export default function MapPanel({
                   <Badge className={`text-[10px] px-1 py-0 ${
                     drone.flightStatus === 'FLYING'
                       ? 'bg-green-600'
-                      : drone.onlineStatus !== false
+                      : drone.onlineStatus === true
                         ? 'bg-blue-600'
                         : 'bg-slate-600'
                   }`}>
-                    {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus !== false ? '在线' : '离线'}
+                    {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2 text-slate-400">

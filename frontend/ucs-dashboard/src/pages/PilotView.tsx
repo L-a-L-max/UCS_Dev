@@ -20,6 +20,9 @@ import {
   Activity,
   Eye,
   EyeOff,
+  CheckSquare,
+  Square,
+  ListChecks,
 } from 'lucide-react';
 import {
   sendControlCommand,
@@ -67,8 +70,13 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
   // 快捷指令反馈
   const [quickFeedback, setQuickFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
 
-  // 详细控制面板显示开关（可通过勾选按钮切换）
-  const [showDetailPanel, setShowDetailPanel] = useState(true);
+  // 详细控制面板显示开关（默认隐藏，点击无人机后显示）
+  const [showDetailPanel, setShowDetailPanel] = useState(false);
+  const [detailPanelEnabled, setDetailPanelEnabled] = useState(true);
+
+  // 多选模式
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedDrones, setSelectedDrones] = useState<Set<string>>(new Set());
 
   // GOTO params
   const [gotoLat, setGotoLat] = useState('39.9042');
@@ -166,13 +174,33 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
     }
   };
 
+  // 多选切换
+  const toggleDroneSelect = (uavId: string) => {
+    setSelectedDrones(prev => {
+      const next = new Set(prev);
+      if (next.has(uavId)) next.delete(uavId); else next.add(uavId);
+      return next;
+    });
+  };
+
+  // 多选聚合数据
+  const multiSelectedDronesList = drones.filter(d => selectedDrones.has(d.uavId));
+  const aggregateData = multiSelectedDronesList.length > 1 ? {
+    count: multiSelectedDronesList.length,
+    maxAlt: Math.max(...multiSelectedDronesList.map(d => d.altitude ?? 0)),
+    minAlt: Math.min(...multiSelectedDronesList.map(d => d.altitude ?? 0)),
+    lowBatteryCount: multiSelectedDronesList.filter(d => (d.battery ?? 0) < 20).length,
+    onlineCount: multiSelectedDronesList.filter(d => d.onlineStatus === true).length,
+    flyingCount: multiSelectedDronesList.filter(d => d.flightStatus === 'FLYING').length,
+  } : null;
+
   const selectedDroneInfo = drones.find(d => d.uavId === selectedDrone);
 
   // 将 DroneInfo 转换为 MapDrone 格式
   const mapDrones: MapDrone[] = drones.map(d => ({
     uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
     battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
-    model: d.model, owner: d.owner, teamName: d.teamName,
+    model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
   }));
 
   return (
@@ -185,13 +213,27 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
           <Badge variant="outline" className="ml-2 text-blue-300 border-blue-500">{username}</Badge>
         </h1>
         <div className="flex items-center gap-2">
+          {/* 多选模式 */}
+          <Button variant="outline" size="sm"
+            onClick={() => {
+              setMultiSelectMode(!multiSelectMode);
+              if (!multiSelectMode) { setSelectedDrones(new Set()); setShowDetailPanel(false); }
+            }}
+            className={`text-xs ${multiSelectMode ? 'bg-amber-600/30 border-amber-500 text-amber-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
+            title={multiSelectMode ? '退出多选' : '多选模式'}>
+            <ListChecks className="w-4 h-4 mr-1" />
+            多选
+          </Button>
           {/* 显示/隐藏详细控制面板的勾选按钮 */}
           <Button variant="outline" size="sm"
-            onClick={() => setShowDetailPanel(!showDetailPanel)}
-            className={`text-xs ${showDetailPanel ? 'bg-blue-600/30 border-blue-500 text-blue-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
-            title={showDetailPanel ? '隐藏详细控制面板' : '显示详细控制面板'}>
-            {showDetailPanel ? <Eye className="w-4 h-4 mr-1" /> : <EyeOff className="w-4 h-4 mr-1" />}
-            详细面板
+            onClick={() => {
+              setDetailPanelEnabled(!detailPanelEnabled);
+              if (detailPanelEnabled) setShowDetailPanel(false);
+            }}
+            className={`text-xs ${detailPanelEnabled ? 'bg-blue-600/30 border-blue-500 text-blue-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
+            title={detailPanelEnabled ? '禁用详情面板' : '启用详情面板'}>
+            {detailPanelEnabled ? <Eye className="w-4 h-4 mr-1" /> : <EyeOff className="w-4 h-4 mr-1" />}
+            详情面板
           </Button>
           <Button variant="outline" size="sm" onClick={fetchDrones} disabled={loading}
             className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50">
@@ -216,24 +258,40 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
           )}
           {drones.length === 0 && <p className="text-slate-500 text-xs text-center py-6">暂无可控制的无人机</p>}
           {[...drones].sort((a, b) => {
-            const aO = a.onlineStatus ? 1 : 0, bO = b.onlineStatus ? 1 : 0;
+            const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
             if (aO !== bO) return bO - aO;
             const aF = a.flightStatus === 'FLYING' ? 1 : 0, bF = b.flightStatus === 'FLYING' ? 1 : 0;
             return bF - aF;
           }).map(drone => (
             <div key={drone.uavId}
               className={`p-2 rounded text-xs cursor-pointer transition-all ${
+                multiSelectMode && selectedDrones.has(drone.uavId) ? 'bg-amber-900/40 border border-amber-500' :
                 selectedDrone === drone.uavId
                   ? 'bg-blue-900/50 border border-blue-500'
                   : 'bg-slate-700 border border-slate-600 hover:border-slate-500'
               }`}
-              onClick={() => setSelectedDrone(drone.uavId)}>
+              onClick={() => {
+                if (multiSelectMode) {
+                  toggleDroneSelect(drone.uavId);
+                } else if (selectedDrone === drone.uavId) {
+                  setShowDetailPanel(false);
+                  setSelectedDrone(null);
+                } else {
+                  setSelectedDrone(drone.uavId);
+                  if (detailPanelEnabled) setShowDetailPanel(true);
+                }
+              }}>
               <div className="flex items-center justify-between mb-0.5">
-                <span className="font-bold text-blue-300">{drone.uavId}</span>
+                <span className="font-bold text-blue-300 flex items-center gap-1">
+                  {multiSelectMode && (selectedDrones.has(drone.uavId)
+                    ? <CheckSquare className="w-3 h-3 text-amber-400" />
+                    : <Square className="w-3 h-3 text-slate-500" />)}
+                  {drone.uavId}
+                </span>
                 <Badge className={`text-[10px] px-1 py-0 ${
-                  drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus ? 'bg-blue-600' : 'bg-slate-600'
+                  drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus === true ? 'bg-blue-600' : 'bg-slate-600'
                 }`}>
-                  {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus ? '在线' : '离线'}
+                  {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
                 </Badge>
               </div>
               <div className="flex items-center gap-2 text-slate-400 mb-1">
@@ -255,8 +313,77 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
           ))}
         </div>
 
+        {/* 中间: 多选聚合数据面板 */}
+        {multiSelectMode && aggregateData && (
+          <div className="w-[300px] min-w-[260px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-3">
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="pb-2 px-3 pt-3">
+                <CardTitle className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-1">
+                    <ListChecks className="w-3 h-3 text-amber-400" />多机聚合信息
+                  </div>
+                  <Badge className="bg-amber-600 text-[10px]">{aggregateData.count} 架</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-3 pb-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-slate-700/50 rounded p-2 text-center">
+                    <div className="text-[10px] text-slate-400 mb-0.5">最高高度</div>
+                    <div className="text-sm font-bold text-blue-300">{aggregateData.maxAlt}m</div>
+                  </div>
+                  <div className="bg-slate-700/50 rounded p-2 text-center">
+                    <div className="text-[10px] text-slate-400 mb-0.5">最低高度</div>
+                    <div className="text-sm font-bold text-cyan-300">{aggregateData.minAlt}m</div>
+                  </div>
+                  <div className="bg-slate-700/50 rounded p-2 text-center">
+                    <div className="text-[10px] text-slate-400 mb-0.5">低电量</div>
+                    <div className="text-sm font-bold text-red-400">{aggregateData.lowBatteryCount} 架</div>
+                  </div>
+                  <div className="bg-slate-700/50 rounded p-2 text-center">
+                    <div className="text-[10px] text-slate-400 mb-0.5">在线</div>
+                    <div className="text-sm font-bold text-green-400">{aggregateData.onlineCount} 架</div>
+                  </div>
+                  <div className="bg-slate-700/50 rounded p-2 text-center col-span-2">
+                    <div className="text-[10px] text-slate-400 mb-0.5">飞行中</div>
+                    <div className="text-sm font-bold text-green-300">{aggregateData.flyingCount} 架</div>
+                  </div>
+                </div>
+                {/* 多机批量控制 */}
+                <div className="mt-3">
+                  <div className="text-[10px] text-slate-400 mb-1">批量控制指令</div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {COMMANDS.map(cmd => {
+                      const Icon = cmd.icon;
+                      return (
+                        <Button key={cmd.type}
+                          className={`h-auto py-1.5 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[10px]`}
+                          onClick={() => { multiSelectedDronesList.forEach(d => handleCommand(cmd.type, d.uavId)); }}>
+                          <Icon className="w-3 h-3" />
+                          <span className="font-bold text-[9px]">{cmd.label}</span>
+                        </Button>
+                      );
+                    })}
+                  </div>
+                </div>
+                {/* 已选无人机列表 */}
+                <div className="mt-3">
+                  <div className="text-[10px] text-slate-400 mb-1">已选无人机</div>
+                  <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                    {multiSelectedDronesList.map(d => (
+                      <div key={d.uavId} className="flex items-center justify-between text-[10px] bg-slate-700/50 rounded px-2 py-1">
+                        <span className="text-blue-300">{d.uavId}</span>
+                        <span className="text-slate-400">{d.battery != null ? `${d.battery}%` : 'N/A'} | {d.altitude != null ? `${d.altitude}m` : 'N/A'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
         {/* 中间: 详细控制面板（可通过顶部按钮隐藏/显示） */}
-        {showDetailPanel && (
+        {!multiSelectMode && showDetailPanel && (
           <div className="w-[320px] min-w-[280px] overflow-y-auto p-3 border-r border-slate-700">
             {!selectedDrone ? (
               <div className="flex items-center justify-center h-full">
@@ -399,7 +526,15 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
 
         {/* 右侧: 地图视图 */}
         <div className="flex-1 h-full">
-          <MapPanel drones={mapDrones} selectedDroneId={selectedDrone} onDroneClick={setSelectedDrone}
+          <MapPanel drones={mapDrones} selectedDroneId={selectedDrone} onDroneClick={(id) => {
+            if (selectedDrone === id) {
+              setShowDetailPanel(false);
+              setSelectedDrone(null);
+            } else {
+              setSelectedDrone(id);
+              if (detailPanelEnabled) setShowDetailPanel(true);
+            }
+          }}
             showDroneList={false} showEventLog={false} />
         </div>
       </div>

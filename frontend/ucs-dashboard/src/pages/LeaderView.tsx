@@ -26,6 +26,9 @@ import {
   Lock,
   Unlock,
   Pause,
+  CheckSquare,
+  Square,
+  ListChecks,
 } from 'lucide-react';
 import {
   Dialog,
@@ -35,6 +38,7 @@ import {
   DialogFooter,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import {
   getLeaderTeamDrones,
   getLeaderTeamMembers,
@@ -72,12 +76,23 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
   const [logTotalPages, setLogTotalPages] = useState(0);
   const [commandFeedback, setCommandFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
   const [activeTab, setActiveTab] = useState<'drones' | 'members' | 'logs'>('drones');
+
+  // GOTO 参数
+  const [gotoLat, setGotoLat] = useState('39.9042');
+  const [gotoLon, setGotoLon] = useState('116.4074');
+  const [gotoAlt, setGotoAlt] = useState('50');
+  // 起飞高度
+  const [takeoffAlt, setTakeoffAlt] = useState('20');
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
 
   // 详情控制面板状态（点击无人机显示/隐藏，可通过按钮一直隐藏）
   const [showDetailPanel, setShowDetailPanel] = useState(false);
   const [detailPanelEnabled, setDetailPanelEnabled] = useState(true);
+
+  // 多选模式
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedDrones, setSelectedDrones] = useState<Set<string>>(new Set());
 
   // Transfer state
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
@@ -174,7 +189,9 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
   const handleQuickCommand = async (uavId: string, commandType: string) => {
     setCommandFeedback(null);
     try {
-      const params = commandType === 'TAKEOFF' ? '{"altitude":50}' : '{}';
+      const params = commandType === 'TAKEOFF' ? JSON.stringify({ altitude: parseFloat(takeoffAlt) || 20 })
+        : commandType === 'GOTO' ? JSON.stringify({ lat: parseFloat(gotoLat) || 0, lon: parseFloat(gotoLon) || 0, alt: parseFloat(gotoAlt) || 50 })
+        : '{}';
       const res = await sendControlCommand(token, {
         uavId,
         commandType,
@@ -192,6 +209,26 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
     setTimeout(() => setCommandFeedback(null), 3000);
   };
 
+  // 多选切换
+  const toggleDroneSelect = (uavId: string) => {
+    setSelectedDrones(prev => {
+      const next = new Set(prev);
+      if (next.has(uavId)) next.delete(uavId); else next.add(uavId);
+      return next;
+    });
+  };
+
+  // 多选聚合数据
+  const multiSelectedDrones = drones.filter(d => selectedDrones.has(d.uavId));
+  const aggregateData = multiSelectedDrones.length > 1 ? {
+    count: multiSelectedDrones.length,
+    maxAlt: Math.max(...multiSelectedDrones.map(d => d.altitude ?? 0)),
+    minAlt: Math.min(...multiSelectedDrones.map(d => d.altitude ?? 0)),
+    lowBatteryCount: multiSelectedDrones.filter(d => (d.battery ?? 0) < 20).length,
+    onlineCount: multiSelectedDrones.filter(d => d.onlineStatus === true).length,
+    flyingCount: multiSelectedDrones.filter(d => d.flightStatus === 'FLYING').length,
+  } : null;
+
   const formatTime = (ts: string) => {
     if (!ts) return '-';
     try { return new Date(ts).toLocaleString('zh-CN'); } catch { return ts; }
@@ -201,7 +238,7 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
   const mapDrones: MapDrone[] = drones.map(d => ({
     uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
     battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
-    model: d.model, owner: d.owner, teamName: d.teamName,
+    model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
   }));
 
   return (
@@ -217,10 +254,20 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           {/* 显示/隐藏详情控制面板的勾选按钮 */}
           <Button variant="outline" size="sm"
             onClick={() => {
+              setMultiSelectMode(!multiSelectMode);
+              if (!multiSelectMode) { setSelectedDrones(new Set()); setShowDetailPanel(false); }
+            }}
+            className={`text-xs ${multiSelectMode ? 'bg-amber-600/30 border-amber-500 text-amber-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
+            title={multiSelectMode ? '退出多选' : '多选模式'}>
+            <ListChecks className="w-4 h-4 mr-1" />
+            多选
+          </Button>
+          <Button variant="outline" size="sm"
+            onClick={() => {
               setDetailPanelEnabled(!detailPanelEnabled);
               if (detailPanelEnabled) setShowDetailPanel(false);
             }}
-            className={`text-xs ${detailPanelEnabled ? 'bg-green-600/30 border-green-500 text-green-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
+            className={`text-xs ${detailPanelEnabled ? 'bg-blue-600/30 border-blue-500 text-blue-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
             title={detailPanelEnabled ? '禁用详情面板' : '启用详情面板'}>
             {detailPanelEnabled ? <Eye className="w-4 h-4 mr-1" /> : <EyeOff className="w-4 h-4 mr-1" />}
             详情面板
@@ -286,7 +333,7 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                       <div className="text-[10px] text-slate-400">飞行中</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-cyan-400">{drones.filter(d => d.onlineStatus).length}</div>
+                      <div className="text-lg font-bold text-cyan-400">{drones.filter(d => d.onlineStatus === true).length}</div>
                       <div className="text-[10px] text-slate-400">在线</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
@@ -297,16 +344,19 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                   {/* 无人机列表（在线优先） */}
                   <div className="space-y-1">
                     {[...drones].sort((a, b) => {
-                      const aO = a.onlineStatus ? 1 : 0, bO = b.onlineStatus ? 1 : 0;
+                      const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
                       if (aO !== bO) return bO - aO;
                       const aF = a.flightStatus === 'FLYING' ? 1 : 0, bF = b.flightStatus === 'FLYING' ? 1 : 0;
                       return bF - aF;
                     }).map(drone => (
                       <div key={drone.uavId}
-                        className={`p-2 rounded text-xs cursor-pointer transition-all ${selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
+                        className={`p-2 rounded text-xs cursor-pointer transition-all ${
+                          multiSelectMode && selectedDrones.has(drone.uavId) ? 'bg-amber-900/40 border border-amber-500' :
+                          selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
                         onClick={() => {
-                          if (selectedMapDrone === drone.uavId) {
-                            // 再次点击同一架无人机，关闭详情面板
+                          if (multiSelectMode) {
+                            toggleDroneSelect(drone.uavId);
+                          } else if (selectedMapDrone === drone.uavId) {
                             setShowDetailPanel(false);
                             setSelectedMapDrone(null);
                           } else {
@@ -315,15 +365,21 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                           }
                         }}>
                         <div className="flex items-center justify-between mb-1">
-                          <span className="font-bold text-blue-300">{drone.uavId}</span>
-                          <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus ? 'bg-blue-600' : 'bg-slate-600'}`}>
-                            {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus ? '在线' : '离线'}
+                          <span className="font-bold text-blue-300 flex items-center gap-1">
+                            {multiSelectMode && (selectedDrones.has(drone.uavId)
+                              ? <CheckSquare className="w-3 h-3 text-amber-400" />
+                              : <Square className="w-3 h-3 text-slate-500" />)}
+                            {drone.uavId}
+                          </span>
+                          <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus === true ? 'bg-blue-600' : 'bg-slate-600'}`}>
+                            {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
                           </Badge>
                         </div>
                         <div className="flex items-center gap-2 text-slate-400 mb-1">
                           <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery}%` : 'N/A'}</span>
                           <span>{drone.altitude != null ? `${drone.altitude}m` : ''}</span>
-                          <span className="text-slate-500">{drone.owner || ''}</span>
+                          <span className="text-slate-500">{drone.teamName || ''}</span>
+                          {drone.teamLeader && <span className="text-slate-500">队长:{drone.teamLeader}</span>}
                         </div>
                         {/* 快捷指令 + 转移 */}
                         <div className="flex flex-wrap gap-0.5 mt-1">
@@ -409,8 +465,84 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           </div>
         )}
 
+        {/* 中间: 多选聚合数据面板 */}
+        {multiSelectMode && aggregateData && (
+          <div className="w-[280px] min-w-[240px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-3">
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="pb-2 px-3 pt-3">
+                <CardTitle className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-1">
+                    <ListChecks className="w-3 h-3 text-amber-400" />多机聚合信息
+                  </div>
+                  <Badge className="bg-amber-600 text-[10px]">{aggregateData.count} 架</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-3 pb-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-slate-700/50 rounded p-2 text-center">
+                    <div className="text-[10px] text-slate-400 mb-0.5">最高高度</div>
+                    <div className="text-sm font-bold text-blue-300">{aggregateData.maxAlt}m</div>
+                  </div>
+                  <div className="bg-slate-700/50 rounded p-2 text-center">
+                    <div className="text-[10px] text-slate-400 mb-0.5">最低高度</div>
+                    <div className="text-sm font-bold text-cyan-300">{aggregateData.minAlt}m</div>
+                  </div>
+                  <div className="bg-slate-700/50 rounded p-2 text-center">
+                    <div className="text-[10px] text-slate-400 mb-0.5">低电量</div>
+                    <div className="text-sm font-bold text-red-400">{aggregateData.lowBatteryCount} 架</div>
+                  </div>
+                  <div className="bg-slate-700/50 rounded p-2 text-center">
+                    <div className="text-[10px] text-slate-400 mb-0.5">在线</div>
+                    <div className="text-sm font-bold text-green-400">{aggregateData.onlineCount} 架</div>
+                  </div>
+                  <div className="bg-slate-700/50 rounded p-2 text-center col-span-2">
+                    <div className="text-[10px] text-slate-400 mb-0.5">飞行中</div>
+                    <div className="text-sm font-bold text-green-300">{aggregateData.flyingCount} 架</div>
+                  </div>
+                </div>
+                {/* 多机控制指令 */}
+                <div className="mt-3">
+                  <div className="text-[10px] text-slate-400 mb-1">批量控制指令</div>
+                  <div className="grid grid-cols-3 gap-1">
+                    {[
+                      { type: 'ARM', label: '全部解锁', icon: Unlock, color: 'bg-green-600 hover:bg-green-700' },
+                      { type: 'DISARM', label: '全部锁定', icon: Lock, color: 'bg-slate-600 hover:bg-slate-700' },
+                      { type: 'TAKEOFF', label: '全部起飞', icon: ArrowUp, color: 'bg-blue-600 hover:bg-blue-700' },
+                      { type: 'LAND', label: '全部降落', icon: ArrowDown, color: 'bg-amber-600 hover:bg-amber-700' },
+                      { type: 'RTL', label: '全部返航', icon: RotateCcw, color: 'bg-purple-600 hover:bg-purple-700' },
+                      { type: 'HOLD', label: '全部悬停', icon: Pause, color: 'bg-orange-600 hover:bg-orange-700' },
+                    ].map(cmd => {
+                      const Icon = cmd.icon;
+                      return (
+                        <Button key={cmd.type}
+                          className={`h-auto py-1.5 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[10px]`}
+                          onClick={() => { multiSelectedDrones.forEach(d => handleQuickCommand(d.uavId, cmd.type)); }}>
+                          <Icon className="w-3.5 h-3.5" />
+                          <span className="font-bold">{cmd.label}</span>
+                        </Button>
+                      );
+                    })}
+                  </div>
+                </div>
+                {/* 已选无人机列表 */}
+                <div className="mt-3">
+                  <div className="text-[10px] text-slate-400 mb-1">已选无人机</div>
+                  <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                    {multiSelectedDrones.map(d => (
+                      <div key={d.uavId} className="flex items-center justify-between text-[10px] bg-slate-700/50 rounded px-2 py-1">
+                        <span className="text-blue-300">{d.uavId}</span>
+                        <span className="text-slate-400">{d.battery != null ? `${d.battery}%` : 'N/A'} | {d.altitude != null ? `${d.altitude}m` : 'N/A'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
         {/* 中间: 详情控制面板（点击无人机显示，再次点击关闭） */}
-        {showDetailPanel && selectedMapDrone && (() => {
+        {!multiSelectMode && showDetailPanel && selectedMapDrone && (() => {
           const drone = drones.find(d => d.uavId === selectedMapDrone);
           if (!drone) return null;
           return (
@@ -488,6 +620,52 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                   </div>
                 </CardContent>
               </Card>
+
+              {/* 参数设置 - 起飞高度 + 前往目标 */}
+              <div className="space-y-2">
+                <Card className="bg-slate-800 border-slate-700">
+                  <CardHeader className="pb-1 px-3 pt-2">
+                    <CardTitle className="text-[10px] flex items-center gap-1">
+                      <ArrowUp className="w-3 h-3 text-blue-400" />起飞高度
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-3 pb-2">
+                    <div className="flex items-center gap-2">
+                      <Input type="number" value={takeoffAlt} onChange={e => setTakeoffAlt(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder="20" />
+                      <span className="text-[10px] text-slate-400">米</span>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card className="bg-slate-800 border-slate-700">
+                  <CardHeader className="pb-1 px-3 pt-2">
+                    <CardTitle className="text-[10px] flex items-center gap-1">
+                      <Navigation className="w-3 h-3 text-cyan-400" />前往目标
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-3 pb-2 space-y-1.5">
+                    <div>
+                      <label className="text-[10px] text-slate-400">纬度</label>
+                      <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">经度</label>
+                      <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">高度 (米)</label>
+                      <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
+                    </div>
+                    <Button className="w-full text-xs h-7 bg-cyan-600 hover:bg-cyan-700 text-white"
+                      onClick={() => handleQuickCommand(drone.uavId, 'GOTO')}>
+                      <Navigation className="w-3 h-3 mr-1" />前往
+                    </Button>
+                  </CardContent>
+                </Card>
+              </div>
 
               {/* 转移按钮 */}
               <Button variant="outline" className="w-full text-xs bg-purple-700/30 border-purple-600 text-purple-300 hover:bg-purple-600"
