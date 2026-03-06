@@ -3,15 +3,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-// Using simple state-based tabs instead of Radix UI Tabs for better compatibility
-import {
   Plane,
   Users,
   Battery,
@@ -23,6 +14,8 @@ import {
   ArrowRightLeft,
   AlertTriangle,
   Activity,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react';
 import {
   Dialog,
@@ -42,6 +35,7 @@ import {
   type DroneInfo,
   type OperationLog,
 } from '@/services/api';
+import MapPanel, { type MapDrone } from '@/components/MapPanel';
 
 interface LeaderViewProps {
   token: string;
@@ -68,6 +62,8 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
   const [logTotalPages, setLogTotalPages] = useState(0);
   const [commandFeedback, setCommandFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
   const [activeTab, setActiveTab] = useState<'drones' | 'members' | 'logs'>('drones');
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
+  const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
 
   // Transfer state
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
@@ -187,9 +183,16 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
     try { return new Date(ts).toLocaleString('zh-CN'); } catch { return ts; }
   };
 
+  // 将 DroneInfo 转换为 MapDrone 格式
+  const mapDrones: MapDrone[] = drones.map(d => ({
+    uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
+    battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
+    model: d.model, owner: d.owner, teamName: d.teamName,
+  }));
+
   return (
     <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">
-      {/* Header */}
+      {/* 顶部栏 */}
       <header className="flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
         <h1 className="text-xl font-bold flex items-center gap-2">
           <Users className="w-6 h-6 text-green-400" />
@@ -197,6 +200,11 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           <Badge variant="outline" className="ml-2 text-green-300 border-green-500">{username}</Badge>
         </h1>
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setLeftPanelCollapsed(!leftPanelCollapsed)}
+            className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50"
+            title={leftPanelCollapsed ? '展开控制面板' : '收起控制面板'}>
+            {leftPanelCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+          </Button>
           <Button variant="outline" size="sm" onClick={() => { fetchDrones(); fetchTeamInfo(); fetchLogs(); }} disabled={loading}
             className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50">
             <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />刷新
@@ -208,219 +216,173 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
         </div>
       </header>
 
-      <div className="flex-1 overflow-hidden p-4">
-        <div className="h-full flex flex-col">
-          <div className="flex gap-1 bg-slate-800 border border-slate-700 rounded-md p-1 w-fit">
-            <button onClick={() => setActiveTab('drones')}
-              className={`flex items-center px-3 py-1.5 rounded text-sm transition-colors ${activeTab === 'drones' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700/50'}`}>
-              <Plane className="w-4 h-4 mr-1" />队伍无人机
-            </button>
-            <button onClick={() => setActiveTab('members')}
-              className={`flex items-center px-3 py-1.5 rounded text-sm transition-colors ${activeTab === 'members' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700/50'}`}>
-              <Users className="w-4 h-4 mr-1" />队伍成员
-            </button>
-            <button onClick={() => setActiveTab('logs')}
-              className={`flex items-center px-3 py-1.5 rounded text-sm transition-colors ${activeTab === 'logs' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700/50'}`}>
-              <FileText className="w-4 h-4 mr-1" />操作日志
-            </button>
-          </div>
-
-          {/* Drones Tab */}
-          {activeTab === 'drones' && <div className="flex-1 overflow-auto mt-3">
-            {/* Command feedback */}
-            {commandFeedback && (
-              <div className={`mb-3 p-3 rounded ${commandFeedback.success ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'}`}>
-                <span className={commandFeedback.success ? 'text-green-300' : 'text-red-300'}>
-                  [{commandFeedback.uavId}] {commandFeedback.message}
-                </span>
-              </div>
-            )}
-
-            {/* Stats */}
-            <div className="grid grid-cols-4 gap-3 mb-4">
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="p-3 text-center">
-                  <div className="text-xl font-bold text-blue-400">{drones.length}</div>
-                  <div className="text-xs text-slate-400">无人机数</div>
-                </CardContent>
-              </Card>
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="p-3 text-center">
-                  <div className="text-xl font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</div>
-                  <div className="text-xs text-slate-400">飞行中</div>
-                </CardContent>
-              </Card>
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="p-3 text-center">
-                  <div className="text-xl font-bold text-cyan-400">{drones.filter(d => d.onlineStatus).length}</div>
-                  <div className="text-xs text-slate-400">在线</div>
-                </CardContent>
-              </Card>
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="p-3 text-center">
-                  <div className="text-xl font-bold text-red-400">{drones.filter(d => (d.battery || 0) < 20).length}</div>
-                  <div className="text-xs text-slate-400">低电量</div>
-                </CardContent>
-              </Card>
+      {/* 主体: 左右分栏 */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* 左侧面板: 控制功能 */}
+        {!leftPanelCollapsed && (
+          <div className="w-[420px] min-w-[320px] bg-slate-900 border-r border-slate-700 flex flex-col">
+            {/* Tab 切换 */}
+            <div className="flex gap-0.5 bg-slate-800 border-b border-slate-700 p-1">
+              <button onClick={() => setActiveTab('drones')}
+                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'drones' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+                <Plane className="w-3 h-3 mr-1" />无人机
+              </button>
+              <button onClick={() => setActiveTab('members')}
+                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'members' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+                <Users className="w-3 h-3 mr-1" />成员
+              </button>
+              <button onClick={() => setActiveTab('logs')}
+                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'logs' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+                <FileText className="w-3 h-3 mr-1" />日志
+              </button>
             </div>
 
-            {/* Drone table with quick commands */}
-            <Card className="bg-slate-800 border-slate-700">
-              <CardContent className="p-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-slate-700 hover:bg-slate-700/50">
-                      <TableHead className="text-slate-400">UAV ID</TableHead>
-                      <TableHead className="text-slate-400">状态</TableHead>
-                      <TableHead className="text-slate-400">电量</TableHead>
-                      <TableHead className="text-slate-400">高度</TableHead>
-                      <TableHead className="text-slate-400">操作员</TableHead>
-                      <TableHead className="text-slate-400">快捷指令</TableHead>
-                      <TableHead className="text-slate-400">转移</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {drones.map(drone => (
-                      <TableRow key={drone.uavId} className="border-slate-700 hover:bg-slate-700/50">
-                        <TableCell className="font-bold text-blue-300">{drone.uavId}</TableCell>
-                        <TableCell>
-                          <Badge className={drone.flightStatus === 'FLYING' ? 'bg-green-600' : 'bg-slate-600'}>
-                            {drone.flightStatus === 'FLYING' ? '飞行中' : '待机'}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1">
-                            <Battery className={`w-3 h-3 ${(drone.battery || 0) < 20 ? 'text-red-400' : 'text-green-400'}`} />
-                            {drone.battery != null ? `${drone.battery}%` : 'N/A'}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-slate-300">{drone.altitude != null ? `${drone.altitude}m` : '-'}</TableCell>
-                        <TableCell className="text-slate-300">{drone.owner || '-'}</TableCell>
-                        <TableCell>
-                          <div className="flex gap-1 flex-wrap">
-                            {COMMANDS.map(cmd => (
-                              <Button key={cmd.type} size="sm" variant="outline"
-                                className="text-xs h-6 px-2 bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600"
-                                onClick={() => handleQuickCommand(drone.uavId, cmd.type)}>
-                                {cmd.label}
-                              </Button>
-                            ))}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <Button size="sm" variant="outline"
-                            className="text-xs h-6 px-2 bg-purple-700/50 border-purple-600 text-purple-300 hover:bg-purple-600"
-                            onClick={() => { setTransferUavId(drone.uavId); setTransferDialogOpen(true); }}>
-                            <ArrowRightLeft className="w-3 h-3 mr-1" />转移
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                    {drones.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={7} className="text-center text-slate-500 py-8">暂无数据</TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          </div>}
-
-          {/* Members Tab */}
-          {activeTab === 'members' && <div className="flex-1 overflow-auto mt-3">
-            <Card className="bg-slate-800 border-slate-700">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-2">
-                    <Users className="w-4 h-4 text-green-400" />
-                    {teamInfo?.teamName || '我的队伍'}
+            {/* Tab 内容 */}
+            <div className="flex-1 overflow-auto p-3">
+              {/* 无人机 Tab */}
+              {activeTab === 'drones' && (
+                <div className="space-y-3">
+                  {/* 指令反馈 */}
+                  {commandFeedback && (
+                    <div className={`p-2 rounded text-xs ${commandFeedback.success ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'}`}>
+                      <span className={commandFeedback.success ? 'text-green-300' : 'text-red-300'}>
+                        [{commandFeedback.uavId}] {commandFeedback.message}
+                      </span>
+                    </div>
+                  )}
+                  {/* 统计 */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
+                      <div className="text-lg font-bold text-blue-400">{drones.length}</div>
+                      <div className="text-[10px] text-slate-400">无人机数</div>
+                    </CardContent></Card>
+                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
+                      <div className="text-lg font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</div>
+                      <div className="text-[10px] text-slate-400">飞行中</div>
+                    </CardContent></Card>
+                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
+                      <div className="text-lg font-bold text-cyan-400">{drones.filter(d => d.onlineStatus).length}</div>
+                      <div className="text-[10px] text-slate-400">在线</div>
+                    </CardContent></Card>
+                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
+                      <div className="text-lg font-bold text-red-400">{drones.filter(d => (d.battery || 0) < 20).length}</div>
+                      <div className="text-[10px] text-slate-400">低电量</div>
+                    </CardContent></Card>
                   </div>
-                  <Badge variant="outline" className="text-slate-400 border-slate-600">{members.length} 人</Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {teamInfo && (
-                  <div className="text-sm text-slate-400 mb-3">队长: <span className="text-slate-300">{teamInfo.leader}</span></div>
-                )}
-                <div className="space-y-1">
-                  {members.map(member => (
-                    <div key={member.userId} className="flex items-center justify-between text-sm p-2.5 rounded bg-slate-700/50">
-                      <div className="flex items-center gap-2">
-                        <span className="text-slate-300">{member.realName || member.username}</span>
-                        <span className="text-xs text-slate-500">ID: {member.userId}</span>
+                  {/* 无人机列表（在线优先） */}
+                  <div className="space-y-1">
+                    {[...drones].sort((a, b) => {
+                      const aO = a.onlineStatus ? 1 : 0, bO = b.onlineStatus ? 1 : 0;
+                      if (aO !== bO) return bO - aO;
+                      const aF = a.flightStatus === 'FLYING' ? 1 : 0, bF = b.flightStatus === 'FLYING' ? 1 : 0;
+                      return bF - aF;
+                    }).map(drone => (
+                      <div key={drone.uavId}
+                        className={`p-2 rounded text-xs cursor-pointer transition-all ${selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
+                        onClick={() => setSelectedMapDrone(drone.uavId)}>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-bold text-blue-300">{drone.uavId}</span>
+                          <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus ? 'bg-blue-600' : 'bg-slate-600'}`}>
+                            {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus ? '在线' : '离线'}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-2 text-slate-400 mb-1">
+                          <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery}%` : 'N/A'}</span>
+                          <span>{drone.altitude != null ? `${drone.altitude}m` : ''}</span>
+                          <span className="text-slate-500">{drone.owner || ''}</span>
+                        </div>
+                        {/* 快捷指令 + 转移 */}
+                        <div className="flex flex-wrap gap-0.5 mt-1">
+                          {COMMANDS.map(cmd => (
+                            <Button key={cmd.type} size="sm" variant="outline"
+                              className="text-[10px] h-5 px-1.5 bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600"
+                              onClick={e => { e.stopPropagation(); handleQuickCommand(drone.uavId, cmd.type); }}>{cmd.label}</Button>
+                          ))}
+                          <Button size="sm" variant="outline"
+                            className="text-[10px] h-5 px-1.5 bg-purple-700/50 border-purple-600 text-purple-300 hover:bg-purple-600"
+                            onClick={e => { e.stopPropagation(); setTransferUavId(drone.uavId); setTransferDialogOpen(true); }}>
+                            <ArrowRightLeft className="w-2.5 h-2.5 mr-0.5" />转移
+                          </Button>
+                        </div>
                       </div>
-                      <Badge className="bg-slate-600 text-xs">{member.role}</Badge>
+                    ))}
+                    {drones.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无数据</div>}
+                  </div>
+                </div>
+              )}
+
+              {/* 成员 Tab */}
+              {activeTab === 'members' && (
+                <div className="space-y-3">
+                  <Card className="bg-slate-800 border-slate-700">
+                    <CardHeader className="pb-2 px-3 pt-3">
+                      <CardTitle className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1"><Users className="w-3 h-3 text-green-400" />{teamInfo?.teamName || '我的队伍'}</div>
+                        <Badge variant="outline" className="text-slate-400 border-slate-600 text-[10px]">{members.length} 人</Badge>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="px-3 pb-3">
+                      {teamInfo && <div className="text-xs text-slate-400 mb-2">队长: <span className="text-slate-300">{teamInfo.leader}</span></div>}
+                      <div className="space-y-0.5">
+                        {members.map(member => (
+                          <div key={member.userId} className="flex items-center justify-between text-[11px] p-1.5 rounded bg-slate-700/50">
+                            <div className="flex items-center gap-1">
+                              <span className="text-slate-300">{member.realName || member.username}</span>
+                              <span className="text-[10px] text-slate-500">ID:{member.userId}</span>
+                            </div>
+                            <Badge className="bg-slate-600 text-[10px] px-1 py-0">{member.role}</Badge>
+                          </div>
+                        ))}
+                        {members.length === 0 && <div className="text-center text-slate-500 py-3 text-xs">暂无成员数据</div>}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+
+              {/* 日志 Tab */}
+              {activeTab === 'logs' && (
+                <div className="space-y-2">
+                  {logs.map(log => (
+                    <div key={log.id} className="p-2 rounded bg-slate-800 border border-slate-700 text-xs">
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-slate-500">{formatTime(log.createdAt)}</span>
+                        <Badge className={`text-[10px] px-1 py-0 ${log.result === 'SUCCESS' ? 'bg-green-600' : 'bg-red-600'}`}>
+                          {log.result === 'SUCCESS' ? '成功' : log.result === 'FAILURE' ? '失败' : log.result || '-'}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge className="bg-blue-600 text-[10px] px-1 py-0">{log.operationType}</Badge>
+                        <span className="text-slate-300">{log.username || '-'}</span>
+                        {log.targetUavId && <span className="text-blue-300 font-mono">{log.targetUavId}</span>}
+                      </div>
+                      {log.detail && <div className="text-slate-400 mt-0.5 truncate">{log.detail}</div>}
                     </div>
                   ))}
-                  {members.length === 0 && (
-                    <div className="text-center text-slate-500 py-4">暂无成员数据</div>
+                  {logs.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无日志</div>}
+                  {logTotalPages > 1 && (
+                    <div className="flex items-center justify-center gap-2 pt-2">
+                      <Button size="sm" variant="outline" disabled={logPage === 0} onClick={() => fetchLogs(logPage - 1)}
+                        className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronLeft className="w-3 h-3" /></Button>
+                      <span className="text-xs text-slate-400">{logPage + 1} / {logTotalPages}</span>
+                      <Button size="sm" variant="outline" disabled={logPage >= logTotalPages - 1} onClick={() => fetchLogs(logPage + 1)}
+                        className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronRight className="w-3 h-3" /></Button>
+                    </div>
                   )}
                 </div>
-              </CardContent>
-            </Card>
-          </div>}
+              )}
+            </div>
+          </div>
+        )}
 
-          {/* Logs Tab */}
-          {activeTab === 'logs' && <div className="flex-1 overflow-auto mt-3">
-            <Card className="bg-slate-800 border-slate-700">
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2">
-                  <FileText className="w-5 h-5 text-blue-400" />操作日志
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-slate-700">
-                      <TableHead className="text-slate-400">时间</TableHead>
-                      <TableHead className="text-slate-400">类型</TableHead>
-                      <TableHead className="text-slate-400">操作人</TableHead>
-                      <TableHead className="text-slate-400">目标</TableHead>
-                      <TableHead className="text-slate-400">详情</TableHead>
-                      <TableHead className="text-slate-400">结果</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {logs.map(log => (
-                      <TableRow key={log.id} className="border-slate-700 hover:bg-slate-700/50">
-                        <TableCell className="text-slate-400 text-xs">{formatTime(log.createdAt)}</TableCell>
-                        <TableCell><Badge className="bg-blue-600 text-xs">{log.operationType}</Badge></TableCell>
-                        <TableCell className="text-slate-300">{log.username || '-'}</TableCell>
-                        <TableCell className="text-blue-300 font-mono text-xs">{log.targetUavId || '-'}</TableCell>
-                        <TableCell className="text-slate-400 text-xs max-w-[200px] truncate">{log.detail || '-'}</TableCell>
-                        <TableCell>
-                          <Badge className={log.result === 'SUCCESS' ? 'bg-green-600' : 'bg-red-600'}>{log.result || '-'}</Badge>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                    {logs.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={6} className="text-center text-slate-500 py-8">暂无日志</TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-                {logTotalPages > 1 && (
-                  <div className="flex items-center justify-center gap-2 p-3 border-t border-slate-700">
-                    <Button size="sm" variant="outline" disabled={logPage === 0} onClick={() => fetchLogs(logPage - 1)}
-                      className="bg-slate-700 border-slate-600 text-slate-300">
-                      <ChevronLeft className="w-4 h-4" />
-                    </Button>
-                    <span className="text-sm text-slate-400">{logPage + 1} / {logTotalPages}</span>
-                    <Button size="sm" variant="outline" disabled={logPage >= logTotalPages - 1} onClick={() => fetchLogs(logPage + 1)}
-                      className="bg-slate-700 border-slate-600 text-slate-300">
-                      <ChevronRight className="w-4 h-4" />
-                    </Button>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>}
+        {/* 右侧面板: 地图视图 */}
+        <div className="flex-1">
+          <MapPanel drones={mapDrones} selectedDroneId={selectedMapDrone} onDroneClick={setSelectedMapDrone}
+            showDroneList={leftPanelCollapsed} showEventLog={false} />
         </div>
       </div>
 
-      {/* Transfer Dialog */}
+      {/* 转移对话框 */}
       <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
         <DialogContent className="bg-slate-800 border-slate-700 text-white">
           <DialogHeader>

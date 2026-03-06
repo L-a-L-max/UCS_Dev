@@ -36,6 +36,7 @@ public class CommanderController {
     private final TeamDroneMapRepository teamDroneMapRepository;
     private final TeamRepository teamRepository;
     private final UserRepository userRepository;
+    private final UserRoleMapRepository userRoleMapRepository;
     private final TeamServiceImpl teamService;
     
     public CommanderController(PermissionService permissionService,
@@ -45,6 +46,7 @@ public class CommanderController {
                                 TeamDroneMapRepository teamDroneMapRepository,
                                 TeamRepository teamRepository,
                                 UserRepository userRepository,
+                                UserRoleMapRepository userRoleMapRepository,
                                 TeamServiceImpl teamService) {
         this.permissionService = permissionService;
         this.redisService = redisService;
@@ -53,6 +55,7 @@ public class CommanderController {
         this.teamDroneMapRepository = teamDroneMapRepository;
         this.teamRepository = teamRepository;
         this.userRepository = userRepository;
+        this.userRoleMapRepository = userRoleMapRepository;
         this.teamService = teamService;
     }
     
@@ -214,5 +217,31 @@ public class CommanderController {
     public ApiResponse<List<TeamInfoDTO>> getAllTeams() {
         List<TeamInfoDTO> teams = teamService.getAllTeams();
         return ApiResponse.success(teams);
+    }
+    
+    /**
+     * Get all registered users for commander's permission transfer dropdown.
+     * Returns user id, username, realName, and role for selection.
+     */
+    @GetMapping("/users")
+    @Operation(summary = "Get all registered users for permission transfer dropdown")
+    public ApiResponse<List<Map<String, Object>>> getAllUsers() {
+        List<User> users = userRepository.findAll();
+        List<Map<String, Object>> userList = users.stream()
+                .map(user -> {
+                    Map<String, Object> info = new HashMap<>();
+                    info.put("userId", user.getId());
+                    info.put("username", user.getUsername());
+                    info.put("realName", user.getRealName() != null ? user.getRealName() : user.getUsername());
+                    // Get roles via UserRoleMap
+                    List<UserRoleMap> roleMaps = userRoleMapRepository.findByUserIdWithRole(user.getId());
+                    String roles = roleMaps.stream()
+                            .map(urm -> urm.getRole().getRoleName())
+                            .collect(Collectors.joining(", "));
+                    info.put("role", roles);
+                    return info;
+                })
+                .collect(Collectors.toList());
+        return ApiResponse.success(userList);
     }
 }

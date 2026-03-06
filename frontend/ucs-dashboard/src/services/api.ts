@@ -404,6 +404,25 @@ export async function getLeaderTeamInfo(
   return response.json();
 }
 
+// ==================== Commander Users API ====================
+
+/**
+ * Get all registered users for permission transfer dropdown.
+ */
+export async function getCommanderUsers(
+  token: string
+): Promise<ApiResponse<Array<{
+  userId: number;
+  username: string;
+  realName: string;
+  role: string;
+}>>> {
+  const response = await fetch(`${API_BASE}/api/v1/commander/users`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
 // ==================== Pilot API ====================
 
 /**
