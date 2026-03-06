@@ -19,6 +19,7 @@ import {
   Battery,
   Activity,
   Plane,
+  AlertTriangle,
 } from 'lucide-react';
 
 const getApiBase = () => {
@@ -108,8 +109,28 @@ export default function MapPanel({
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
+  const tileErrorCountRef = useRef<number>(0);
 
-  // 初始化地图
+  // 检查高德地图瓦片代理是否可用（参考 Observer 视图逻辑）
+  const checkTileHealth = async (): Promise<{ configured: boolean; message: string }> => {
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/map/tiles/health`);
+      if (!response.ok) {
+        return { configured: false, message: '无法连接后端服务' };
+      }
+      const data = await response.json();
+      return {
+        configured: data.configured === true,
+        message: data.message || (data.configured ? '' : '高德地图 API 密钥未配置'),
+      };
+    } catch {
+      return { configured: false, message: '无法连接后端服务' };
+    }
+  };
+
+  // 初始化地图（参考 Observer 视图的 initMap 逻辑）
   const initMap = useCallback(async (selectedTile: TileSourceKey = tileSource) => {
     if (!mapContainer.current) return;
 
@@ -118,7 +139,31 @@ export default function MapPanel({
       map.current = null;
     }
 
-    const tileConfig = TILE_SOURCES[selectedTile];
+    // 重置错误计数
+    tileErrorCountRef.current = 0;
+
+    let actualTile = selectedTile;
+
+    // 如果选择高德地图，先检查后端代理是否可用
+    if (selectedTile === 'gaode') {
+      const health = await checkTileHealth();
+      if (!health.configured) {
+        // 高德代理不可用，自动回退到 OSM
+        console.warn('高德地图代理不可用，自动切换到 OpenStreetMap:', health.message);
+        actualTile = 'osm';
+        setTileSource('osm');
+      }
+    }
+
+    const tileConfig = TILE_SOURCES[actualTile];
+    if (!tileConfig.tiles.length) {
+      setMapError('地图加载失败');
+      setMapErrorDetails('未配置地图瓦片源');
+      return;
+    }
+
+    setMapError(null);
+    setMapErrorDetails(null);
 
     map.current = new maplibregl.Map({
       container: mapContainer.current,
@@ -147,13 +192,38 @@ export default function MapPanel({
       maxZoom: 18,
     });
 
+    // 错误处理（参考 Observer 视图）
+    map.current.on('error', (e) => {
+      console.error('Map error:', e);
+      const errorMsg = (e.error as Error | undefined)?.message || '';
+      const sourceId = (e as unknown as { sourceId?: string }).sourceId || '';
+
+      tileErrorCountRef.current++;
+
+      // 如果连续多次瓦片加载失败，自动切换到其他图源
+      if (tileErrorCountRef.current >= 3 && actualTile === 'gaode') {
+        console.warn('高德瓦片加载多次失败，自动切换到 OpenStreetMap');
+        changeTileSource('osm');
+        return;
+      }
+
+      if (errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError')) {
+        setMapError('网络连接异常');
+        setMapErrorDetails(`地图瓦片加载失败: ${sourceId || 'basemap'}`);
+      }
+    });
+
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
     map.current.addControl(new maplibregl.ScaleControl(), 'bottom-left');
 
     map.current.on('load', () => {
+      // 强制 resize 确保地图正确填充容器（参考 Observer 视图）
       requestAnimationFrame(() => {
         map.current?.resize();
       });
+      // 清除错误状态
+      setMapError(null);
+      setMapErrorDetails(null);
     });
   }, [tileSource]);
 
@@ -343,6 +413,17 @@ export default function MapPanel({
       {/* 地图区域 */}
       <div className="flex-1 relative">
         <div ref={mapContainer} className="absolute inset-0" />
+
+        {/* 地图错误提示（参考 Observer 视图） */}
+        {mapError && (
+          <div className="absolute top-12 left-1/2 -translate-x-1/2 z-20 bg-red-900/90 backdrop-blur-sm rounded-lg px-4 py-2 text-white text-xs flex items-center gap-2 max-w-xs shadow-lg border border-red-700">
+            <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
+            <div>
+              <div className="font-semibold">{mapError}</div>
+              {mapErrorDetails && <div className="text-red-300 mt-0.5">{mapErrorDetails}</div>}
+            </div>
+          </div>
+        )}
         
         {/* 地图控制按钮 */}
         <div className="absolute top-2 left-2 z-10 flex flex-col gap-1">
