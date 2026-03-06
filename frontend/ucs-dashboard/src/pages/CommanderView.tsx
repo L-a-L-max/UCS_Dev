@@ -76,7 +76,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
 
   // Teams state
   const [teams, setTeams] = useState<Array<{ teamId: string; teamName: string; leader: string; memberCount: number; droneCount?: number; description?: string }>>([]);
-  const [teamMembers, setTeamMembers] = useState<Record<string, Array<{ userId: string; username: string; realName: string; role: string }>>>({});
+  const [teamMembers, setTeamMembers] = useState<Record<string, Array<{ userId: string; username: string; realName: string; role: string; name?: string }>>>({});
   // 修复: 使用 Set 支持多个团队同时展开
   const [expandedTeams, setExpandedTeams] = useState<Set<string>>(new Set());
 
@@ -142,7 +142,14 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
     try {
       const res = await getTeamMembers(token, teamId);
       if (res.code === 0 && res.data) {
-        setTeamMembers(prev => ({ ...prev, [teamId]: res.data }));
+        // 后端TeamMemberDTO返回 name 字段，前端需要映射为 realName
+        const mapped = (Array.isArray(res.data) ? res.data : []).map((m: Record<string, unknown>) => ({
+          userId: (m.userId as string) || '',
+          username: (m.name as string) || (m.username as string) || '',
+          realName: (m.name as string) || (m.realName as string) || '',
+          role: (m.role as string) || '',
+        }));
+        setTeamMembers(prev => ({ ...prev, [teamId]: mapped }));
       }
     } catch (err) {
       console.error('Failed to fetch team members:', err);
@@ -545,7 +552,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
 
         {/* 右侧面板: 地图视图 (约2/3宽度) */}
         {!rightPanelCollapsed && (
-          <div className="flex-1">
+          <div className="flex-1 h-full">
             <MapPanel drones={mapDrones} selectedDroneId={selectedMapDrone} onDroneClick={setSelectedMapDrone}
               showDroneList={leftPanelCollapsed} showEventLog={true} eventLogs={eventLogsForMap} />
           </div>

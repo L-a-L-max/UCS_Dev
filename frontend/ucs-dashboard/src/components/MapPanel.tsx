@@ -305,12 +305,26 @@ export default function MapPanel({
     }
   }, [drones, selectedDroneId, updateMarkers]);
 
-  // resize 地图
+  // resize 地图 - 响应面板折叠/展开
   useEffect(() => {
     if (map.current) {
+      setTimeout(() => map.current?.resize(), 100);
       setTimeout(() => map.current?.resize(), 300);
+      setTimeout(() => map.current?.resize(), 600);
     }
-  }, [droneListCollapsed]);
+  }, [droneListCollapsed, showDroneList]);
+
+  // ResizeObserver 确保地图容器尺寸变化时自动resize
+  useEffect(() => {
+    if (!mapContainer.current) return;
+    const observer = new ResizeObserver(() => {
+      if (map.current) {
+        map.current.resize();
+      }
+    });
+    observer.observe(mapContainer.current);
+    return () => observer.disconnect();
+  }, []);
 
   // 对无人机排序：在线优先
   const sortedDrones = [...drones].sort((a, b) => {

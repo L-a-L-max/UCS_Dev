@@ -16,6 +16,16 @@ import {
   Activity,
   PanelLeftClose,
   PanelLeftOpen,
+  Eye,
+  EyeOff,
+  MapPin,
+  Navigation,
+  ArrowUp,
+  ArrowDown,
+  RotateCcw,
+  Lock,
+  Unlock,
+  Pause,
 } from 'lucide-react';
 import {
   Dialog,
@@ -64,6 +74,10 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
   const [activeTab, setActiveTab] = useState<'drones' | 'members' | 'logs'>('drones');
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
+
+  // 详情控制面板状态（点击无人机显示/隐藏，可通过按钮一直隐藏）
+  const [showDetailPanel, setShowDetailPanel] = useState(false);
+  const [detailPanelEnabled, setDetailPanelEnabled] = useState(true);
 
   // Transfer state
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
@@ -200,6 +214,17 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           <Badge variant="outline" className="ml-2 text-green-300 border-green-500">{username}</Badge>
         </h1>
         <div className="flex items-center gap-2">
+          {/* 显示/隐藏详情控制面板的勾选按钮 */}
+          <Button variant="outline" size="sm"
+            onClick={() => {
+              setDetailPanelEnabled(!detailPanelEnabled);
+              if (detailPanelEnabled) setShowDetailPanel(false);
+            }}
+            className={`text-xs ${detailPanelEnabled ? 'bg-green-600/30 border-green-500 text-green-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
+            title={detailPanelEnabled ? '禁用详情面板' : '启用详情面板'}>
+            {detailPanelEnabled ? <Eye className="w-4 h-4 mr-1" /> : <EyeOff className="w-4 h-4 mr-1" />}
+            详情面板
+          </Button>
           <Button variant="outline" size="sm" onClick={() => setLeftPanelCollapsed(!leftPanelCollapsed)}
             className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50"
             title={leftPanelCollapsed ? '展开控制面板' : '收起控制面板'}>
@@ -279,7 +304,16 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                     }).map(drone => (
                       <div key={drone.uavId}
                         className={`p-2 rounded text-xs cursor-pointer transition-all ${selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
-                        onClick={() => setSelectedMapDrone(drone.uavId)}>
+                        onClick={() => {
+                          if (selectedMapDrone === drone.uavId) {
+                            // 再次点击同一架无人机，关闭详情面板
+                            setShowDetailPanel(false);
+                            setSelectedMapDrone(null);
+                          } else {
+                            setSelectedMapDrone(drone.uavId);
+                            if (detailPanelEnabled) setShowDetailPanel(true);
+                          }
+                        }}>
                         <div className="flex items-center justify-between mb-1">
                           <span className="font-bold text-blue-300">{drone.uavId}</span>
                           <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus ? 'bg-blue-600' : 'bg-slate-600'}`}>
@@ -375,9 +409,106 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           </div>
         )}
 
+        {/* 中间: 详情控制面板（点击无人机显示，再次点击关闭） */}
+        {showDetailPanel && selectedMapDrone && (() => {
+          const drone = drones.find(d => d.uavId === selectedMapDrone);
+          if (!drone) return null;
+          return (
+            <div className="w-[280px] min-w-[240px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-3">
+              {/* 无人机状态 */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardHeader className="pb-2 px-3 pt-3">
+                  <CardTitle className="flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-1">
+                      <Activity className="w-3 h-3 text-green-400" />{drone.uavId} 详情
+                    </div>
+                    <Button size="sm" variant="outline" onClick={() => setShowDetailPanel(false)}
+                      className="bg-slate-700 border-slate-600 hover:bg-slate-600 text-xs h-5 px-1.5">关闭</Button>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="px-3 pb-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-slate-700/50 rounded p-2 text-center">
+                      <div className="text-[10px] text-slate-400 mb-0.5">飞行状态</div>
+                      <Badge className={`text-[10px] ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : 'bg-slate-600'}`}>
+                        {drone.flightStatus === 'FLYING' ? '飞行中' : '待机'}
+                      </Badge>
+                    </div>
+                    <div className="bg-slate-700/50 rounded p-2 text-center">
+                      <div className="text-[10px] text-slate-400 mb-0.5">电量</div>
+                      <div className="text-sm font-bold flex items-center justify-center gap-0.5">
+                        <Battery className={`w-3 h-3 ${(drone.battery || 0) < 20 ? 'text-red-400' : 'text-green-400'}`} />
+                        {drone.battery != null ? `${drone.battery}%` : 'N/A'}
+                      </div>
+                    </div>
+                    <div className="bg-slate-700/50 rounded p-2 text-center">
+                      <div className="text-[10px] text-slate-400 mb-0.5">高度</div>
+                      <div className="text-sm font-bold">{drone.altitude != null ? `${drone.altitude}m` : 'N/A'}</div>
+                    </div>
+                    <div className="bg-slate-700/50 rounded p-2 text-center">
+                      <div className="text-[10px] text-slate-400 mb-0.5">位置</div>
+                      <div className="text-[10px] font-mono">
+                        <MapPin className="w-2.5 h-2.5 inline mr-0.5" />
+                        {drone.lat?.toFixed(4)}, {drone.lng?.toFixed(4)}
+                      </div>
+                    </div>
+                  </div>
+                  {drone.owner && <div className="text-[10px] text-slate-400 mt-2">控制员: <span className="text-slate-300">{drone.owner}</span></div>}
+                  {drone.model && <div className="text-[10px] text-slate-400">机型: <span className="text-slate-300">{drone.model}</span></div>}
+                </CardContent>
+              </Card>
+
+              {/* 控制指令 */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardHeader className="pb-2 px-3 pt-3">
+                  <CardTitle className="flex items-center gap-1 text-xs">
+                    <Navigation className="w-3 h-3 text-green-400" />控制指令
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="px-3 pb-3">
+                  <div className="grid grid-cols-3 gap-1">
+                    {[
+                      { type: 'ARM', label: '解锁', icon: Unlock, color: 'bg-green-600 hover:bg-green-700' },
+                      { type: 'DISARM', label: '锁定', icon: Lock, color: 'bg-slate-600 hover:bg-slate-700' },
+                      { type: 'TAKEOFF', label: '起飞', icon: ArrowUp, color: 'bg-blue-600 hover:bg-blue-700' },
+                      { type: 'LAND', label: '降落', icon: ArrowDown, color: 'bg-amber-600 hover:bg-amber-700' },
+                      { type: 'RTL', label: '返航', icon: RotateCcw, color: 'bg-purple-600 hover:bg-purple-700' },
+                      { type: 'HOLD', label: '悬停', icon: Pause, color: 'bg-orange-600 hover:bg-orange-700' },
+                    ].map(cmd => {
+                      const Icon = cmd.icon;
+                      return (
+                        <Button key={cmd.type}
+                          className={`h-auto py-1.5 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[10px]`}
+                          onClick={() => handleQuickCommand(drone.uavId, cmd.type)}>
+                          <Icon className="w-3.5 h-3.5" />
+                          <span className="font-bold">{cmd.label}</span>
+                        </Button>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* 转移按钮 */}
+              <Button variant="outline" className="w-full text-xs bg-purple-700/30 border-purple-600 text-purple-300 hover:bg-purple-600"
+                onClick={() => { setTransferUavId(drone.uavId); setTransferDialogOpen(true); }}>
+                <ArrowRightLeft className="w-3 h-3 mr-1" />转移控制权
+              </Button>
+            </div>
+          );
+        })()}
+
         {/* 右侧面板: 地图视图 */}
-        <div className="flex-1">
-          <MapPanel drones={mapDrones} selectedDroneId={selectedMapDrone} onDroneClick={setSelectedMapDrone}
+        <div className="flex-1 h-full">
+          <MapPanel drones={mapDrones} selectedDroneId={selectedMapDrone} onDroneClick={(id) => {
+            if (selectedMapDrone === id) {
+              setShowDetailPanel(false);
+              setSelectedMapDrone(null);
+            } else {
+              setSelectedMapDrone(id);
+              if (detailPanelEnabled) setShowDetailPanel(true);
+            }
+          }}
             showDroneList={leftPanelCollapsed} showEventLog={false} />
         </div>
       </div>
