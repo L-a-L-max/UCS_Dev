@@ -46,7 +46,6 @@ const COMMANDS = [
   { type: 'TAKEOFF', label: '起飞', icon: ArrowUp, color: 'bg-blue-600 hover:bg-blue-700', description: '自动起飞到指定高度' },
   { type: 'LAND', label: '降落', icon: ArrowDown, color: 'bg-amber-600 hover:bg-amber-700', description: '原地降落' },
   { type: 'RTL', label: '返航', icon: RotateCcw, color: 'bg-purple-600 hover:bg-purple-700', description: '返回起飞点' },
-  { type: 'GOTO', label: '前往', icon: Navigation, color: 'bg-cyan-600 hover:bg-cyan-700', description: '前往指定坐标' },
   { type: 'HOLD', label: '悬停', icon: Pause, color: 'bg-orange-600 hover:bg-orange-700', description: '原地悬停' },
 ];
 
@@ -174,18 +173,9 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
     }
   };
 
-  // 多选切换
-  const toggleDroneSelect = (uavId: string) => {
-    setSelectedDrones(prev => {
-      const next = new Set(prev);
-      if (next.has(uavId)) next.delete(uavId); else next.add(uavId);
-      return next;
-    });
-  };
-
   // 多选聚合数据
   const multiSelectedDronesList = drones.filter(d => selectedDrones.has(d.uavId));
-  const aggregateData = multiSelectedDronesList.length > 1 ? {
+  const aggregateData = multiSelectedDronesList.length >= 2 ? {
     count: multiSelectedDronesList.length,
     maxAlt: Math.max(...multiSelectedDronesList.map(d => d.altitude ?? 0)),
     minAlt: Math.min(...multiSelectedDronesList.map(d => d.altitude ?? 0)),
@@ -216,8 +206,16 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
           {/* 多选模式 */}
           <Button variant="outline" size="sm"
             onClick={() => {
+              if (!multiSelectMode) {
+                // 进入多选模式：清除之前的单选状态
+                setSelectedDrones(new Set());
+                setShowDetailPanel(false);
+                setSelectedDrone(null);
+              } else {
+                // 退出多选模式：清除多选状态
+                setSelectedDrones(new Set());
+              }
               setMultiSelectMode(!multiSelectMode);
-              if (!multiSelectMode) { setSelectedDrones(new Set()); setShowDetailPanel(false); }
             }}
             className={`text-xs ${multiSelectMode ? 'bg-amber-600/30 border-amber-500 text-amber-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
             title={multiSelectMode ? '退出多选' : '多选模式'}>
@@ -272,7 +270,26 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
               }`}
               onClick={() => {
                 if (multiSelectMode) {
-                  toggleDroneSelect(drone.uavId);
+                  // 多选模式：切换选中状态
+                  const newSet = new Set(selectedDrones);
+                  if (newSet.has(drone.uavId)) {
+                    newSet.delete(drone.uavId);
+                  } else {
+                    newSet.add(drone.uavId);
+                  }
+                  setSelectedDrones(newSet);
+                  // 多选模式下：选中1个显示详情面板，选中2+显示聚合面板
+                  if (newSet.size === 1) {
+                    const singleId = Array.from(newSet)[0];
+                    setSelectedDrone(singleId);
+                    setShowDetailPanel(true);
+                  } else if (newSet.size === 0) {
+                    setSelectedDrone(null);
+                    setShowDetailPanel(false);
+                  } else {
+                    // 2+ 选中，由 aggregateData 面板接管
+                    setShowDetailPanel(false);
+                  }
                 } else if (selectedDrone === drone.uavId) {
                   setShowDetailPanel(false);
                   setSelectedDrone(null);
@@ -383,7 +400,7 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
         )}
 
         {/* 中间: 详细控制面板（可通过顶部按钮隐藏/显示） */}
-        {!multiSelectMode && showDetailPanel && (
+        {showDetailPanel && !aggregateData && (
           <div className="w-[320px] min-w-[280px] overflow-y-auto p-3 border-r border-slate-700">
             {!selectedDrone ? (
               <div className="flex items-center justify-center h-full">
@@ -445,14 +462,14 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="px-3 pb-3">
-                  <div className="grid grid-cols-4 gap-1">
+                  <div className="grid grid-cols-3 gap-1">
                     {COMMANDS.map(cmd => {
                       const Icon = cmd.icon;
                       return (
                         <Button key={cmd.type}
-                          className={`h-auto py-2 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[10px]`}
+                          className={`h-auto py-1.5 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[10px]`}
                           onClick={() => handleCommand(cmd.type)} disabled={sendingCommand !== null}>
-                          <Icon className="w-4 h-4" />
+                          <Icon className="w-3.5 h-3.5" />
                           <span className="font-bold">{cmd.label}</span>
                           {sendingCommand === cmd.type && <RefreshCw className="w-3 h-3 animate-spin" />}
                         </Button>
@@ -462,7 +479,7 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
                 </CardContent>
               </Card>
 
-              {/* 参数设置 - 纵向排列（起飞高度和前往目标不在同一行） */}
+              {/* 参数设置 - 起飞高度 + 前往目标 */}
               <div className="space-y-2">
                 <Card className="bg-slate-800 border-slate-700">
                   <CardHeader className="pb-1 px-3 pt-2">
@@ -500,6 +517,10 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
                       <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
                         className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
                     </div>
+                    <Button className="w-full text-xs h-7 bg-cyan-600 hover:bg-cyan-700 text-white"
+                      onClick={() => handleCommand('GOTO')} disabled={sendingCommand !== null}>
+                      <Navigation className="w-3 h-3 mr-1" />前往
+                    </Button>
                   </CardContent>
                 </Card>
               </div>

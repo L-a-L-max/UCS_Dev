@@ -341,27 +341,28 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
             <div className="flex-1 overflow-auto p-3">
               {/* 机队总览 */}
               {activeTab === 'fleet' && (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-blue-400">{drones.length}</div>
-                      <div className="text-[10px] text-slate-400">无人机总数</div>
+                <div className="flex flex-col h-full">
+                  {/* 统计卡片 - 始终固定显示 */}
+                  <div className="grid grid-cols-4 gap-1.5 mb-2 flex-shrink-0">
+                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
+                      <div className="text-base font-bold text-blue-400">{drones.length}</div>
+                      <div className="text-[9px] text-slate-400">总数</div>
                     </CardContent></Card>
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</div>
-                      <div className="text-[10px] text-slate-400">飞行中</div>
+                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
+                      <div className="text-base font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</div>
+                      <div className="text-[9px] text-slate-400">飞行中</div>
                     </CardContent></Card>
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-cyan-400">{drones.filter(d => d.onlineStatus === true).length}</div>
-                      <div className="text-[10px] text-slate-400">在线</div>
+                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
+                      <div className="text-base font-bold text-cyan-400">{drones.filter(d => d.onlineStatus === true).length}</div>
+                      <div className="text-[9px] text-slate-400">在线</div>
                     </CardContent></Card>
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-red-400">{drones.filter(d => (d.battery || 0) < 20).length}</div>
-                      <div className="text-[10px] text-slate-400">低电量</div>
+                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
+                      <div className="text-base font-bold text-red-400">{drones.filter(d => (d.battery || 0) < 20).length}</div>
+                      <div className="text-[9px] text-slate-400">低电量</div>
                     </CardContent></Card>
                   </div>
-                  {/* 无人机列表（在线优先排序） */}
-                  <div className="space-y-1">
+                  {/* 无人机列表（在线优先排序）- 独立滚动区域 */}
+                  <div className="flex-1 overflow-y-auto space-y-1 scrollbar-thin" style={{ scrollbarWidth: 'thin', scrollbarColor: '#475569 #1e293b' }}>
                     {[...drones].sort((a, b) => {
                       const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
                       if (aO !== bO) return bO - aO;
@@ -373,26 +374,25 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                         onClick={() => setSelectedMapDrone(drone.uavId)}>
                         <div className="flex items-center justify-between mb-0.5">
                           <span className="font-bold text-blue-300">{drone.uavId}</span>
-                          <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus === true ? 'bg-blue-600' : 'bg-slate-600'}`}>
-                            {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
-                          </Badge>
+                          <div className="flex items-center gap-1">
+                            <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus === true ? 'bg-blue-600' : 'bg-slate-600'}`}>
+                              {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
+                            </Badge>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-3 text-slate-400">
+                        <div className="flex items-center gap-2 text-slate-400">
                           <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery}%` : 'N/A'}</span>
                           <span>{drone.altitude != null ? `${drone.altitude}m` : ''}</span>
                           <span className="text-slate-500">{drone.teamName || ''}</span>
                           {drone.teamLeader && <span className="text-slate-500">队长:{drone.teamLeader}</span>}
-                        </div>
-                        {/* 快捷转接按钮 */}
-                        <div className="flex gap-0.5 mt-1">
                           <Button size="sm" variant="outline"
-                            className="text-[10px] h-5 px-1.5 bg-purple-700/50 border-purple-600 text-purple-300 hover:bg-purple-600 flex-1"
+                            className="text-[9px] h-4 px-1 py-0 bg-purple-700/30 border-purple-600/50 text-purple-300 hover:bg-purple-600 ml-auto"
                             onClick={e => {
                               e.stopPropagation();
                               setSelectedUavIds([drone.uavId]);
                               setActiveTab('permission');
                             }}>
-                            <ArrowRightLeft className="w-2.5 h-2.5 mr-0.5" />快捷转接
+                            <ArrowRightLeft className="w-2 h-2 mr-0.5" />转接
                           </Button>
                         </div>
                       </div>

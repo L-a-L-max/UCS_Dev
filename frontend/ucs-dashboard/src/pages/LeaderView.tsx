@@ -209,18 +209,9 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
     setTimeout(() => setCommandFeedback(null), 3000);
   };
 
-  // 多选切换
-  const toggleDroneSelect = (uavId: string) => {
-    setSelectedDrones(prev => {
-      const next = new Set(prev);
-      if (next.has(uavId)) next.delete(uavId); else next.add(uavId);
-      return next;
-    });
-  };
-
   // 多选聚合数据
   const multiSelectedDrones = drones.filter(d => selectedDrones.has(d.uavId));
-  const aggregateData = multiSelectedDrones.length > 1 ? {
+  const aggregateData = multiSelectedDrones.length >= 2 ? {
     count: multiSelectedDrones.length,
     maxAlt: Math.max(...multiSelectedDrones.map(d => d.altitude ?? 0)),
     minAlt: Math.min(...multiSelectedDrones.map(d => d.altitude ?? 0)),
@@ -254,8 +245,16 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           {/* 显示/隐藏详情控制面板的勾选按钮 */}
           <Button variant="outline" size="sm"
             onClick={() => {
+              if (!multiSelectMode) {
+                // 进入多选模式：清除之前的单选状态
+                setSelectedDrones(new Set());
+                setShowDetailPanel(false);
+                setSelectedMapDrone(null);
+              } else {
+                // 退出多选模式：清除多选状态
+                setSelectedDrones(new Set());
+              }
               setMultiSelectMode(!multiSelectMode);
-              if (!multiSelectMode) { setSelectedDrones(new Set()); setShowDetailPanel(false); }
             }}
             className={`text-xs ${multiSelectMode ? 'bg-amber-600/30 border-amber-500 text-amber-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
             title={multiSelectMode ? '退出多选' : '多选模式'}>
@@ -355,7 +354,26 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                           selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
                         onClick={() => {
                           if (multiSelectMode) {
-                            toggleDroneSelect(drone.uavId);
+                            // 多选模式：切换选中状态
+                            const newSet = new Set(selectedDrones);
+                            if (newSet.has(drone.uavId)) {
+                              newSet.delete(drone.uavId);
+                            } else {
+                              newSet.add(drone.uavId);
+                            }
+                            setSelectedDrones(newSet);
+                            // 多选模式下：选中1个显示详情面板，选中2+显示聚合面板
+                            if (newSet.size === 1) {
+                              const singleId = Array.from(newSet)[0];
+                              setSelectedMapDrone(singleId);
+                              setShowDetailPanel(true);
+                            } else if (newSet.size === 0) {
+                              setSelectedMapDrone(null);
+                              setShowDetailPanel(false);
+                            } else {
+                              // 2+ 选中，由 aggregateData 面板接管
+                              setShowDetailPanel(false);
+                            }
                           } else if (selectedMapDrone === drone.uavId) {
                             setShowDetailPanel(false);
                             setSelectedMapDrone(null);
@@ -541,8 +559,8 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           </div>
         )}
 
-        {/* 中间: 详情控制面板（点击无人机显示，再次点击关闭） */}
-        {!multiSelectMode && showDetailPanel && selectedMapDrone && (() => {
+        {/* 中间: 详情控制面板（单选模式下点击显示，多选模式下选中1个时显示） */}
+        {showDetailPanel && selectedMapDrone && !aggregateData && (() => {
           const drone = drones.find(d => d.uavId === selectedMapDrone);
           if (!drone) return null;
           return (
@@ -585,8 +603,12 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                       </div>
                     </div>
                   </div>
-                  {drone.owner && <div className="text-[10px] text-slate-400 mt-2">控制员: <span className="text-slate-300">{drone.owner}</span></div>}
-                  {drone.model && <div className="text-[10px] text-slate-400">机型: <span className="text-slate-300">{drone.model}</span></div>}
+                  {(drone.owner || drone.model) && (
+                    <div className="flex items-center gap-3 mt-2 text-[10px] text-slate-400">
+                      {drone.owner && <span>控制员: <span className="text-slate-300">{drone.owner}</span></span>}
+                      {drone.model && <span>机型: <span className="text-slate-300">{drone.model}</span></span>}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
@@ -667,11 +689,6 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                 </Card>
               </div>
 
-              {/* 转移按钮 */}
-              <Button variant="outline" className="w-full text-xs bg-purple-700/30 border-purple-600 text-purple-300 hover:bg-purple-600"
-                onClick={() => { setTransferUavId(drone.uavId); setTransferDialogOpen(true); }}>
-                <ArrowRightLeft className="w-3 h-3 mr-1" />转移控制权
-              </Button>
             </div>
           );
         })()}
