@@ -106,12 +106,11 @@ export default function MapPanel({
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const droneMarkersRef = useRef<Map<string, { marker: maplibregl.Marker; popup: maplibregl.Popup; element: HTMLDivElement }>>(new Map());
-  const [tileSource, setTileSource] = useState<TileSourceKey>('osm');
+  const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
-  const tileErrorCountRef = useRef<number>(0);
 
   // 检查高德地图瓦片代理是否可用（参考 Observer 视图逻辑）
   const checkTileHealth = async (): Promise<{ configured: boolean; message: string }> => {
@@ -130,40 +129,32 @@ export default function MapPanel({
     }
   };
 
-  // 初始化地图（参考 Observer 视图的 initMap 逻辑）
-  const initMap = useCallback(async (selectedTile: TileSourceKey = tileSource) => {
+  // 初始化地图（与 Observer 视图 initMap 逻辑完全一致）
+  const initMap = async (selectedTileSource: TileSourceKey = tileSource) => {
     if (!mapContainer.current) return;
 
+    // Remove existing map if any
     if (map.current) {
       map.current.remove();
       map.current = null;
     }
 
-    // 重置错误计数
-    tileErrorCountRef.current = 0;
-
-    let actualTile = selectedTile;
-
-    // 如果选择高德地图，先检查后端代理是否可用
-    if (selectedTile === 'gaode') {
-      const health = await checkTileHealth();
-      if (!health.configured) {
-        // 高德代理不可用，自动回退到 OSM
-        console.warn('高德地图代理不可用，自动切换到 OpenStreetMap:', health.message);
-        actualTile = 'osm';
-        setTileSource('osm');
-        setMapError('高德地图不可用，已切换到 OpenStreetMap');
-        setMapErrorDetails(health.message);
-        // 3秒后自动清除提示
-        setTimeout(() => { setMapError(null); setMapErrorDetails(null); }, 3000);
-      }
-    }
-
-    const tileConfig = TILE_SOURCES[actualTile];
+    // Get tile configuration
+    const tileConfig = TILE_SOURCES[selectedTileSource];
     if (!tileConfig.tiles.length) {
       setMapError('地图加载失败');
       setMapErrorDetails('未配置地图瓦片源');
       return;
+    }
+
+    // Check tile health for Gaode source (与 Observer 视图一致)
+    if (selectedTileSource === 'gaode') {
+      const health = await checkTileHealth();
+      if (!health.configured) {
+        setMapError('高德地图 API 密钥未配置');
+        setMapErrorDetails(health.message);
+        // Don't return - still try to initialize map, but user will see error
+      }
     }
 
     setMapError(null);
@@ -174,7 +165,7 @@ export default function MapPanel({
       style: {
         version: 8,
         sources: {
-          basemap: {
+          'basemap': {
             type: 'raster',
             tiles: tileConfig.tiles,
             tileSize: 256,
@@ -196,29 +187,18 @@ export default function MapPanel({
       maxZoom: 18,
     });
 
-    // 错误处理（参考 Observer 视图）
+    // Enhanced error handling for map loading (与 Observer 视图一致)
     map.current.on('error', (e) => {
       console.error('Map error:', e);
       const errorMsg = (e.error as Error | undefined)?.message || '';
       const sourceId = (e as unknown as { sourceId?: string }).sourceId || '';
 
-      tileErrorCountRef.current++;
-
-      // 如果连续多次瓦片加载失败，自动切换到其他图源
-      if (tileErrorCountRef.current >= 3) {
-        if (actualTile === 'gaode') {
-          console.warn('高德瓦片加载多次失败，自动切换到 OpenStreetMap');
-          changeTileSource('osm');
-        } else if (actualTile === 'osm') {
-          console.warn('OSM瓦片加载多次失败，自动切换到 CartoDB');
-          changeTileSource('carto');
-        }
-        return;
-      }
-
       if (errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError')) {
         setMapError('网络连接异常');
         setMapErrorDetails(`地图瓦片加载失败: ${sourceId || 'basemap'}`);
+      } else {
+        setMapError('地图加载异常');
+        setMapErrorDetails(errorMsg || '请尝试刷新页面');
       }
     });
 
@@ -226,15 +206,13 @@ export default function MapPanel({
     map.current.addControl(new maplibregl.ScaleControl(), 'bottom-left');
 
     map.current.on('load', () => {
-      // 强制 resize 确保地图正确填充容器（参考 Observer 视图）
+      // Force resize to ensure map fills container properly
+      // This fixes the issue where MapLibre container has 0 height initially
       requestAnimationFrame(() => {
         map.current?.resize();
       });
-      // 清除错误状态
-      setMapError(null);
-      setMapErrorDetails(null);
     });
-  }, [tileSource]);
+  };
 
   // 切换地图源
   const changeTileSource = async (newSource: TileSourceKey) => {
@@ -368,15 +346,16 @@ export default function MapPanel({
     `;
   }
 
-  // 初始化
+  // 初始化（与 Observer 视图一致）
   useEffect(() => {
-    initMap();
+    initMap().catch(console.error);
     return () => {
       if (map.current) {
         map.current.remove();
         map.current = null;
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 更新标记
@@ -421,7 +400,7 @@ export default function MapPanel({
     <div className={`flex h-full ${className}`}>
       {/* 地图区域 */}
       <div className="flex-1 relative">
-        <div ref={mapContainer} className="absolute inset-0" />
+        <div ref={mapContainer} className="absolute inset-0 w-full h-full" style={{ minHeight: '100%' }} />
 
         {/* 地图错误提示（参考 Observer 视图） */}
         {mapError && (
