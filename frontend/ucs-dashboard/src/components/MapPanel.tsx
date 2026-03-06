@@ -106,7 +106,7 @@ export default function MapPanel({
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const droneMarkersRef = useRef<Map<string, { marker: maplibregl.Marker; popup: maplibregl.Popup; element: HTMLDivElement }>>(new Map());
-  const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
+  const [tileSource, setTileSource] = useState<TileSourceKey>('osm');
   const [showTileSelector, setShowTileSelector] = useState(false);
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
@@ -152,6 +152,10 @@ export default function MapPanel({
         console.warn('高德地图代理不可用，自动切换到 OpenStreetMap:', health.message);
         actualTile = 'osm';
         setTileSource('osm');
+        setMapError('高德地图不可用，已切换到 OpenStreetMap');
+        setMapErrorDetails(health.message);
+        // 3秒后自动清除提示
+        setTimeout(() => { setMapError(null); setMapErrorDetails(null); }, 3000);
       }
     }
 
@@ -201,9 +205,14 @@ export default function MapPanel({
       tileErrorCountRef.current++;
 
       // 如果连续多次瓦片加载失败，自动切换到其他图源
-      if (tileErrorCountRef.current >= 3 && actualTile === 'gaode') {
-        console.warn('高德瓦片加载多次失败，自动切换到 OpenStreetMap');
-        changeTileSource('osm');
+      if (tileErrorCountRef.current >= 3) {
+        if (actualTile === 'gaode') {
+          console.warn('高德瓦片加载多次失败，自动切换到 OpenStreetMap');
+          changeTileSource('osm');
+        } else if (actualTile === 'osm') {
+          console.warn('OSM瓦片加载多次失败，自动切换到 CartoDB');
+          changeTileSource('carto');
+        }
         return;
       }
 
