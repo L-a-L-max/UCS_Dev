@@ -82,6 +82,8 @@ interface MapPanelProps {
   drones: MapDrone[];
   /** 选中的无人机 ID（高亮显示） */
   selectedDroneId?: string | null;
+  /** 多选模式下选中的无人机 ID 集合（所有选中的都高亮闪烁） */
+  selectedDroneIds?: Set<string>;
   /** 点击无人机标记时的回调 */
   onDroneClick?: (uavId: string) => void;
   /** 额外的 CSS 类名 */
@@ -97,6 +99,7 @@ interface MapPanelProps {
 export default function MapPanel({
   drones,
   selectedDroneId,
+  selectedDroneIds,
   onDroneClick,
   className = '',
   showDroneList = true,
@@ -106,11 +109,38 @@ export default function MapPanel({
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const droneMarkersRef = useRef<Map<string, { marker: maplibregl.Marker; popup: maplibregl.Popup; element: HTMLDivElement }>>(new Map());
+  const popupTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
+
+  // Fix 6: 弹窗自动关闭逻辑 - 默认8秒后关闭，鼠标移入保持，移出后倒计时关闭
+  const POPUP_AUTO_CLOSE_MS = 8000;
+
+  const startPopupAutoClose = useCallback((uavId: string) => {
+    // 清除旧定时器
+    const oldTimer = popupTimerRef.current.get(uavId);
+    if (oldTimer) clearTimeout(oldTimer);
+    // 启动新定时器
+    const timer = setTimeout(() => {
+      const entry = droneMarkersRef.current.get(uavId);
+      if (entry && entry.popup.isOpen()) {
+        entry.popup.remove();
+      }
+      popupTimerRef.current.delete(uavId);
+    }, POPUP_AUTO_CLOSE_MS);
+    popupTimerRef.current.set(uavId, timer);
+  }, []);
+
+  const clearPopupAutoClose = useCallback((uavId: string) => {
+    const timer = popupTimerRef.current.get(uavId);
+    if (timer) {
+      clearTimeout(timer);
+      popupTimerRef.current.delete(uavId);
+    }
+  }, []);
 
   // 检查高德地图瓦片代理是否可用（参考 Observer 视图逻辑）
   const checkTileHealth = async (): Promise<{ configured: boolean; message: string }> => {
@@ -254,7 +284,8 @@ export default function MapPanel({
     drones.forEach(drone => {
       if (!drone.lat || !drone.lng) return;
 
-      const isSelected = drone.uavId === selectedDroneId;
+      // 支持多选高亮：如果有 selectedDroneIds 则检查是否在集合中，否则用单选 selectedDroneId
+      const isSelected = selectedDroneIds ? selectedDroneIds.has(drone.uavId) : drone.uavId === selectedDroneId;
 
       const existing = droneMarkersRef.current.get(drone.uavId);
 
@@ -279,6 +310,19 @@ export default function MapPanel({
           maxWidth: '280px',
         }).setHTML(createPopupHTML(drone));
 
+        // Fix 6: 弹窗打开时启动自动关闭定时器，鼠标移入时暂停，移出时重启
+        popup.on('open', () => {
+          startPopupAutoClose(drone.uavId);
+          // 添加鼠标事件监听
+          setTimeout(() => {
+            const popupEl = popup.getElement();
+            if (popupEl) {
+              popupEl.addEventListener('mouseenter', () => clearPopupAutoClose(drone.uavId));
+              popupEl.addEventListener('mouseleave', () => startPopupAutoClose(drone.uavId));
+            }
+          }, 50);
+        });
+
         const marker = new maplibregl.Marker({ element: el })
           .setLngLat([drone.lng, drone.lat])
           .setPopup(popup)
@@ -291,7 +335,7 @@ export default function MapPanel({
         droneMarkersRef.current.set(drone.uavId, { marker, popup, element: el });
       }
     });
-  }, [drones, selectedDroneId, onDroneClick]);
+  }, [drones, selectedDroneId, selectedDroneIds, onDroneClick, startPopupAutoClose, clearPopupAutoClose]);
 
   function createMarkerHTML(drone: MapDrone, isSelected: boolean): string {
     const isFlying = drone.flightStatus === 'FLYING';
@@ -363,7 +407,7 @@ export default function MapPanel({
     if (map.current) {
       updateMarkers();
     }
-  }, [drones, selectedDroneId, updateMarkers]);
+  }, [drones, selectedDroneId, selectedDroneIds, updateMarkers]);
 
   // resize 地图 - 响应面板折叠/展开
   useEffect(() => {

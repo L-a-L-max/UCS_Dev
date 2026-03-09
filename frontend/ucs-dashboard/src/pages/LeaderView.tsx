@@ -643,45 +643,39 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                 </CardContent>
               </Card>
 
-              {/* 参数设置 - 起飞高度 + 前往目标 */}
-              <div className="space-y-2">
+              {/* 参数设置 - 起飞高度 + 前往目标（紧凑间距避免滚动） */}
+              <div className="space-y-1">
                 <Card className="bg-slate-800 border-slate-700">
-                  <CardHeader className="pb-1 px-3 pt-2">
-                    <CardTitle className="text-[10px] flex items-center gap-1">
-                      <ArrowUp className="w-3 h-3 text-blue-400" />起飞高度
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="px-3 pb-2">
+                  <CardContent className="px-3 py-1.5">
                     <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-400 whitespace-nowrap flex items-center gap-0.5"><ArrowUp className="w-2.5 h-2.5 text-blue-400" />起飞高度</span>
                       <Input type="number" value={takeoffAlt} onChange={e => setTakeoffAlt(e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder="20" />
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder="20" />
                       <span className="text-[10px] text-slate-400">米</span>
                     </div>
                   </CardContent>
                 </Card>
                 <Card className="bg-slate-800 border-slate-700">
-                  <CardHeader className="pb-1 px-3 pt-2">
-                    <CardTitle className="text-[10px] flex items-center gap-1">
-                      <Navigation className="w-3 h-3 text-cyan-400" />前往目标
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="px-3 pb-2 space-y-1.5">
-                    <div>
-                      <label className="text-[10px] text-slate-400">纬度</label>
-                      <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
+                  <CardContent className="px-3 py-1.5 space-y-1">
+                    <div className="flex items-center gap-1 text-[10px] text-slate-400"><Navigation className="w-2.5 h-2.5 text-cyan-400" />前往目标</div>
+                    <div className="grid grid-cols-3 gap-1">
+                      <div>
+                        <label className="text-[9px] text-slate-500">纬度</label>
+                        <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white text-[10px] h-6" />
+                      </div>
+                      <div>
+                        <label className="text-[9px] text-slate-500">经度</label>
+                        <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white text-[10px] h-6" />
+                      </div>
+                      <div>
+                        <label className="text-[9px] text-slate-500">高度(m)</label>
+                        <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white text-[10px] h-6" />
+                      </div>
                     </div>
-                    <div>
-                      <label className="text-[10px] text-slate-400">经度</label>
-                      <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-400">高度 (米)</label>
-                      <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
-                    </div>
-                    <Button className="w-full text-xs h-7 bg-cyan-600 hover:bg-cyan-700 text-white"
+                    <Button className="w-full text-xs h-6 bg-cyan-600 hover:bg-cyan-700 text-white"
                       onClick={() => handleQuickCommand(drone.uavId, 'GOTO')}>
                       <Navigation className="w-3 h-3 mr-1" />前往
                     </Button>
@@ -695,15 +689,35 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
 
         {/* 右侧面板: 地图视图 */}
         <div className="flex-1 h-full">
-          <MapPanel drones={mapDrones} selectedDroneId={selectedMapDrone} onDroneClick={(id) => {
-            if (selectedMapDrone === id) {
-              setShowDetailPanel(false);
-              setSelectedMapDrone(null);
-            } else {
-              setSelectedMapDrone(id);
-              if (detailPanelEnabled) setShowDetailPanel(true);
-            }
-          }}
+          <MapPanel drones={mapDrones} selectedDroneId={selectedMapDrone}
+            selectedDroneIds={multiSelectMode ? selectedDrones : undefined}
+            onDroneClick={(id) => {
+              if (multiSelectMode) {
+                // 多选模式下地图点击也切换选中状态
+                const newSet = new Set(selectedDrones);
+                if (newSet.has(id)) { newSet.delete(id); } else { newSet.add(id); }
+                setSelectedDrones(newSet);
+                if (newSet.size === 1) {
+                  setSelectedMapDrone(Array.from(newSet)[0]);
+                  if (detailPanelEnabled) setShowDetailPanel(true);
+                } else if (newSet.size === 0) {
+                  setSelectedMapDrone(null);
+                  setShowDetailPanel(false);
+                } else {
+                  setShowDetailPanel(false);
+                }
+              } else {
+                // 单选模式：点击同时高亮 + 显示基本信息弹窗
+                if (selectedMapDrone === id) {
+                  setShowDetailPanel(false);
+                  setSelectedMapDrone(null);
+                } else {
+                  setSelectedMapDrone(id);
+                  // Fix 7: 只有 detailPanelEnabled 时才显示详情面板
+                  if (detailPanelEnabled) setShowDetailPanel(true);
+                }
+              }
+            }}
             showDroneList={leftPanelCollapsed} showEventLog={false} />
         </div>
       </div>

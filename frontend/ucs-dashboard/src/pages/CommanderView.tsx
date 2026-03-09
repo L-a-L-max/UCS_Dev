@@ -87,6 +87,15 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
   // 地图选中的无人机
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
 
+  // 快捷转接弹窗状态
+  const [quickTransferOpen, setQuickTransferOpen] = useState(false);
+  const [quickTransferUavId, setQuickTransferUavId] = useState('');
+  const [quickTransferMode, setQuickTransferMode] = useState<'user' | 'team'>('team');
+  const [quickTransferToUserId, setQuickTransferToUserId] = useState('');
+  const [quickTransferToTeamId, setQuickTransferToTeamId] = useState('');
+  const [quickTransferLoading, setQuickTransferLoading] = useState(false);
+  const [quickTransferResult, setQuickTransferResult] = useState<{ success: boolean; message: string } | null>(null);
+
   // 注册用户列表（用于下拉选择）
   const [registeredUsers, setRegisteredUsers] = useState<Array<{ userId: number; username: string; realName: string; role: string }>>([]);
 
@@ -222,6 +231,40 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
     }
   };
 
+  // 快捷转接处理
+  const handleQuickTransfer = async () => {
+    if (!quickTransferUavId) return;
+    if (quickTransferMode === 'user' && !quickTransferToUserId) return;
+    if (quickTransferMode === 'team' && !quickTransferToTeamId) return;
+    setQuickTransferLoading(true);
+    setQuickTransferResult(null);
+    try {
+      let res;
+      if (quickTransferMode === 'team') {
+        res = await transferPermissionToTeam(token, [quickTransferUavId], parseInt(quickTransferToTeamId));
+      } else {
+        res = await transferPermission(token, {
+          uavIds: [quickTransferUavId],
+          toUserId: parseInt(quickTransferToUserId),
+          reason: '快捷转接',
+        });
+      }
+      if (res.code === 0) {
+        setQuickTransferResult({ success: true, message: '转接成功' });
+        fetchFleet();
+        fetchTeams();
+        fetchLogs(0, logFilter);
+        setTimeout(() => { setQuickTransferOpen(false); setQuickTransferResult(null); }, 1500);
+      } else {
+        setQuickTransferResult({ success: false, message: res.msg || '转接失败' });
+      }
+    } catch {
+      setQuickTransferResult({ success: false, message: '网络错误' });
+    } finally {
+      setQuickTransferLoading(false);
+    }
+  };
+
   // 修复: 支持多个团队同时展开
   const handleTeamExpand = (teamId: string) => {
     setExpandedTeams(prev => {
@@ -314,9 +357,9 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
 
       {/* 主体: 左右分栏布局 */}
       <div className="flex-1 flex overflow-hidden">
-        {/* 左侧面板: 控制功能 (约1/3宽度) */}
+        {/* 左侧面板: 控制功能 - 右侧收起时自动扩展 */}
         {!leftPanelCollapsed && (
-          <div className="w-[420px] min-w-[320px] bg-slate-900 border-r border-slate-700 flex flex-col">
+          <div className={`${rightPanelCollapsed ? 'flex-1' : 'w-[420px] min-w-[320px]'} bg-slate-900 border-r border-slate-700 flex flex-col`}>
             {/* Tab 切换 */}
             <div className="flex gap-0.5 bg-slate-800 border-b border-slate-700 p-1">
               <button onClick={() => setActiveTab('fleet')}
@@ -389,8 +432,12 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                             className="text-[9px] h-4 px-1 py-0 bg-purple-700/30 border-purple-600/50 text-purple-300 hover:bg-purple-600 ml-auto"
                             onClick={e => {
                               e.stopPropagation();
-                              setSelectedUavIds([drone.uavId]);
-                              setActiveTab('permission');
+                              setQuickTransferUavId(drone.uavId);
+                              setQuickTransferMode('team');
+                              setQuickTransferToUserId('');
+                              setQuickTransferToTeamId('');
+                              setQuickTransferResult(null);
+                              setQuickTransferOpen(true);
                             }}>
                             <ArrowRightLeft className="w-2 h-2 mr-0.5" />转接
                           </Button>
@@ -583,7 +630,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
         )}
       </div>
 
-      {/* 确认对话框 */}
+      {/* 确认对话框 - 批量权限转移 */}
       <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
         <DialogContent className="bg-slate-800 border-slate-700 text-white">
           <DialogHeader>
@@ -607,6 +654,71 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
               disabled={transferLoading} className="bg-purple-600 hover:bg-purple-700">
               {transferLoading ? <RefreshCw className="w-4 h-4 animate-spin mr-1" /> : null}
               确认转移
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 快捷转接弹窗 - 单架无人机快速转接 */}
+      <Dialog open={quickTransferOpen} onOpenChange={(open) => { setQuickTransferOpen(open); if (!open) setQuickTransferResult(null); }}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-white">
+          <DialogHeader>
+            <DialogTitle className="text-white">快捷转接 - {quickTransferUavId}</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              将无人机 {quickTransferUavId} 的控制权快速转接给队伍或个人
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {/* 转接模式选择 */}
+            <div className="flex gap-2">
+              <Button size="sm" variant={quickTransferMode === 'team' ? 'default' : 'outline'}
+                className={`text-xs flex-1 ${quickTransferMode === 'team' ? 'bg-purple-600 hover:bg-purple-700 text-white' : 'bg-slate-700 border-slate-600 text-slate-300'}`}
+                onClick={() => setQuickTransferMode('team')}>转接至队伍</Button>
+              <Button size="sm" variant={quickTransferMode === 'user' ? 'default' : 'outline'}
+                className={`text-xs flex-1 ${quickTransferMode === 'user' ? 'bg-purple-600 hover:bg-purple-700 text-white' : 'bg-slate-700 border-slate-600 text-slate-300'}`}
+                onClick={() => setQuickTransferMode('user')}>转接至个人</Button>
+            </div>
+            {/* 目标选择 */}
+            {quickTransferMode === 'team' ? (
+              <div>
+                <label className="text-xs text-slate-300 mb-1 block">目标队伍</label>
+                <select value={quickTransferToTeamId} onChange={e => setQuickTransferToTeamId(e.target.value)}
+                  className="w-full rounded-md bg-slate-700 border-slate-600 text-white px-3 py-2 text-sm">
+                  <option value="">选择队伍...</option>
+                  {teams.map(team => (
+                    <option key={team.teamId} value={team.teamId.replace('T', '')}>{team.teamName} ({team.leader || '无队长'})</option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div>
+                <label className="text-xs text-slate-300 mb-1 block">目标用户</label>
+                <select value={quickTransferToUserId} onChange={e => setQuickTransferToUserId(e.target.value)}
+                  className="w-full rounded-md bg-slate-700 border-slate-600 text-white px-3 py-2 text-sm">
+                  <option value="">选择用户...</option>
+                  {registeredUsers.map(user => (
+                    <option key={user.userId} value={user.userId}>{user.realName || user.username} ({user.role || '无角色'})</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {quickTransferResult && (
+              <div className={`p-2 rounded text-xs ${quickTransferResult.success ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'}`}>
+                <div className="flex items-center gap-1">
+                  {quickTransferResult.success ? <Activity className="w-3 h-3 text-green-400" /> : <AlertTriangle className="w-3 h-3 text-red-400" />}
+                  <span className={quickTransferResult.success ? 'text-green-300' : 'text-red-300'}>{quickTransferResult.message}</span>
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setQuickTransferOpen(false); setQuickTransferResult(null); }}
+              className="bg-slate-700 border-slate-600 text-slate-300">取消</Button>
+            <Button onClick={handleQuickTransfer}
+              disabled={quickTransferLoading || (quickTransferMode === 'user' ? !quickTransferToUserId : !quickTransferToTeamId)}
+              className="bg-purple-600 hover:bg-purple-700">
+              {quickTransferLoading ? <RefreshCw className="w-4 h-4 animate-spin mr-1" /> : null}
+              确认转接
             </Button>
           </DialogFooter>
         </DialogContent>
