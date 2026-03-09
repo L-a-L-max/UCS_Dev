@@ -168,7 +168,9 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
     setTransferLoading(true);
     setTransferResult(null);
     try {
-      const res = await leaderTransferDrone(token, [transferUavId], parseInt(transferToUserId));
+      // userId 可能带 "U" 前缀（如 "U3"），需要去掉前缀再解析
+      const numericUserId = parseInt(transferToUserId.replace(/^U/i, ''));
+      const res = await leaderTransferDrone(token, [transferUavId], numericUserId);
       if (res.code === 0) {
         setTransferResult({ success: true, message: '队内控制权转移成功' });
         setTransferUavId('');

@@ -110,6 +110,14 @@ export default function MapPanel({
   const map = useRef<maplibregl.Map | null>(null);
   const droneMarkersRef = useRef<Map<string, { marker: maplibregl.Marker; popup: maplibregl.Popup; element: HTMLDivElement }>>(new Map());
   const popupTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  // 使用 ref 保存最新的回调和状态，避免 marker click listener 中的闭包过期问题
+  const onDroneClickRef = useRef(onDroneClick);
+  const selectedDroneIdsRef = useRef(selectedDroneIds);
+  const selectedDroneIdRef = useRef(selectedDroneId);
+  useEffect(() => { onDroneClickRef.current = onDroneClick; }, [onDroneClick]);
+  useEffect(() => { selectedDroneIdsRef.current = selectedDroneIds; }, [selectedDroneIds]);
+  useEffect(() => { selectedDroneIdRef.current = selectedDroneId; }, [selectedDroneId]);
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
@@ -325,21 +333,45 @@ export default function MapPanel({
 
         const marker = new maplibregl.Marker({ element: el })
           .setLngLat([drone.lng, drone.lat])
-          .setPopup(popup)
           .addTo(map.current!);
 
-        el.addEventListener('click', () => {
-          // 多选模式下不显示弹窗，关闭已打开的弹窗
-          if (selectedDroneIds) {
+        // 不使用 marker.setPopup() 避免 MapLibre 自动 toggle popup 行为
+        // 改为完全手动控制 popup 显示/隐藏
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const currentSelectedIds = selectedDroneIdsRef.current;
+          const currentSelectedId = selectedDroneIdRef.current;
+          const isMultiSelect = !!currentSelectedIds;
+
+          if (isMultiSelect) {
+            // 多选模式：不显示弹窗，关闭已打开的弹窗
             popup.remove();
+          } else {
+            // 单选模式：判断是否点击的是当前已选中的无人机
+            if (currentSelectedId === drone.uavId) {
+              // 再次点击同一个 -> 取消选中，关闭弹窗
+              popup.remove();
+            } else {
+              // 点击新的无人机 -> 关闭所有其他弹窗，打开当前弹窗
+              droneMarkersRef.current.forEach((entry, id) => {
+                if (id !== drone.uavId && entry.popup.isOpen()) {
+                  entry.popup.remove();
+                }
+              });
+              // 显示基本信息弹窗
+              if (map.current && !popup.isOpen()) {
+                popup.addTo(map.current);
+                popup.setLngLat([drone.lng, drone.lat]);
+              }
+            }
           }
-          onDroneClick?.(drone.uavId);
+          onDroneClickRef.current?.(drone.uavId);
         });
 
         droneMarkersRef.current.set(drone.uavId, { marker, popup, element: el });
       }
     });
-  }, [drones, selectedDroneId, selectedDroneIds, onDroneClick, startPopupAutoClose, clearPopupAutoClose]);
+  }, [drones, selectedDroneId, selectedDroneIds, startPopupAutoClose, clearPopupAutoClose]);
 
   function createMarkerHTML(drone: MapDrone, isSelected: boolean): string {
     const isFlying = drone.flightStatus === 'FLYING';
