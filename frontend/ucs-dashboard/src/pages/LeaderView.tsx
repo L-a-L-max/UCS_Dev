@@ -263,8 +263,15 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           </Button>
           <Button variant="outline" size="sm"
             onClick={() => {
-              setDetailPanelEnabled(!detailPanelEnabled);
-              if (detailPanelEnabled) setShowDetailPanel(false);
+              const newEnabled = !detailPanelEnabled;
+              setDetailPanelEnabled(newEnabled);
+              if (!newEnabled) {
+                // 关闭详情面板按钮 -> 隐藏面板
+                setShowDetailPanel(false);
+              } else {
+                // 开启详情面板按钮 -> 如果有选中无人机则立即显示
+                if (selectedMapDrone) setShowDetailPanel(true);
+              }
             }}
             className={`text-xs ${detailPanelEnabled ? 'bg-blue-600/30 border-blue-500 text-blue-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
             title={detailPanelEnabled ? '禁用详情面板' : '启用详情面板'}>
@@ -379,7 +386,8 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                             setSelectedMapDrone(null);
                           } else {
                             setSelectedMapDrone(drone.uavId);
-                            if (detailPanelEnabled) setShowDetailPanel(true);
+                            // 详情面板显示条件：detailPanelEnabled && 有选中无人机
+                            setShowDetailPanel(detailPanelEnabled);
                           }
                         }}>
                         <div className="flex items-center justify-between mb-1">
@@ -643,7 +651,7 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                 </CardContent>
               </Card>
 
-              {/* 参数设置 - 起飞高度 + 前往目标（紧凑间距避免滚动） */}
+              {/* 参数设置 - 起飞高度 + 前往目标（纵向排列，间距紧凑） */}
               <div className="space-y-1">
                 <Card className="bg-slate-800 border-slate-700">
                   <CardContent className="px-3 py-1.5">
@@ -658,21 +666,21 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                 <Card className="bg-slate-800 border-slate-700">
                   <CardContent className="px-3 py-1.5 space-y-1">
                     <div className="flex items-center gap-1 text-[10px] text-slate-400"><Navigation className="w-2.5 h-2.5 text-cyan-400" />前往目标</div>
-                    <div className="grid grid-cols-3 gap-1">
-                      <div>
-                        <label className="text-[9px] text-slate-500">纬度</label>
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-1">
+                        <label className="text-[10px] text-slate-500 w-10 shrink-0">纬度</label>
                         <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-[10px] h-6" />
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
                       </div>
-                      <div>
-                        <label className="text-[9px] text-slate-500">经度</label>
+                      <div className="flex items-center gap-1">
+                        <label className="text-[10px] text-slate-500 w-10 shrink-0">经度</label>
                         <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-[10px] h-6" />
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
                       </div>
-                      <div>
-                        <label className="text-[9px] text-slate-500">高度(m)</label>
+                      <div className="flex items-center gap-1">
+                        <label className="text-[10px] text-slate-500 w-10 shrink-0">高度(m)</label>
                         <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-[10px] h-6" />
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
                       </div>
                     </div>
                     <Button className="w-full text-xs h-6 bg-cyan-600 hover:bg-cyan-700 text-white"
@@ -699,7 +707,8 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                 setSelectedDrones(newSet);
                 if (newSet.size === 1) {
                   setSelectedMapDrone(Array.from(newSet)[0]);
-                  if (detailPanelEnabled) setShowDetailPanel(true);
+                  // 详情面板显示条件：detailPanelEnabled && 有选中无人机
+                  setShowDetailPanel(detailPanelEnabled);
                 } else if (newSet.size === 0) {
                   setSelectedMapDrone(null);
                   setShowDetailPanel(false);
@@ -713,8 +722,8 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                   setSelectedMapDrone(null);
                 } else {
                   setSelectedMapDrone(id);
-                  // Fix 7: 只有 detailPanelEnabled 时才显示详情面板
-                  if (detailPanelEnabled) setShowDetailPanel(true);
+                  // 详情面板显示条件：detailPanelEnabled && 有选中无人机
+                  setShowDetailPanel(detailPanelEnabled);
                 }
               }
             }}

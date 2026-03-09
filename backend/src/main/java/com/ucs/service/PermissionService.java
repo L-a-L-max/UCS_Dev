@@ -100,6 +100,28 @@ public class PermissionService {
             newOwnership.setAssignedBy(operatorId);
             droneOwnershipRepository.save(newOwnership);
             
+            // 2.5 同步更新无人机所属队伍：转接给个人时，无人机队伍应变为目标人员所在队伍
+            List<TeamMember> targetMemberships = teamMemberRepository.findByUserId(toUserId);
+            if (!targetMemberships.isEmpty()) {
+                Long targetTeamId = targetMemberships.get(0).getTeamId();
+                // 将旧的队伍-无人机映射标记为移除
+                List<TeamDroneMap> oldMappings = teamDroneMapRepository.findActiveByDroneId(drone.getId());
+                for (TeamDroneMap tdm : oldMappings) {
+                    if (!tdm.getTeamId().equals(targetTeamId)) {
+                        tdm.setRemovedAt(LocalDateTime.now());
+                        teamDroneMapRepository.save(tdm);
+                    }
+                }
+                // 添加新的队伍-无人机映射（如果不存在）
+                List<Long> existingDroneIds = teamDroneMapRepository.findDroneIdsByTeamId(targetTeamId);
+                if (!existingDroneIds.contains(drone.getId())) {
+                    TeamDroneMap newTdm = new TeamDroneMap();
+                    newTdm.setTeamId(targetTeamId);
+                    newTdm.setDroneId(drone.getId());
+                    teamDroneMapRepository.save(newTdm);
+                }
+            }
+            
             // 3. Update Redis cache
             redisService.setDroneController(uavId, toUserId);
             
@@ -271,7 +293,14 @@ public class PermissionService {
             newOwnership.setAssignedBy(operatorId);
             droneOwnershipRepository.save(newOwnership);
             
-            // 3. Update team-drone mapping
+            // 3. Update team-drone mapping: 先移除旧队伍映射，再添加新队伍映射
+            List<TeamDroneMap> oldMappings = teamDroneMapRepository.findActiveByDroneId(drone.getId());
+            for (TeamDroneMap oldTdm : oldMappings) {
+                if (!oldTdm.getTeamId().equals(toTeamId)) {
+                    oldTdm.setRemovedAt(LocalDateTime.now());
+                    teamDroneMapRepository.save(oldTdm);
+                }
+            }
             List<Long> existingTeamDroneIds = teamDroneMapRepository.findDroneIdsByTeamId(toTeamId);
             if (!existingTeamDroneIds.contains(drone.getId())) {
                 TeamDroneMap tdm = new TeamDroneMap();

@@ -329,6 +329,10 @@ export default function MapPanel({
           .addTo(map.current!);
 
         el.addEventListener('click', () => {
+          // 多选模式下不显示弹窗，关闭已打开的弹窗
+          if (selectedDroneIds) {
+            popup.remove();
+          }
           onDroneClick?.(drone.uavId);
         });
 

@@ -225,8 +225,15 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
           {/* 显示/隐藏详细控制面板的勾选按钮 */}
           <Button variant="outline" size="sm"
             onClick={() => {
-              setDetailPanelEnabled(!detailPanelEnabled);
-              if (detailPanelEnabled) setShowDetailPanel(false);
+              const newEnabled = !detailPanelEnabled;
+              setDetailPanelEnabled(newEnabled);
+              if (!newEnabled) {
+                // 关闭详情面板按钮 -> 隐藏面板
+                setShowDetailPanel(false);
+              } else {
+                // 开启详情面板按钮 -> 如果有选中无人机则立即显示
+                if (selectedDrone) setShowDetailPanel(true);
+              }
             }}
             className={`text-xs ${detailPanelEnabled ? 'bg-blue-600/30 border-blue-500 text-blue-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
             title={detailPanelEnabled ? '禁用详情面板' : '启用详情面板'}>
@@ -295,7 +302,8 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
                   setSelectedDrone(null);
                 } else {
                   setSelectedDrone(drone.uavId);
-                  if (detailPanelEnabled) setShowDetailPanel(true);
+                  // 详情面板显示条件：detailPanelEnabled && 有选中无人机
+                  setShowDetailPanel(detailPanelEnabled);
                 }
               }}>
               <div className="flex items-center justify-between mb-0.5">
@@ -479,39 +487,39 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
                 </CardContent>
               </Card>
 
-              {/* 参数设置 - 起飞高度 + 前往目标（紧凑间距避免滚动） */}
-              <div className="space-y-1">
+              {/* 参数设置 - 起飞高度 + 前往目标（纵向排列，空间充足） */}
+              <div className="space-y-1.5">
                 <Card className="bg-slate-800 border-slate-700">
-                  <CardContent className="px-3 py-1.5">
+                  <CardContent className="px-3 py-2">
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] text-slate-400 whitespace-nowrap flex items-center gap-0.5"><ArrowUp className="w-2.5 h-2.5 text-blue-400" />起飞高度</span>
                       <Input type="number" value={takeoffAlt} onChange={e => setTakeoffAlt(e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder="20" />
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder="20" />
                       <span className="text-[10px] text-slate-400">米</span>
                     </div>
                   </CardContent>
                 </Card>
                 <Card className="bg-slate-800 border-slate-700">
-                  <CardContent className="px-3 py-1.5 space-y-1">
+                  <CardContent className="px-3 py-2 space-y-1.5">
                     <div className="flex items-center gap-1 text-[10px] text-slate-400"><Navigation className="w-2.5 h-2.5 text-cyan-400" />前往目标</div>
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="space-y-1">
                       <div>
-                        <label className="text-[9px] text-slate-500">纬度</label>
+                        <label className="text-[10px] text-slate-400">纬度</label>
                         <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-[10px] h-6" />
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
                       </div>
                       <div>
-                        <label className="text-[9px] text-slate-500">经度</label>
+                        <label className="text-[10px] text-slate-400">经度</label>
                         <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-[10px] h-6" />
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
                       </div>
                       <div>
-                        <label className="text-[9px] text-slate-500">高度(m)</label>
+                        <label className="text-[10px] text-slate-400">高度 (米)</label>
                         <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-[10px] h-6" />
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
                       </div>
                     </div>
-                    <Button className="w-full text-xs h-6 bg-cyan-600 hover:bg-cyan-700 text-white"
+                    <Button className="w-full text-xs h-7 bg-cyan-600 hover:bg-cyan-700 text-white"
                       onClick={() => handleCommand('GOTO')} disabled={sendingCommand !== null}>
                       <Navigation className="w-3 h-3 mr-1" />前往
                     </Button>
@@ -552,7 +560,8 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
                 if (newSet.size === 1) {
                   const singleId = Array.from(newSet)[0];
                   setSelectedDrone(singleId);
-                  if (detailPanelEnabled) setShowDetailPanel(true);
+                  // 详情面板显示条件：detailPanelEnabled && 有选中无人机
+                  setShowDetailPanel(detailPanelEnabled);
                 } else if (newSet.size === 0) {
                   setSelectedDrone(null);
                   setShowDetailPanel(false);
@@ -566,8 +575,8 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
                   setSelectedDrone(null);
                 } else {
                   setSelectedDrone(id);
-                  // Fix 7: 只有 detailPanelEnabled 时才显示详情面板
-                  if (detailPanelEnabled) setShowDetailPanel(true);
+                  // 详情面板显示条件：detailPanelEnabled && 有选中无人机
+                  setShowDetailPanel(detailPanelEnabled);
                 }
               }
             }}
