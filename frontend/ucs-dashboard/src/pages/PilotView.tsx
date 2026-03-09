@@ -285,16 +285,16 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
                     newSet.add(drone.uavId);
                   }
                   setSelectedDrones(newSet);
-                  // 多选模式下：选中1个显示详情面板，选中2+显示聚合面板
+                  // 多选模式下：选中1个显示详情面板，选中2+显示聚合面板（均受 detailPanelEnabled 控制）
                   if (newSet.size === 1) {
                     const singleId = Array.from(newSet)[0];
                     setSelectedDrone(singleId);
-                    setShowDetailPanel(true);
+                    setShowDetailPanel(detailPanelEnabled);
                   } else if (newSet.size === 0) {
                     setSelectedDrone(null);
                     setShowDetailPanel(false);
                   } else {
-                    // 2+ 选中，由 aggregateData 面板接管
+                    // 2+ 选中，由 aggregateData 面板接管（同样受 detailPanelEnabled 控制）
                     setShowDetailPanel(false);
                   }
                 } else if (selectedDrone === drone.uavId) {
@@ -338,8 +338,8 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
           ))}
         </div>
 
-        {/* 中间: 多选聚合数据面板 */}
-        {multiSelectMode && aggregateData && (
+        {/* 中间: 多选聚合数据面板（受 detailPanelEnabled 控制） */}
+        {multiSelectMode && aggregateData && detailPanelEnabled && (
           <div className="w-[300px] min-w-[260px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-3">
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader className="pb-2 px-3 pt-3">

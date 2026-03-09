@@ -370,7 +370,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                 className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'permission' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
                 <ArrowRightLeft className="w-3 h-3 mr-1" />权限
               </button>
-              <button onClick={() => setActiveTab('logs')}
+              <button onClick={() => { setActiveTab('logs'); fetchLogs(0, logFilter); }}
                 className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'logs' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
                 <FileText className="w-3 h-3 mr-1" />日志
               </button>

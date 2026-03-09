@@ -311,7 +311,7 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                 className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'members' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
                 <Users className="w-3 h-3 mr-1" />成员
               </button>
-              <button onClick={() => setActiveTab('logs')}
+              <button onClick={() => { setActiveTab('logs'); fetchLogs(0); }}
                 className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'logs' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
                 <FileText className="w-3 h-3 mr-1" />日志
               </button>
@@ -371,16 +371,16 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                               newSet.add(drone.uavId);
                             }
                             setSelectedDrones(newSet);
-                            // 多选模式下：选中1个显示详情面板，选中2+显示聚合面板
+                            // 多选模式下：选中1个显示详情面板，选中2+显示聚合面板（均受 detailPanelEnabled 控制）
                             if (newSet.size === 1) {
                               const singleId = Array.from(newSet)[0];
                               setSelectedMapDrone(singleId);
-                              setShowDetailPanel(true);
+                              setShowDetailPanel(detailPanelEnabled);
                             } else if (newSet.size === 0) {
                               setSelectedMapDrone(null);
                               setShowDetailPanel(false);
                             } else {
-                              // 2+ 选中，由 aggregateData 面板接管
+                              // 2+ 选中，由 aggregateData 面板接管（同样受 detailPanelEnabled 控制）
                               setShowDetailPanel(false);
                             }
                           } else if (selectedMapDrone === drone.uavId) {
@@ -493,8 +493,8 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           </div>
         )}
 
-        {/* 中间: 多选聚合数据面板 */}
-        {multiSelectMode && aggregateData && (
+        {/* 中间: 多选聚合数据面板（受 detailPanelEnabled 控制） */}
+        {multiSelectMode && aggregateData && detailPanelEnabled && (
           <div className="w-[280px] min-w-[240px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-3">
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader className="pb-2 px-3 pt-3">
