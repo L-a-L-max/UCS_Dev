@@ -179,19 +179,38 @@ public class LeaderController {
     public ApiResponse<Map<String, Object>> transferWithinTeam(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestBody PermissionTransferRequest request) {
+        // 获取当前用户的队伍ID（优先从User.teamId获取，如果为空则从TeamMember表查找）
         User user = userService.getUserById(principal.getUserId());
-        if (user.getTeamId() == null) {
+        Long operatorTeamId = user.getTeamId();
+        if (operatorTeamId == null) {
+            // 后备方案：从TeamMember表查找用户所在队伍
+            List<TeamMember> operatorMemberships = teamMemberRepository.findByUserId(principal.getUserId());
+            if (!operatorMemberships.isEmpty()) {
+                operatorTeamId = operatorMemberships.get(0).getTeamId();
+            }
+        }
+        if (operatorTeamId == null) {
             return ApiResponse.error(-1, "用户未分配到任何队伍");
         }
 
-        // Verify target user is in the same team
+        // 验证目标用户是否在同一队伍中
         Long targetUserId = request.getToUserId();
-        boolean targetInTeam = teamMemberRepository.findByTeamIdAndUserId(user.getTeamId(), targetUserId).isPresent();
+        if (targetUserId == null) {
+            return ApiResponse.error(-1, "未指定目标用户");
+        }
+        boolean targetInTeam = teamMemberRepository.findByTeamIdAndUserId(operatorTeamId, targetUserId).isPresent();
+        if (!targetInTeam) {
+            // 额外检查：目标用户是否在TeamMember表中与当前用户同队
+            List<TeamMember> targetMemberships = teamMemberRepository.findByUserId(targetUserId);
+            final Long finalTeamId = operatorTeamId;
+            targetInTeam = targetMemberships.stream()
+                    .anyMatch(tm -> tm.getTeamId().equals(finalTeamId));
+        }
         if (!targetInTeam) {
             return ApiResponse.error(-1, "目标用户不在当前队伍中");
         }
 
-        // Perform the transfer
+        // 执行转移
         List<String> successList = permissionService.batchTransferPermission(
                 request.getUavIds(),
                 targetUserId,
