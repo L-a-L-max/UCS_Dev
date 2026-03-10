@@ -3,13 +3,13 @@ package com.ucs.controller;
 import com.ucs.service.PartitionRoutingService;
 import com.ucs.service.RedisService;
 import com.ucs.service.TelemetryPersistenceService;
+import com.ucs.service.WebSocketGatewayService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
@@ -18,7 +18,11 @@ import java.util.*;
 /**
  * REST API endpoint for the external DDS Gateway (Python script).
  * Receives telemetry data from the DDS network via the Python gateway,
- * performs partition routing, WebSocket broadcasting, and persistence.
+ * then delegates to three gateway services:
+ * 
+ *   Gateway 1 (DDS Routing): Python dds_gateway.py -> this controller (partition routing)
+ *   Gateway 2 (Persistence): TelemetryPersistenceService (batch writes to PostgreSQL)
+ *   Gateway 3 (WebSocket):   WebSocketGatewayService (broadcasts to frontend subscribers)
  * 
  * Authentication: Uses a shared API key (dds.gateway.api-key) in the
  * X-Gateway-Key header to authenticate gateway requests.
@@ -31,8 +35,8 @@ import java.util.*;
 public class DDSGatewayController {
 
     private final PartitionRoutingService partitionRoutingService;
-    private final TelemetryPersistenceService telemetryPersistenceService;
-    private final SimpMessagingTemplate messagingTemplate;
+    private final TelemetryPersistenceService telemetryPersistenceService;  // Gateway 2: Persistence
+    private final WebSocketGatewayService webSocketGatewayService;          // Gateway 3: WebSocket
     private final RedisService redisService;
 
     @Value("${dds.gateway.api-key:ucs-dds-gateway-secret-2024}")
@@ -98,34 +102,19 @@ public class DDSGatewayController {
                 droneData.put("timestamp", timestamp.toString());
                 allTelemetry.add(droneData);
 
-                // Persist telemetry
+                // === Gateway 2: Persistence Gateway ===
                 telemetryPersistenceService.persistFromMap(droneData);
 
-                // Get partition routing for this drone
+                // === Gateway 1: Partition Routing ===
                 Set<String> partitions = partitionRoutingService.getPartitionsForDrone(uavId);
                 for (String partition : partitions) {
                     partitionData.computeIfAbsent(partition, k -> new ArrayList<>()).add(droneData);
                 }
             }
 
-            // Send to partition-specific WebSocket topics
-            for (Map.Entry<String, List<Map<String, Object>>> entry : partitionData.entrySet()) {
-                String topic = "/topic/telemetry/partition/" + entry.getKey();
-                Map<String, Object> message = new LinkedHashMap<>();
-                message.put("partition", entry.getKey());
-                message.put("timestamp", timestamp.toString());
-                message.put("drones", entry.getValue());
-                messagingTemplate.convertAndSend(topic, message);
-            }
-
-            // Send to legacy /topic/telemetry for backward compatibility
-            Map<String, Object> legacyBatch = new LinkedHashMap<>();
-            legacyBatch.put("timestamp", timestamp.toString());
-            legacyBatch.put("msgSeqNumber", System.currentTimeMillis() / 1000);
-            legacyBatch.put("numUavsTotal", allTelemetry.size());
-            legacyBatch.put("numUavsActive", allTelemetry.size());
-            legacyBatch.put("uavs", allTelemetry);
-            messagingTemplate.convertAndSend("/topic/telemetry", legacyBatch);
+            // === Gateway 3: WebSocket Server Gateway ===
+            webSocketGatewayService.broadcastToPartitions(partitionData, timestamp);
+            webSocketGatewayService.broadcastAll(allTelemetry, timestamp);
 
             log.debug("DDS Gateway: Processed {} drones, {} partitions",
                     drones.size(), partitionData.size());

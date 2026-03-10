@@ -15,7 +15,7 @@ public class DashboardConfig {
     @Column(name = "config_name", length = 100)
     private String configName;
     
-    @Column(name = "display_layers", columnDefinition = "JSON")
+    @Column(name = "display_layers", length = 2000)
     private String displayLayers;
     
     @Column(name = "auto_refresh_interval")

@@ -4,6 +4,7 @@ import com.ucs.entity.*;
 import com.ucs.repository.*;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Profile;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +22,7 @@ import java.util.*;
  */
 @Slf4j
 @Service
+@Profile("h2dev")
 public class DataInitService {
     
     private final RoleRepository roleRepository;

@@ -31,16 +31,16 @@ public class Drone {
     @Column(length = 100)
     private String manufacturer;
     
-    @Column(columnDefinition = "JSON")
+    @Column(length = 2000)
     private String capabilities;
     
     @Column(name = "default_team_id")
     private Long defaultTeamId;
     
     /**
-     * Current online status based on Zenoh heartbeat.
+     * Current online status based on DDS heartbeat.
      */
-    @Column(name = "online_status", columnDefinition = "BOOLEAN DEFAULT FALSE")
+    @Column(name = "online_status")
     private Boolean onlineStatus = false;
     
     @Column(name = "last_heartbeat")

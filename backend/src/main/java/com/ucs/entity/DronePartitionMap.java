@@ -31,7 +31,7 @@ public class DronePartitionMap {
     @Column(name = "partition_name", nullable = false, length = 200)
     private String partitionName;
     
-    @Column(name = "is_active", columnDefinition = "BOOLEAN DEFAULT TRUE")
+    @Column(name = "is_active")
     private Boolean isActive = true;
     
     @Column(name = "created_at")

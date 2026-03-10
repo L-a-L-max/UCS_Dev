@@ -15,7 +15,7 @@ public class Team {
     @Column(name = "team_name", nullable = false, length = 100)
     private String teamName;
     
-    @Column(columnDefinition = "TEXT")
+    @Column(length = 500)
     private String description;
     
     @Column(name = "created_by")

@@ -6,7 +6,6 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -14,11 +13,14 @@ import java.time.Instant;
 import java.util.*;
 
 /**
- * Simulates DDS drone telemetry data generation.
- * Replaces real DDS/Zenoh network for testing purposes.
+ * Simulates DDS drone telemetry data generation (h2dev mode only).
+ * Replaces real DDS/PX4 network for testing purposes.
  * 
  * Generates position data for all registered drones at configured intervals,
- * then passes data through PartitionRoutingService for partition-based routing.
+ * then delegates to the three gateway services:
+ *   Gateway 1 (Routing):     PartitionRoutingService (partition lookup)
+ *   Gateway 2 (Persistence): TelemetryPersistenceService (batch DB writes)
+ *   Gateway 3 (WebSocket):   WebSocketGatewayService (broadcasts to frontend)
  */
 @Slf4j
 @Service
@@ -27,7 +29,8 @@ public class DDSSimulatorService {
 
     private final DroneRepository droneRepository;
     private final PartitionRoutingService partitionRoutingService;
-    private final SimpMessagingTemplate messagingTemplate;
+    private final TelemetryPersistenceService telemetryPersistenceService;  // Gateway 2
+    private final WebSocketGatewayService webSocketGatewayService;          // Gateway 3
     private final RedisService redisService;
 
     @Value("${dds.simulator.enabled:true}")
@@ -122,26 +125,14 @@ public class DDSSimulatorService {
             }
         }
 
-        // Send to partition-specific WebSocket topics
-        for (Map.Entry<String, List<Map<String, Object>>> entry : partitionData.entrySet()) {
-            String topic = "/topic/telemetry/partition/" + entry.getKey();
-            Map<String, Object> message = new LinkedHashMap<>();
-            message.put("partition", entry.getKey());
-            message.put("timestamp", now.toString());
-            message.put("drones", entry.getValue());
-            messagingTemplate.convertAndSend(topic, message);
+        // === Gateway 2: Persistence Gateway ===
+        for (Map<String, Object> telemetryMsg : allTelemetry) {
+            telemetryPersistenceService.persistFromMap(telemetryMsg);
         }
 
-        // Send all data to persistence topic (for TelemetryPersistenceService to consume)
-        Map<String, Object> allDataMsg = new LinkedHashMap<>();
-        allDataMsg.put("timestamp", now.toString());
-        allDataMsg.put("numDrones", allTelemetry.size());
-        allDataMsg.put("drones", allTelemetry);
-        messagingTemplate.convertAndSend("/topic/telemetry/all", allDataMsg);
-        
-        // Also send to legacy /topic/telemetry for backward compatibility
-        Map<String, Object> legacyBatch = buildLegacyBatch(allTelemetry, now);
-        messagingTemplate.convertAndSend("/topic/telemetry", legacyBatch);
+        // === Gateway 3: WebSocket Server Gateway ===
+        webSocketGatewayService.broadcastToPartitions(partitionData, now);
+        webSocketGatewayService.broadcastAll(allTelemetry, now);
 
         log.debug("Generated telemetry for {} drones, {} partitions", 
                 droneStates.size(), partitionData.size());
@@ -201,22 +192,6 @@ public class DDSSimulatorService {
         msg.put("msgCount", 1);
         msg.put("isActive", true);
         return msg;
-    }
-
-    /**
-     * Build legacy batch format for backward compatibility with existing frontend.
-     */
-    private Map<String, Object> buildLegacyBatch(List<Map<String, Object>> drones, Instant timestamp) {
-        Map<String, Object> batch = new LinkedHashMap<>();
-        batch.put("timestamp", timestamp.toString());
-        batch.put("msgSeqNumber", System.currentTimeMillis() / 1000);
-        batch.put("homeLat", 39.9042);
-        batch.put("homeLon", 116.4074);
-        batch.put("homeAlt", 0.0);
-        batch.put("numUavsTotal", drones.size());
-        batch.put("numUavsActive", drones.size());
-        batch.put("uavs", drones);
-        return batch;
     }
 
     /**

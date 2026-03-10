@@ -18,7 +18,7 @@ public class TeamRole {
     @Column(name = "role_name", nullable = false, length = 50)
     private String roleName;
     
-    @Column(columnDefinition = "TEXT")
+    @Column(length = 500)
     private String description;
     
     @Column(name = "created_at")

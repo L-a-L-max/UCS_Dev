@@ -21,7 +21,7 @@ public class TaskDroneMap {
     @Column
     private Float progress = 0f;
     
-    @Column(columnDefinition = "SMALLINT DEFAULT 0")
+    @Column
     private Integer status = 0;
     
     @Column(name = "last_update_time")

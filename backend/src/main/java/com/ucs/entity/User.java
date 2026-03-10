@@ -46,7 +46,7 @@ public class User {
     @Column(name = "partition_name", length = 100)
     private String partitionName;
     
-    @Column(columnDefinition = "SMALLINT DEFAULT 1")
+    @Column
     private Integer status = 1;
     
     @Column(name = "created_at")
