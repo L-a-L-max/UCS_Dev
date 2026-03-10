@@ -36,6 +36,16 @@ public class User {
     @Column(name = "team_id")
     private Long teamId;
     
+    /**
+     * User's subscription partition name for DDS data routing.
+     * Naming rules:
+     * - observer role: fixed "observer"
+     * - commander role: fixed "commander"
+     * - others: "user_{id}" (e.g., user_10001)
+     */
+    @Column(name = "partition_name", length = 100)
+    private String partitionName;
+    
     @Column(columnDefinition = "SMALLINT DEFAULT 1")
     private Integer status = 1;
     

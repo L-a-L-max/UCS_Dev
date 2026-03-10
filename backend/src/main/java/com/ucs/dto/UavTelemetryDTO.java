@@ -8,7 +8,7 @@ import java.time.Instant;
  */
 @Data
 public class UavTelemetryDTO {
-    private Integer uavId;
+    private String uavId;
     private Instant timestamp;
     
     // GPS coordinates (WGS84)

@@ -54,9 +54,9 @@ public class TelemetryServiceImpl implements ITelemetryService {
             telemetry.setLat(dto.getLat());
             telemetry.setLon(dto.getLon());
             telemetry.setAlt(dto.getAlt());
-            telemetry.setHeading(dto.getHeading());
-            telemetry.setGroundSpeed(dto.getGroundSpeed());
-            telemetry.setVerticalSpeed(dto.getVerticalSpeed());
+            telemetry.setHeading(dto.getHeading() != null ? dto.getHeading().floatValue() : null);
+            telemetry.setGroundSpeed(dto.getGroundSpeed() != null ? dto.getGroundSpeed().floatValue() : null);
+            telemetry.setVerticalSpeed(dto.getVerticalSpeed() != null ? dto.getVerticalSpeed().floatValue() : null);
             telemetry.setNedX(dto.getNedX());
             telemetry.setNedY(dto.getNedY());
             telemetry.setNedZ(dto.getNedZ());
@@ -75,9 +75,9 @@ public class TelemetryServiceImpl implements ITelemetryService {
             latestState.setLat(dto.getLat());
             latestState.setLon(dto.getLon());
             latestState.setAlt(dto.getAlt());
-            latestState.setHeading(dto.getHeading());
-            latestState.setGroundSpeed(dto.getGroundSpeed());
-            latestState.setVerticalSpeed(dto.getVerticalSpeed());
+            latestState.setHeading(dto.getHeading() != null ? dto.getHeading().floatValue() : null);
+            latestState.setGroundSpeed(dto.getGroundSpeed() != null ? dto.getGroundSpeed().floatValue() : null);
+            latestState.setVerticalSpeed(dto.getVerticalSpeed() != null ? dto.getVerticalSpeed().floatValue() : null);
             latestState.setNedX(dto.getNedX());
             latestState.setNedY(dto.getNedY());
             latestState.setNedZ(dto.getNedZ());
@@ -108,12 +108,12 @@ public class TelemetryServiceImpl implements ITelemetryService {
     }
     
     @Override
-    public UavLatestState getLatestState(Integer uavId) {
+    public UavLatestState getLatestState(String uavId) {
         return latestStateRepository.findById(uavId).orElse(null);
     }
     
     @Override
-    public List<UavTelemetry> getTelemetryHistory(Integer uavId, Instant startTime, Instant endTime) {
+    public List<UavTelemetry> getTelemetryHistory(String uavId, Instant startTime, Instant endTime) {
         return telemetryRepository.findByUavIdAndTimestampBetweenOrderByTimestampAsc(
                 uavId, startTime, endTime);
     }

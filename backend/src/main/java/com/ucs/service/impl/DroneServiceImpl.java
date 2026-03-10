@@ -77,19 +77,19 @@ public class DroneServiceImpl implements IDroneService {
     
     private DroneStatusDTO convertToDto(UavLatestState state) {
         DroneStatusDTO dto = new DroneStatusDTO();
-        dto.setUavId("UAV_" + String.format("%03d", state.getUavId()));
-        dto.setDroneSn("UAV-" + state.getUavId());
+        dto.setUavId(state.getUavId());
+        dto.setDroneSn(state.getUavId());
         dto.setLat(state.getLat());
         dto.setLng(state.getLon());
         dto.setAltitude(state.getAlt());
-        dto.setVelocity(state.getGroundSpeed() != null ? state.getGroundSpeed().floatValue() : 0f);
-        dto.setHeading(state.getHeading() != null ? state.getHeading().floatValue() : 0f);
+        dto.setVelocity(state.getGroundSpeed() != null ? state.getGroundSpeed() : 0f);
+        dto.setHeading(state.getHeading() != null ? state.getHeading() : 0f);
         dto.setFlightStatus(Boolean.TRUE.equals(state.getIsActive()) ? "FLYING" : "IDLE");
         dto.setTaskStatus("IDLE");
         dto.setHardwareStatus("NORMAL");
         dto.setColor(Boolean.TRUE.equals(state.getIsActive()) ? "#00FF00" : "#808080");
-        dto.setModel("ROS2-UAV");
-        dto.setOwner("ROS2");
+        dto.setModel("PX4-SITL");
+        dto.setOwner("DDS");
         return dto;
     }
     

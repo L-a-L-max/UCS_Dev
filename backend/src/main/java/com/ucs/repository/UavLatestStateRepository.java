@@ -10,7 +10,7 @@ import java.util.List;
  * Repository for UAV latest state data
  */
 @Repository
-public interface UavLatestStateRepository extends JpaRepository<UavLatestState, Integer> {
+public interface UavLatestStateRepository extends JpaRepository<UavLatestState, String> {
     
     /**
      * Find all active UAVs

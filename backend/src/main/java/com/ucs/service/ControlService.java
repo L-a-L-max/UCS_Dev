@@ -16,15 +16,15 @@ import java.util.Optional;
 
 /**
  * Service for handling drone control commands.
- * Validates permissions, sends commands via Zenoh, and logs operations.
+ * Validates permissions and logs operations.
  * 
  * Control flow:
  * 1. Validate user has control permission for the drone (via DroneOwnership)
  * 2. Check drone is online (via Redis heartbeat)
- * 3. Build PX4-compatible vehicle_command
- * 4. Publish to Zenoh: {uavId}/fmu/in/vehicle_command
- * 5. Log command to command_log table
- * 6. Log operation to operation_log table
+ * 3. Log command to command_log table
+ * 4. Log operation to operation_log table
+ * 
+ * Note: Actual DDS command publishing is deferred to future implementation.
  */
 @Slf4j
 @Service
@@ -34,17 +34,12 @@ public class ControlService {
     private final DroneRepository droneRepository;
     private final DroneOwnershipRepository droneOwnershipRepository;
     private final CommandLogRepository commandLogRepository;
-    private final ZenohService zenohService;
     private final RedisService redisService;
     private final OperationLogService operationLogService;
     
     /**
      * Send a control command to a drone.
-     * 
-     * @param request The control command request
-     * @param userId  The user ID of the command sender
-     * @param username The username for logging
-     * @return Control command response with status
+     * Currently logs the command; actual DDS publishing deferred.
      */
     @Transactional
     public ControlCommandResponse sendControlCommand(ControlCommandRequest request,
@@ -67,8 +62,6 @@ public class ControlService {
                 .orElse(false);
         
         if (!hasPermission) {
-            // Check if user is a leader/commander (they can control team drones)
-            // For now, ownership check is sufficient - leaders assign first then control
             operationLogService.logFailure(userId, username, "CONTROL_COMMAND",
                     drone.getId(), uavId, commandType, "No control permission");
             return ControlCommandResponse.failed(uavId, "No control permission for drone: " + uavId);
@@ -78,49 +71,25 @@ public class ControlService {
         boolean isOnline = redisService.isDroneOnline(uavId);
         if (!isOnline) {
             log.warn("Drone {} is offline, command will be queued/rejected", uavId);
-            // Still allow command - drone may reconnect and receive it
-            // But log warning
         }
         
-        // 4. Publish command to Zenoh
-        boolean published = zenohService.publishCommand(uavId, commandType, request.getParams());
-        
-        // 5. Handle GOTO command - also publish trajectory setpoint
-        if ("GOTO".equalsIgnoreCase(commandType) && request.getParams() != null) {
-            try {
-                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                @SuppressWarnings("unchecked")
-                java.util.Map<String, Object> params = mapper.readValue(request.getParams(), java.util.Map.class);
-                double lat = ((Number) params.getOrDefault("lat", 0.0)).doubleValue();
-                double lon = ((Number) params.getOrDefault("lon", 0.0)).doubleValue();
-                double alt = ((Number) params.getOrDefault("alt", 100.0)).doubleValue();
-                zenohService.publishTrajectorySetpoint(uavId, lat, lon, alt);
-            } catch (Exception e) {
-                log.warn("Failed to publish trajectory setpoint for GOTO: {}", e.getMessage());
-            }
-        }
-        
-        // 6. Log to command_log table
+        // 4. Log to command_log table (actual DDS publish deferred)
         CommandLog cmdLog = new CommandLog();
         cmdLog.setDroneId(drone.getId());
         cmdLog.setUserId(userId);
         cmdLog.setCommandType(commandType);
         cmdLog.setPayload(request.getParams());
-        cmdLog.setStatus(published ? "SENT" : "FAILED");
+        cmdLog.setStatus("PENDING");
         commandLogRepository.save(cmdLog);
         
-        // 7. Log to operation_log table (human-readable description)
-        String detail = buildHumanReadableDetail(commandType, request.getParams(), uavId);
+        // 5. Log to operation_log table
+        String detail = buildHumanReadableDetail(commandType, uavId);
         
-        if (published) {
-            operationLogService.logSuccess(userId, username, "CONTROL_COMMAND",
-                    drone.getId(), uavId, detail);
-            return ControlCommandResponse.success("CMD_" + cmdLog.getId(), uavId);
-        } else {
-            operationLogService.logFailure(userId, username, "CONTROL_COMMAND",
-                    drone.getId(), uavId, detail, "Zenoh publish failed");
-            return ControlCommandResponse.failed(uavId, "Failed to send command via Zenoh");
-        }
+        operationLogService.logSuccess(userId, username, "CONTROL_COMMAND",
+                drone.getId(), uavId, detail);
+        
+        log.info("Control command logged: {} -> {} (DDS publish deferred)", commandType, uavId);
+        return ControlCommandResponse.success("CMD_" + cmdLog.getId(), uavId);
     }
     
     /**
@@ -131,68 +100,18 @@ public class ControlService {
     }
     
     /**
-     * Build human-readable operation detail instead of raw JSON.
-     * Converts command types to meaningful Chinese descriptions.
+     * Build human-readable operation detail.
      */
-    private String buildHumanReadableDetail(String commandType, String params, String uavId) {
-        String description;
-        switch (commandType.toUpperCase()) {
-            case "ARM":
-                description = "解锁无人机 " + uavId;
-                break;
-            case "DISARM":
-                description = "锁定无人机 " + uavId;
-                break;
-            case "TAKEOFF":
-                description = "起飞无人机 " + uavId;
-                if (params != null) {
-                    try {
-                        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                        @SuppressWarnings("unchecked")
-                        java.util.Map<String, Object> p = mapper.readValue(params, java.util.Map.class);
-                        Object alt = p.get("alt");
-                        if (alt != null) {
-                            description += ", 目标高度: " + alt + "m";
-                        }
-                    } catch (Exception ignored) {
-                    }
-                }
-                break;
-            case "LAND":
-                description = "降落无人机 " + uavId;
-                break;
-            case "RTL":
-                description = "无人机 " + uavId + " 返航";
-                break;
-            case "HOLD":
-                description = "无人机 " + uavId + " 悬停";
-                break;
-            case "GOTO":
-                description = "无人机 " + uavId + " 飞向目标位置";
-                if (params != null) {
-                    try {
-                        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                        @SuppressWarnings("unchecked")
-                        java.util.Map<String, Object> p = mapper.readValue(params, java.util.Map.class);
-                        Object lat = p.get("lat");
-                        Object lon = p.get("lon");
-                        Object alt = p.get("alt");
-                        if (lat != null && lon != null) {
-                            description += String.format(" [%.6f, %.6f", 
-                                    ((Number) lat).doubleValue(), ((Number) lon).doubleValue());
-                            if (alt != null) {
-                                description += String.format(", 高度%.1fm", ((Number) alt).doubleValue());
-                            }
-                            description += "]";
-                        }
-                    } catch (Exception ignored) {
-                    }
-                }
-                break;
-            default:
-                description = "执行指令 " + commandType + " 于无人机 " + uavId;
-                break;
-        }
-        return description;
+    private String buildHumanReadableDetail(String commandType, String uavId) {
+        return switch (commandType.toUpperCase()) {
+            case "ARM" -> "解锁无人机 " + uavId;
+            case "DISARM" -> "锁定无人机 " + uavId;
+            case "TAKEOFF" -> "起飞无人机 " + uavId;
+            case "LAND" -> "降落无人机 " + uavId;
+            case "RTL" -> "无人机 " + uavId + " 返航";
+            case "HOLD" -> "无人机 " + uavId + " 悬停";
+            case "GOTO" -> "无人机 " + uavId + " 飞向目标位置";
+            default -> "执行指令 " + commandType + " 于无人机 " + uavId;
+        };
     }
 }

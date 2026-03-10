@@ -21,7 +21,8 @@ const getWsUrl = () => {
 };
 
 export interface TelemetryData {
-  uavId: number;
+  uavId: string;
+  uavName: string;
   timestamp: string;
   lat: number;
   lon: number;
@@ -51,14 +52,25 @@ export interface TelemetryBatch {
   uavs: TelemetryData[];
 }
 
+/**
+ * Partition-specific telemetry message from server routing gateway.
+ */
+export interface PartitionTelemetryMessage {
+  partition: string;
+  timestamp: string;
+  drones: TelemetryData[];
+}
+
 interface UseTelemetryWebSocketOptions {
   enabled?: boolean;
+  partitions?: string[];
   onTelemetryReceived?: (batch: TelemetryBatch) => void;
+  onPartitionDataReceived?: (data: PartitionTelemetryMessage) => void;
   onConnectionChange?: (connected: boolean) => void;
 }
 
 export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}) {
-  const { enabled = true, onTelemetryReceived, onConnectionChange } = options;
+  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onConnectionChange } = options;
   const clientRef = useRef<Client | null>(null);
   const [connected, setConnected] = useState(false);
   const [lastBatch, setLastBatch] = useState<TelemetryBatch | null>(null);
@@ -73,6 +85,15 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
       console.error('Failed to parse telemetry message:', error);
     }
   }, [onTelemetryReceived]);
+
+  const handlePartitionMessage = useCallback((message: IMessage) => {
+    try {
+      const data: PartitionTelemetryMessage = JSON.parse(message.body);
+      onPartitionDataReceived?.(data);
+    } catch (error) {
+      console.error('Failed to parse partition telemetry message:', error);
+    }
+  }, [onPartitionDataReceived]);
 
   const connect = useCallback(() => {
     if (clientRef.current?.active) {
@@ -92,8 +113,17 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
         setConnected(true);
         onConnectionChange?.(true);
         
-        // Subscribe to telemetry topic
+        // Subscribe to legacy telemetry topic (backward compatibility)
         client.subscribe('/topic/telemetry', handleMessage);
+        
+        // Subscribe to partition-specific topics if partitions are provided
+        if (partitions && partitions.length > 0) {
+          partitions.forEach(partition => {
+            const topic = `/topic/telemetry/partition/${partition}`;
+            console.log('Subscribing to partition topic:', topic);
+            client.subscribe(topic, handlePartitionMessage);
+          });
+        }
       },
       onDisconnect: () => {
         console.log('WebSocket disconnected');
@@ -114,7 +144,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
 
     clientRef.current = client;
     client.activate();
-  }, [handleMessage, onConnectionChange]);
+  }, [handleMessage, handlePartitionMessage, partitions, onConnectionChange]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {

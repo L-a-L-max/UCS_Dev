@@ -19,7 +19,7 @@ public interface UavTelemetryRepository extends JpaRepository<UavTelemetry, Long
      * Find telemetry data for a specific UAV within a time range
      */
     List<UavTelemetry> findByUavIdAndTimestampBetweenOrderByTimestampAsc(
-            Integer uavId, Instant startTime, Instant endTime);
+            String uavId, Instant startTime, Instant endTime);
     
     /**
      * Find all telemetry data within a time range
@@ -35,5 +35,5 @@ public interface UavTelemetryRepository extends JpaRepository<UavTelemetry, Long
     /**
      * Count telemetry records for a specific UAV
      */
-    long countByUavId(Integer uavId);
+    long countByUavId(String uavId);
 }

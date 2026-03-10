@@ -16,4 +16,10 @@ public class LoginResponse {
     private List<String> roles;
     private Long teamId;
     private String teamName;
+    
+    /**
+     * User's subscription partitions for DDS data routing.
+     * e.g., ["user_10001"] or ["observer"] or ["commander"]
+     */
+    private List<String> partitions;
 }

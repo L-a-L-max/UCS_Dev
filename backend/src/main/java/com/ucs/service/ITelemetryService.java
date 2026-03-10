@@ -29,12 +29,12 @@ public interface ITelemetryService {
     /**
      * Get latest state for a specific UAV
      */
-    UavLatestState getLatestState(Integer uavId);
+    UavLatestState getLatestState(String uavId);
     
     /**
      * Get telemetry history for path replay
      */
-    List<UavTelemetry> getTelemetryHistory(Integer uavId, Instant startTime, Instant endTime);
+    List<UavTelemetry> getTelemetryHistory(String uavId, Instant startTime, Instant endTime);
     
     /**
      * Clean up old telemetry data based on retention policy

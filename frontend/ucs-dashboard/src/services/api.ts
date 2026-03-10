@@ -25,6 +25,10 @@ export interface LoginResponse {
     roles: string[];
     userId: number;
     username: string;
+    realName: string;
+    teamId: number | null;
+    teamName: string | null;
+    partitions: string[];
   };
 }
 

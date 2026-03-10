@@ -13,8 +13,8 @@ import java.time.Instant;
 @Table(name = "uav_latest_state")
 public class UavLatestState {
     @Id
-    @Column(name = "uav_id")
-    private Integer uavId;
+    @Column(name = "uav_id", length = 50)
+    private String uavId;
     
     @Column(name = "last_update", nullable = false)
     private Instant lastUpdate;
@@ -31,13 +31,13 @@ public class UavLatestState {
     
     // Motion state
     @Column(name = "heading")
-    private Double heading;
+    private Float heading;
     
     @Column(name = "ground_speed")
-    private Double groundSpeed;
+    private Float groundSpeed;
     
     @Column(name = "vertical_speed")
-    private Double verticalSpeed;
+    private Float verticalSpeed;
     
     // NED local coordinates
     @Column(name = "ned_x")

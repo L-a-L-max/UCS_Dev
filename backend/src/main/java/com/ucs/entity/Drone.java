@@ -16,9 +16,8 @@ public class Drone {
     private String droneSn;
     
     /**
-     * Unique identifier derived from MAC address on the onboard computer.
-     * This is the permanent drone identifier used throughout the Zenoh network.
-     * Format example: "UAV_001", "UAV_002", etc.
+     * Unique identifier for the drone in the DDS network.
+     * Matches PX4 simulation topic prefix (e.g., "px4_1", "px4_2").
      */
     @Column(name = "uav_id", unique = true, length = 50)
     private String uavId;

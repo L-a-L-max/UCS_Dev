@@ -19,8 +19,8 @@ public class UavTelemetry {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     
-    @Column(name = "uav_id", nullable = false)
-    private Integer uavId;
+    @Column(name = "uav_id", nullable = false, length = 50)
+    private String uavId;
     
     @Column(name = "timestamp", nullable = false)
     private Instant timestamp;
@@ -37,13 +37,13 @@ public class UavTelemetry {
     
     // Motion state
     @Column(name = "heading")
-    private Double heading;
+    private Float heading;
     
     @Column(name = "ground_speed")
-    private Double groundSpeed;
+    private Float groundSpeed;
     
     @Column(name = "vertical_speed")
-    private Double verticalSpeed;
+    private Float verticalSpeed;
     
     // NED local coordinates
     @Column(name = "ned_x")

@@ -73,6 +73,13 @@ public class AuthService {
                     .ifPresent(team -> response.setTeamName(team.getTeamName()));
         }
         
+        // Set user's subscription partitions
+        if (user.getPartitionName() != null) {
+            response.setPartitions(List.of(user.getPartitionName()));
+        } else {
+            response.setPartitions(List.of());
+        }
+        
         return response;
     }
     
