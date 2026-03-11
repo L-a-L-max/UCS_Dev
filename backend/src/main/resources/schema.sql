@@ -23,14 +23,12 @@ CREATE TABLE IF NOT EXISTS teams (
     updated_at TIMESTAMP
 );
 
--- 3. Team Roles
+-- 3. Team Roles (lookup table: defines what roles a team can have)
 CREATE TABLE IF NOT EXISTS team_roles (
     id BIGSERIAL PRIMARY KEY,
-    team_id BIGINT NOT NULL,
-    role_name VARCHAR(50) NOT NULL,
+    role_name VARCHAR(50) NOT NULL UNIQUE,
     description VARCHAR(500),
-    created_at TIMESTAMP,
-    CONSTRAINT fk_team_roles_team FOREIGN KEY (team_id) REFERENCES teams(id)
+    created_at TIMESTAMP
 );
 
 -- 4. Users

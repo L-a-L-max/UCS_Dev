@@ -13,7 +13,7 @@
 -- BCrypt hash: $2b$10$z2MeLWNfs5Ca9Dt8AjDw3.L36U7QhxsTp3GIapFu2HldVR409Mzza
 
 -- ============================================================
--- 1. Roles (4 roles)
+-- 1. Roles (4 system roles)
 -- ============================================================
 INSERT INTO roles (role_name, description, created_at, updated_at) VALUES
 ('operator',  '队员 - 普通飞手，可查看和控制自己的无人机', NOW(), NOW()),
@@ -29,13 +29,12 @@ INSERT INTO teams (team_name, description, created_by, created_at, updated_at) V
 ('应急队伍', '负责紧急救援和应急响应任务',   1, NOW(), NOW());
 
 -- ============================================================
--- 3. Team Roles (Leader + Pilot for each team)
+-- 3. Team Roles (lookup table: 2 role definitions only)
+-- Describes what roles a team can have, not per-team entries.
 -- ============================================================
-INSERT INTO team_roles (team_id, role_name, description, created_at) VALUES
-((SELECT id FROM teams WHERE team_name = '巡检队伍'), 'Leader', '队长', NOW()),
-((SELECT id FROM teams WHERE team_name = '巡检队伍'), 'Pilot',  '飞手', NOW()),
-((SELECT id FROM teams WHERE team_name = '应急队伍'), 'Leader', '队长', NOW()),
-((SELECT id FROM teams WHERE team_name = '应急队伍'), 'Pilot',  '飞手', NOW());
+INSERT INTO team_roles (role_name, description, created_at) VALUES
+('Leader', '队长', NOW()),
+('Pilot',  '飞手', NOW());
 
 -- ============================================================
 -- 4. Users (8 total)
@@ -71,36 +70,36 @@ INSERT INTO team_members (team_id, user_id, team_role_id, joined_at) VALUES
 (
   (SELECT id FROM teams WHERE team_name = '巡检队伍'),
   (SELECT id FROM users WHERE username = 'zhangsan'),
-  (SELECT tr.id FROM team_roles tr JOIN teams t ON tr.team_id = t.id WHERE t.team_name = '巡检队伍' AND tr.role_name = 'Leader'),
+  (SELECT id FROM team_roles WHERE role_name = 'Leader'),
   NOW()
 ),
 (
   (SELECT id FROM teams WHERE team_name = '巡检队伍'),
   (SELECT id FROM users WHERE username = 'lisi'),
-  (SELECT tr.id FROM team_roles tr JOIN teams t ON tr.team_id = t.id WHERE t.team_name = '巡检队伍' AND tr.role_name = 'Pilot'),
+  (SELECT id FROM team_roles WHERE role_name = 'Pilot'),
   NOW()
 ),
 (
   (SELECT id FROM teams WHERE team_name = '巡检队伍'),
   (SELECT id FROM users WHERE username = 'wangwu'),
-  (SELECT tr.id FROM team_roles tr JOIN teams t ON tr.team_id = t.id WHERE t.team_name = '巡检队伍' AND tr.role_name = 'Pilot'),
+  (SELECT id FROM team_roles WHERE role_name = 'Pilot'),
   NOW()
 ),
 (
   (SELECT id FROM teams WHERE team_name = '应急队伍'),
   (SELECT id FROM users WHERE username = 'zhaoliu'),
-  (SELECT tr.id FROM team_roles tr JOIN teams t ON tr.team_id = t.id WHERE t.team_name = '应急队伍' AND tr.role_name = 'Leader'),
+  (SELECT id FROM team_roles WHERE role_name = 'Leader'),
   NOW()
 ),
 (
   (SELECT id FROM teams WHERE team_name = '应急队伍'),
   (SELECT id FROM users WHERE username = 'qianqi'),
-  (SELECT tr.id FROM team_roles tr JOIN teams t ON tr.team_id = t.id WHERE t.team_name = '应急队伍' AND tr.role_name = 'Pilot'),
+  (SELECT id FROM team_roles WHERE role_name = 'Pilot'),
   NOW()
 ),
 (
   (SELECT id FROM teams WHERE team_name = '应急队伍'),
   (SELECT id FROM users WHERE username = 'sunba'),
-  (SELECT tr.id FROM team_roles tr JOIN teams t ON tr.team_id = t.id WHERE t.team_name = '应急队伍' AND tr.role_name = 'Pilot'),
+  (SELECT id FROM team_roles WHERE role_name = 'Pilot'),
   NOW()
 );

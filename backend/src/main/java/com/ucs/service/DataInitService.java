@@ -121,24 +121,23 @@ public class DataInitService {
                 {"应急队伍", "负责紧急救援和应急响应任务"}
         };
         
+        // Create team roles first (lookup table, only 2 entries)
+        TeamRole leaderRole = new TeamRole();
+        leaderRole.setRoleName("Leader");
+        leaderRole.setDescription("队长");
+        teamRoleRepository.save(leaderRole);
+        
+        TeamRole pilotRole = new TeamRole();
+        pilotRole.setRoleName("Pilot");
+        pilotRole.setDescription("飞手");
+        teamRoleRepository.save(pilotRole);
+        
         for (String[] teamData : teams) {
             Team team = new Team();
             team.setTeamName(teamData[0]);
             team.setDescription(teamData[1]);
             team.setCreatedBy(1L);
             teamRepository.save(team);
-            
-            TeamRole leaderRole = new TeamRole();
-            leaderRole.setTeamId(team.getId());
-            leaderRole.setRoleName("Leader");
-            leaderRole.setDescription("队长");
-            teamRoleRepository.save(leaderRole);
-            
-            TeamRole pilotRole = new TeamRole();
-            pilotRole.setTeamId(team.getId());
-            pilotRole.setRoleName("Pilot");
-            pilotRole.setDescription("飞手");
-            teamRoleRepository.save(pilotRole);
         }
     }
     
@@ -207,10 +206,7 @@ public class DataInitService {
             if (userData[2] != null) {
                 Long teamId = Long.parseLong(userData[2]);
                 String teamRoleName = "leader".equals(userData[3]) ? "Leader" : "Pilot";
-                TeamRole teamRole = teamRoleRepository.findAll().stream()
-                        .filter(tr -> tr.getTeamId().equals(teamId) && 
-                                tr.getRoleName().equalsIgnoreCase(teamRoleName))
-                        .findFirst()
+                TeamRole teamRole = teamRoleRepository.findByRoleName(teamRoleName)
                         .orElse(null);
                 
                 TeamMember tm = new TeamMember();
