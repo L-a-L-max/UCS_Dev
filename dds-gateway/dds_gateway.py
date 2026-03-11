@@ -36,6 +36,12 @@ from typing import Dict, List, Optional, Set
 
 import requests
 
+# rclpy QoS imports - needed for PX4-compatible subscription profiles
+try:
+    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+except ImportError:
+    pass  # Will be handled by _rclpy_available check at runtime
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -222,8 +228,23 @@ class DDSGateway:
             )
 
     def _subscribe_with_px4_msgs(self, uav_id: str):
-        """Subscribe using typed px4_msgs message types."""
+        """Subscribe using typed px4_msgs message types.
+        
+        PX4 publishes with BEST_EFFORT reliability. We must match this QoS
+        profile, otherwise DDS will reject the connection with:
+        'incompatible QoS - Last incompatible policy: RELIABILITY'
+        """
         import px4_msgs.msg as px4
+
+        # PX4 QoS profile: BEST_EFFORT reliability, VOLATILE durability
+        # This MUST match PX4's publisher QoS, otherwise no data will be received
+        px4_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+        logger.info("[Subscribe] Using PX4-compatible QoS: BEST_EFFORT reliability, VOLATILE durability")
 
         subscriptions_created = 0
         topic_handlers = {}
@@ -271,7 +292,7 @@ class DDSGateway:
                 if topic_name in available_topics:
                     try:
                         sub = self._node.create_subscription(
-                            msg_type, topic_name, callback, 10
+                            msg_type, topic_name, callback, px4_qos
                         )
                         self._subscriptions[sub_key] = sub
                         subscriptions_created += 1
