@@ -36,8 +36,10 @@ public class PartitionRoutingService {
         // 1. Try Redis first
         Set<String> cached = redisService.getDronePartitions(uavId);
         if (!cached.isEmpty()) {
+            log.info("[PartitionRouting] Cache HIT for drone '{}': partitions={}", uavId, cached);
             return cached;
         }
+        log.info("[PartitionRouting] Cache MISS for drone '{}', querying database...", uavId);
 
         // 2. Fallback to database
         List<String> dbPartitions = dronePartitionMapRepository.findActivePartitionNamesByUavId(uavId);
@@ -51,6 +53,7 @@ public class PartitionRoutingService {
         }
 
         // 3. New drone: auto-create with default partitions (observer + commander)
+        log.info("[PartitionRouting] Drone '{}' not in DB, auto-creating with default partitions...", uavId);
         return autoCreateDroneWithDefaultPartitions(uavId);
     }
 

@@ -54,7 +54,11 @@ public class WebSocketGatewayService {
             messagingTemplate.convertAndSend(topic, message);
         }
 
-        log.debug("WebSocket Gateway: Broadcast to {} partitions", partitionData.size());
+        log.info("[WebSocket] Broadcast to {} partition(s)", partitionData.size());
+        for (Map.Entry<String, List<Map<String, Object>>> entry2 : partitionData.entrySet()) {
+            log.info("[WebSocket]   -> /topic/telemetry/partition/{} ({} drone(s))",
+                    entry2.getKey(), entry2.getValue().size());
+        }
     }
 
     /**

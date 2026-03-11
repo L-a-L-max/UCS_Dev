@@ -116,8 +116,19 @@ public class DDSGatewayController {
             webSocketGatewayService.broadcastToPartitions(partitionData, timestamp);
             webSocketGatewayService.broadcastAll(allTelemetry, timestamp);
 
-            log.debug("DDS Gateway: Processed {} drones, {} partitions",
+            // Detailed logging for debugging data flow
+            log.info("[DDSGateway] Received {} drone(s), routed to {} partition(s)",
                     drones.size(), partitionData.size());
+            for (Map.Entry<String, List<Map<String, Object>>> pEntry : partitionData.entrySet()) {
+                log.info("[DDSGateway]   Partition '{}' -> {} drone(s)",
+                        pEntry.getKey(), pEntry.getValue().size());
+            }
+            for (Map<String, Object> droneData : drones) {
+                String droneId = String.valueOf(droneData.get("uavId"));
+                log.info("[DDSGateway]   Drone '{}': lat={}, lon={}, alt={}, armed={}, mode={}",
+                        droneId, droneData.get("lat"), droneData.get("lon"),
+                        droneData.get("alt"), droneData.get("armed"), droneData.get("flightMode"));
+            }
 
             return ResponseEntity.ok(Map.of(
                     "status", "ok",

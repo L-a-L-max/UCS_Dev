@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
 """
-DDS Gateway - PX4 Telemetry Subscriber & Forwarder
+DDS Routing Gateway (Gateway 1) - PX4 Telemetry Subscriber & Forwarder
 
-Subscribes to PX4 DDS topics (vehicle_global_position, vehicle_attitude, etc.)
-and forwards telemetry data to the UCS backend via REST API.
-
-The backend handles:
-- Partition routing (drone → user partition mapping)
-- WebSocket broadcasting (partition-specific topics)
-- Data persistence (telemetry history for path replay)
+Uses rclpy (ROS2 Python client) to subscribe to PX4 DDS topics and forward
+telemetry data to the UCS backend via REST API.
 
 Requirements:
-    pip install cyclonedds requests
+    - ROS2 environment sourced (e.g., source /opt/ros/humble/setup.bash)
+    - px4_msgs package available
+    - pip install requests
 
 Usage:
     python dds_gateway.py [--backend-url URL] [--api-key KEY] [--interval SECONDS]
+    python dds_gateway.py --verbose   # Enable debug logging
 
 Environment Variables:
     UCS_BACKEND_URL     Backend URL (default: http://localhost:8080)
-    DDS_GATEWAY_API_KEY API key for authentication (default: ucs-dds-gateway-secret-2024)
+    DDS_GATEWAY_API_KEY API key for authentication
     DDS_POLL_INTERVAL   Poll interval in seconds (default: 1.0)
+    ROS_DOMAIN_ID       ROS2 domain ID (must match PX4 simulator)
 """
 
 import argparse
@@ -29,7 +28,9 @@ import math
 import os
 import signal
 import sys
+import threading
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
@@ -38,22 +39,27 @@ import requests
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger('dds-gateway')
 
 # ============================================================
-# DDS Topic Discovery & Subscription
+# PX4 Topic Configuration
 # ============================================================
 
-# PX4 output topics we're interested in (telemetry data)
-TELEMETRY_TOPICS = {
-    'vehicle_global_position',   # GPS position (lat, lon, alt)
-    'vehicle_local_position_v1', # Local NED position
-    'vehicle_attitude',          # Attitude (quaternion → heading)
-    'vehicle_status_v1',         # Flight status (armed, mode)
-    'battery_status_v1',         # Battery info
+# Topic suffix variants (PX4 may use _v1 suffix)
+TOPIC_SUFFIX_VARIANTS = {
+    'vehicle_global_position': ['vehicle_global_position'],
+    'vehicle_local_position': ['vehicle_local_position', 'vehicle_local_position_v1'],
+    'vehicle_attitude': ['vehicle_attitude'],
+    'vehicle_status': ['vehicle_status', 'vehicle_status_v1'],
+    'battery_status': ['battery_status', 'battery_status_v1'],
 }
+
+ALL_KNOWN_SUFFIXES = set()
+for _variants in TOPIC_SUFFIX_VARIANTS.values():
+    ALL_KNOWN_SUFFIXES.update(_variants)
 
 
 @dataclass
@@ -76,17 +82,13 @@ class DroneState:
     flight_mode: str = "UNKNOWN"
     battery_percent: float = -1.0
     last_update: float = 0.0
+    msg_count: int = 0
 
 
 class DDSGateway:
     """
-    DDS Gateway that subscribes to PX4 topics and forwards to UCS backend.
-    
-    Architecture:
-    1. Discovers PX4 drone instances on the DDS network by topic prefix
-    2. Subscribes to telemetry topics for each discovered drone
-    3. Aggregates data into per-drone state
-    4. Periodically sends batch telemetry to backend REST API
+    DDS Routing Gateway using rclpy (ROS2).
+    Creates a ROS2 node visible via `ros2 node list`.
     """
 
     def __init__(self, backend_url: str, api_key: str, poll_interval: float = 1.0):
@@ -95,219 +97,320 @@ class DDSGateway:
         self.poll_interval = poll_interval
         self.drone_states: Dict[str, DroneState] = {}
         self.running = False
-        self._dds_available = False
-        self._participants = {}
-        self._readers = {}
+        self._rclpy_available = False
+        self._node = None
+        self._subscriptions = {}
+        self._lock = threading.Lock()
+        self._stats = defaultdict(int)
+        self._last_stats_time = time.time()
 
-        # Try to import cyclonedds
         try:
-            from cyclonedds.core import DomainParticipant, Qos
-            from cyclonedds.topic import Topic
-            from cyclonedds.sub import DataReader
-            from cyclonedds.builtin import DcpsParticipant
-            self._dds_available = True
-            logger.info("CycloneDDS library available - real DDS mode")
+            import rclpy
+            self._rclpy_available = True
+            logger.info("[Init] rclpy (ROS2 Python) available - real DDS mode")
         except ImportError:
-            self._dds_available = False
             logger.warning(
-                "CycloneDDS library not available. "
-                "Install with: pip install cyclonedds\n"
-                "Running in discovery-only mode (no actual DDS subscription)."
+                "[Init] rclpy not available. Make sure ROS2 is sourced:\n"
+                "  source /opt/ros/humble/setup.bash"
             )
+
+        self._px4_msgs_available = False
+        try:
+            import px4_msgs.msg
+            self._px4_msgs_available = True
+            logger.info("[Init] px4_msgs package available")
+        except ImportError:
+            logger.warning("[Init] px4_msgs not available")
+
+    def _init_ros2_node(self):
+        """Initialize the ROS2 node."""
+        if not self._rclpy_available:
+            return False
+        try:
+            import rclpy
+            if not rclpy.ok():
+                rclpy.init()
+                logger.info("[ROS2] rclpy initialized")
+            self._node = rclpy.create_node('ucs_dds_gateway')
+            logger.info("[ROS2] Node 'ucs_dds_gateway' created (visible via `ros2 node list`)")
+            return True
+        except Exception as e:
+            logger.error("[ROS2] Failed to create node: %s", e)
+            return False
 
     def check_backend_health(self) -> bool:
         """Verify backend is reachable."""
         try:
             resp = requests.get(
-                f"{self.backend_url}/api/v1/dds-gateway/health",
-                timeout=5
+                f"{self.backend_url}/api/v1/dds-gateway/health", timeout=5
             )
             if resp.status_code == 200:
-                logger.info("Backend health check passed: %s", resp.json())
+                logger.info("[Backend] Health check passed: %s", resp.json())
                 return True
-            logger.error("Backend health check failed: %d", resp.status_code)
+            logger.error("[Backend] Health check failed: HTTP %d", resp.status_code)
             return False
         except requests.exceptions.ConnectionError:
-            logger.error("Cannot connect to backend at %s", self.backend_url)
+            logger.error("[Backend] Cannot connect to %s", self.backend_url)
             return False
 
     def discover_drones_from_topics(self) -> Set[str]:
         """
-        Discover PX4 drone instances by scanning DDS topics.
-        
-        PX4 publishes topics like:
-            /px4_1/fmu/out/vehicle_global_position
-            /px4_2/fmu/out/vehicle_attitude
-        
-        We extract the prefix (px4_1, px4_2) as the drone identifier.
+        Discover PX4 drones by scanning the ROS2 topic list.
+        Extracts prefix (px4_1, px4_2) from topics like /px4_1/fmu/out/vehicle_attitude.
         """
-        if not self._dds_available:
-            logger.debug("DDS not available, skipping topic discovery")
+        if not self._rclpy_available or self._node is None:
             return set()
 
         discovered = set()
-        try:
-            from cyclonedds.core import DomainParticipant
-            from cyclonedds.builtin import DcpsTopic
+        matched_topics = []
 
-            dp = DomainParticipant()
-            # Read discovered topics from DDS builtin topics
-            # This requires cyclonedds to be on the same DDS domain
-            reader = dp.create_reader(DcpsTopic)
-            
-            for sample in reader.take(timeout=2.0):
-                topic_name = sample.name if hasattr(sample, 'name') else str(sample)
-                # Match pattern: /{prefix}/fmu/out/{topic_suffix}
+        try:
+            topic_list = self._node.get_topic_names_and_types()
+            all_topics = [name for name, _ in topic_list]
+
+            for topic_name, _ in topic_list:
                 if '/fmu/out/' in topic_name:
                     parts = topic_name.strip('/').split('/')
                     if len(parts) >= 4:
-                        drone_prefix = parts[0]  # e.g., "px4_1"
-                        topic_suffix = parts[3]   # e.g., "vehicle_global_position"
-                        if topic_suffix in TELEMETRY_TOPICS:
+                        drone_prefix = parts[0]
+                        topic_suffix = parts[3]
+                        matched_topics.append(topic_name)
+                        if topic_suffix in ALL_KNOWN_SUFFIXES:
                             discovered.add(drone_prefix)
-                            
+
+            logger.info(
+                "[Discovery] Scanned %d topics, %d matched /fmu/out/",
+                len(all_topics), len(matched_topics)
+            )
+
+            if matched_topics:
+                logger.info("[Discovery] Matched topics:")
+                for t in sorted(matched_topics):
+                    logger.info("  - %s", t)
+
+            if discovered:
+                logger.info(
+                    "[Discovery] Found %d drone(s): %s",
+                    len(discovered), sorted(discovered)
+                )
+            else:
+                logger.warning(
+                    "[Discovery] No PX4 drones found. Topics: %s",
+                    all_topics[:10] if all_topics else "none"
+                )
+
         except Exception as e:
-            logger.debug("Topic discovery failed (may be normal if no DDS network): %s", e)
+            logger.error("[Discovery] Topic scan failed: %s", e)
 
         return discovered
 
     def subscribe_to_drone(self, uav_id: str):
-        """
-        Subscribe to all telemetry topics for a specific drone.
-        
-        Topics subscribed:
-        - /{uav_id}/fmu/out/vehicle_global_position
-        - /{uav_id}/fmu/out/vehicle_attitude
-        - /{uav_id}/fmu/out/vehicle_local_position_v1
-        - /{uav_id}/fmu/out/vehicle_status_v1
-        - /{uav_id}/fmu/out/battery_status_v1
-        """
-        if uav_id not in self.drone_states:
-            self.drone_states[uav_id] = DroneState(uav_id=uav_id)
-            logger.info("Subscribing to drone: %s", uav_id)
+        """Subscribe to all telemetry topics for a specific drone."""
+        with self._lock:
+            if uav_id not in self.drone_states:
+                self.drone_states[uav_id] = DroneState(uav_id=uav_id)
 
-        if not self._dds_available:
+        if not self._rclpy_available or self._node is None:
+            logger.warning("[Subscribe] ROS2 not available for %s", uav_id)
             return
 
-        try:
-            from cyclonedds.core import DomainParticipant, Qos
-            from cyclonedds.topic import Topic
-            from cyclonedds.sub import DataReader
-            from cyclonedds.idl import IdlStruct
+        if self._px4_msgs_available:
+            self._subscribe_with_px4_msgs(uav_id)
+        else:
+            logger.warning(
+                "[Subscribe] px4_msgs not available, cannot subscribe for %s", uav_id
+            )
 
-            # Create participant if not exists
-            if uav_id not in self._participants:
-                dp = DomainParticipant()
-                self._participants[uav_id] = dp
+    def _subscribe_with_px4_msgs(self, uav_id: str):
+        """Subscribe using typed px4_msgs message types."""
+        import px4_msgs.msg as px4
 
-            dp = self._participants[uav_id]
+        subscriptions_created = 0
+        topic_handlers = {}
 
-            for topic_suffix in TELEMETRY_TOPICS:
-                topic_name = f"/{uav_id}/fmu/out/{topic_suffix}"
-                # Note: Actual IDL types would be needed for proper deserialization
-                # This is a framework that needs PX4 IDL type definitions
-                logger.info("Would subscribe to: %s", topic_name)
+        if hasattr(px4, 'VehicleGlobalPosition'):
+            topic_handlers['vehicle_global_position'] = (
+                px4.VehicleGlobalPosition,
+                lambda msg, uid=uav_id: self._on_global_position(uid, msg)
+            )
+        if hasattr(px4, 'VehicleAttitude'):
+            topic_handlers['vehicle_attitude'] = (
+                px4.VehicleAttitude,
+                lambda msg, uid=uav_id: self._on_attitude(uid, msg)
+            )
+        if hasattr(px4, 'VehicleLocalPosition'):
+            topic_handlers['vehicle_local_position'] = (
+                px4.VehicleLocalPosition,
+                lambda msg, uid=uav_id: self._on_local_position(uid, msg)
+            )
+        if hasattr(px4, 'VehicleStatus'):
+            topic_handlers['vehicle_status'] = (
+                px4.VehicleStatus,
+                lambda msg, uid=uav_id: self._on_vehicle_status(uid, msg)
+            )
+        if hasattr(px4, 'BatteryStatus'):
+            topic_handlers['battery_status'] = (
+                px4.BatteryStatus,
+                lambda msg, uid=uav_id: self._on_battery_status(uid, msg)
+            )
 
-        except Exception as e:
-            logger.error("Failed to subscribe to drone %s: %s", uav_id, e)
+        available_topics = dict(self._node.get_topic_names_and_types())
 
-    def poll_dds_data(self):
-        """
-        Poll DDS readers for new data and update drone states.
-        
-        This method reads from all active DDS subscriptions and
-        updates the aggregated DroneState for each drone.
-        """
-        if not self._dds_available:
-            return
+        for base_suffix, (msg_type, callback) in topic_handlers.items():
+            variants = TOPIC_SUFFIX_VARIANTS.get(base_suffix, [base_suffix])
+            subscribed = False
 
-        for uav_id, readers in self._readers.items():
-            state = self.drone_states.get(uav_id)
-            if state is None:
-                continue
+            for variant in variants:
+                topic_name = f"/{uav_id}/fmu/out/{variant}"
+                sub_key = f"{uav_id}/{variant}"
 
-            for topic_suffix, reader in readers.items():
-                try:
-                    for sample in reader.take():
-                        self._update_state_from_sample(state, topic_suffix, sample)
-                        state.last_update = time.time()
-                except Exception as e:
-                    logger.debug("Error reading %s/%s: %s", uav_id, topic_suffix, e)
+                if sub_key in self._subscriptions:
+                    subscribed = True
+                    break
 
-    def _update_state_from_sample(self, state: DroneState, topic_suffix: str, sample):
-        """Update drone state from a DDS sample based on topic type."""
-        if topic_suffix == 'vehicle_global_position':
-            state.lat = getattr(sample, 'lat', state.lat)
-            state.lon = getattr(sample, 'lon', state.lon)
-            state.alt = getattr(sample, 'alt', state.alt)
-        elif topic_suffix == 'vehicle_local_position_v1':
-            state.ned_x = getattr(sample, 'x', state.ned_x)
-            state.ned_y = getattr(sample, 'y', state.ned_y)
-            state.ned_z = getattr(sample, 'z', state.ned_z)
-            state.vx = getattr(sample, 'vx', state.vx)
-            state.vy = getattr(sample, 'vy', state.vy)
-            state.vz = getattr(sample, 'vz', state.vz)
-            # Compute ground speed from velocity components
-            state.ground_speed = math.sqrt(state.vx ** 2 + state.vy ** 2)
-            state.vertical_speed = -state.vz  # NED: positive Z is down
-        elif topic_suffix == 'vehicle_attitude':
-            # Extract heading from quaternion
-            q = [
-                getattr(sample, 'q', [1, 0, 0, 0])[i]
-                for i in range(4)
-            ]
-            # Quaternion to yaw (heading)
+                if topic_name in available_topics:
+                    try:
+                        sub = self._node.create_subscription(
+                            msg_type, topic_name, callback, 10
+                        )
+                        self._subscriptions[sub_key] = sub
+                        subscriptions_created += 1
+                        logger.info(
+                            "[Subscribe] OK: %s -> %s (type: %s)",
+                            uav_id, topic_name, msg_type.__name__
+                        )
+                        subscribed = True
+                        break
+                    except Exception as e:
+                        logger.error(
+                            "[Subscribe] FAILED: %s -> %s: %s",
+                            uav_id, topic_name, e
+                        )
+                else:
+                    logger.debug("[Subscribe] Topic not available: %s", topic_name)
+
+            if not subscribed:
+                logger.warning(
+                    "[Subscribe] No topic for %s/%s (tried: %s)",
+                    uav_id, base_suffix, variants
+                )
+
+        logger.info(
+            "[Subscribe] Drone %s: %d new, %d total subscriptions",
+            uav_id, subscriptions_created, len(self._subscriptions)
+        )
+
+    # ============================================================
+    # Message Callbacks
+    # ============================================================
+
+    def _on_global_position(self, uav_id, msg):
+        with self._lock:
+            s = self.drone_states.get(uav_id)
+            if not s:
+                return
+            s.lat = msg.lat
+            s.lon = msg.lon
+            s.alt = msg.alt
+            s.last_update = time.time()
+            s.msg_count += 1
+            self._stats[f'{uav_id}/global_position'] += 1
+            self._stats['total_messages'] += 1
+
+    def _on_local_position(self, uav_id, msg):
+        with self._lock:
+            s = self.drone_states.get(uav_id)
+            if not s:
+                return
+            s.ned_x = msg.x
+            s.ned_y = msg.y
+            s.ned_z = msg.z
+            s.vx = msg.vx
+            s.vy = msg.vy
+            s.vz = msg.vz
+            s.ground_speed = math.sqrt(msg.vx ** 2 + msg.vy ** 2)
+            s.vertical_speed = -msg.vz
+            s.last_update = time.time()
+            s.msg_count += 1
+            self._stats[f'{uav_id}/local_position'] += 1
+            self._stats['total_messages'] += 1
+
+    def _on_attitude(self, uav_id, msg):
+        with self._lock:
+            s = self.drone_states.get(uav_id)
+            if not s:
+                return
+            q = msg.q
             siny_cosp = 2 * (q[0] * q[3] + q[1] * q[2])
             cosy_cosp = 1 - 2 * (q[2] ** 2 + q[3] ** 2)
-            yaw_rad = math.atan2(siny_cosp, cosy_cosp)
-            state.heading = math.degrees(yaw_rad) % 360
-        elif topic_suffix == 'vehicle_status_v1':
-            state.armed = getattr(sample, 'arming_state', 0) == 2  # ARMED=2
-            nav_state = getattr(sample, 'nav_state', 0)
-            state.flight_mode = self._nav_state_to_mode(nav_state)
-        elif topic_suffix == 'battery_status_v1':
-            state.battery_percent = getattr(sample, 'remaining', -1.0) * 100
+            s.heading = math.degrees(math.atan2(siny_cosp, cosy_cosp)) % 360
+            s.last_update = time.time()
+            s.msg_count += 1
+            self._stats[f'{uav_id}/attitude'] += 1
+            self._stats['total_messages'] += 1
+
+    def _on_vehicle_status(self, uav_id, msg):
+        with self._lock:
+            s = self.drone_states.get(uav_id)
+            if not s:
+                return
+            s.armed = getattr(msg, 'arming_state', 0) == 2
+            s.flight_mode = self._nav_state_to_mode(getattr(msg, 'nav_state', 0))
+            s.last_update = time.time()
+            s.msg_count += 1
+            self._stats[f'{uav_id}/vehicle_status'] += 1
+            self._stats['total_messages'] += 1
+
+    def _on_battery_status(self, uav_id, msg):
+        with self._lock:
+            s = self.drone_states.get(uav_id)
+            if not s:
+                return
+            s.battery_percent = getattr(msg, 'remaining', -1.0) * 100
+            s.last_update = time.time()
+            s.msg_count += 1
+            self._stats[f'{uav_id}/battery_status'] += 1
+            self._stats['total_messages'] += 1
 
     @staticmethod
     def _nav_state_to_mode(nav_state: int) -> str:
         """Convert PX4 nav_state enum to human-readable mode string."""
         modes = {
-            0: "MANUAL",
-            1: "ALTCTL",
-            2: "POSCTL",
-            3: "AUTO_MISSION",
-            4: "AUTO_LOITER",
-            5: "AUTO_RTL",
-            14: "OFFBOARD",
-            17: "AUTO_TAKEOFF",
-            18: "AUTO_LAND",
+            0: "MANUAL", 1: "ALTCTL", 2: "POSCTL",
+            3: "AUTO_MISSION", 4: "AUTO_LOITER", 5: "AUTO_RTL",
+            14: "OFFBOARD", 17: "AUTO_TAKEOFF", 18: "AUTO_LAND",
         }
         return modes.get(nav_state, f"MODE_{nav_state}")
+
+    # ============================================================
+    # Data Forwarding
+    # ============================================================
 
     def build_telemetry_payload(self) -> dict:
         """Build the telemetry batch payload for the backend API."""
         from datetime import datetime, timezone
-        
+
         drones = []
-        for uav_id, state in self.drone_states.items():
-            drones.append({
-                "uavId": state.uav_id,
-                "lat": state.lat,
-                "lon": state.lon,
-                "alt": state.alt,
-                "heading": state.heading,
-                "groundSpeed": state.ground_speed,
-                "verticalSpeed": state.vertical_speed,
-                "vx": state.vx,
-                "vy": state.vy,
-                "vz": state.vz,
-                "nedX": state.ned_x,
-                "nedY": state.ned_y,
-                "nedZ": state.ned_z,
-                "armed": state.armed,
-                "flightMode": state.flight_mode,
-                "batteryPercent": state.battery_percent,
-            })
+        with self._lock:
+            for uav_id, state in self.drone_states.items():
+                drones.append({
+                    "uavId": state.uav_id,
+                    "lat": state.lat,
+                    "lon": state.lon,
+                    "alt": state.alt,
+                    "heading": state.heading,
+                    "groundSpeed": state.ground_speed,
+                    "verticalSpeed": state.vertical_speed,
+                    "vx": state.vx,
+                    "vy": state.vy,
+                    "vz": state.vz,
+                    "nedX": state.ned_x,
+                    "nedY": state.ned_y,
+                    "nedZ": state.ned_z,
+                    "armed": state.armed,
+                    "flightMode": state.flight_mode,
+                    "batteryPercent": state.battery_percent,
+                })
 
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -328,68 +431,162 @@ class DDSGateway:
             )
             if resp.status_code == 200:
                 result = resp.json()
-                logger.debug("Sent %d drones, partitions: %s",
-                             result.get('processed', 0),
-                             result.get('partitions', []))
+                partitions = result.get('partitions', [])
+                processed = result.get('processed', 0)
+                logger.info(
+                    "[Forward] Sent %d drone(s) -> routed to %d partition(s): %s",
+                    processed, len(partitions), list(partitions)
+                )
+                self._stats['backend_success'] += 1
                 return True
             else:
-                logger.error("Backend returned %d: %s", resp.status_code, resp.text)
+                logger.error(
+                    "[Forward] Backend HTTP %d: %s",
+                    resp.status_code, resp.text[:200]
+                )
+                self._stats['backend_errors'] += 1
                 return False
         except requests.exceptions.ConnectionError:
-            logger.error("Lost connection to backend at %s", self.backend_url)
+            logger.error("[Forward] Connection lost to %s", self.backend_url)
+            self._stats['backend_errors'] += 1
             return False
         except Exception as e:
-            logger.error("Failed to send telemetry: %s", e)
+            logger.error("[Forward] Send failed: %s", e)
+            self._stats['backend_errors'] += 1
             return False
 
+    def log_statistics(self):
+        """Log periodic statistics every 10 seconds."""
+        now = time.time()
+        if now - self._last_stats_time < 10:
+            return
+        elapsed = now - self._last_stats_time
+        self._last_stats_time = now
+        total = self._stats.get('total_messages', 0)
+
+        logger.info("=" * 60)
+        logger.info(
+            "[Stats] %.0fs elapsed | Total msgs: %d | Drones: %d | Subs: %d",
+            elapsed, total, len(self.drone_states), len(self._subscriptions)
+        )
+        logger.info(
+            "[Stats] Backend: success=%d errors=%d",
+            self._stats.get('backend_success', 0),
+            self._stats.get('backend_errors', 0)
+        )
+
+        with self._lock:
+            for uid, s in self.drone_states.items():
+                age = now - s.last_update if s.last_update > 0 else -1
+                logger.info(
+                    "[Stats]   %-10s msgs=%-6d lat=%.6f lon=%.6f alt=%.1f "
+                    "hdg=%.1f armed=%-5s mode=%-12s age=%.1fs",
+                    uid, s.msg_count, s.lat, s.lon, s.alt,
+                    s.heading, s.armed, s.flight_mode, age
+                )
+
+        topic_stats = {k: v for k, v in self._stats.items() if '/' in k}
+        if topic_stats:
+            logger.info("[Stats] Per-topic:")
+            for t, c in sorted(topic_stats.items()):
+                logger.info("[Stats]   %-40s %d", t, c)
+        logger.info("=" * 60)
+
+    # ============================================================
+    # Main Loop
+    # ============================================================
+
     def run(self):
-        """Main loop: discover drones, poll DDS, send to backend."""
+        """Main loop: discover drones, process DDS messages, send to backend."""
         self.running = True
         logger.info("=" * 60)
-        logger.info("DDS Gateway starting")
-        logger.info("Backend URL: %s", self.backend_url)
-        logger.info("Poll interval: %.1fs", self.poll_interval)
-        logger.info("DDS available: %s", self._dds_available)
+        logger.info("[Startup] DDS Routing Gateway (Gateway 1)")
+        logger.info("[Startup] Backend: %s", self.backend_url)
+        logger.info("[Startup] Interval: %.1fs", self.poll_interval)
+        logger.info(
+            "[Startup] rclpy: %s | px4_msgs: %s",
+            self._rclpy_available, self._px4_msgs_available
+        )
+        logger.info(
+            "[Startup] ROS_DOMAIN_ID: %s",
+            os.environ.get('ROS_DOMAIN_ID', 'default(0)')
+        )
         logger.info("=" * 60)
 
-        # Check backend health
-        if not self.check_backend_health():
-            logger.error("Backend not reachable. Please start the backend first.")
-            logger.info("Retrying in 5 seconds...")
+        if not self._rclpy_available:
+            logger.error("[Startup] ROS2 not available. Exiting.")
+            return
+        if not self._init_ros2_node():
+            logger.error("[Startup] Failed to init ROS2 node. Exiting.")
+            return
+
+        logger.info("[Startup] Checking backend...")
+        for attempt in range(3):
+            if self.check_backend_health():
+                break
+            logger.info("[Startup] Retry %d/3 in 5s...", attempt + 1)
             time.sleep(5)
-            if not self.check_backend_health():
-                logger.error("Backend still not reachable. Exiting.")
-                return
+        else:
+            logger.warning("[Startup] Backend unreachable. Continuing anyway...")
 
         cycle = 0
-        while self.running:
+        import rclpy
+
+        while self.running and rclpy.ok():
             try:
-                # Periodically re-discover drones (every 10 cycles)
+                rclpy.spin_once(self._node, timeout_sec=0.1)
+
                 if cycle % 10 == 0:
+                    logger.info("[Discovery] Scanning topics (cycle %d)...", cycle)
                     new_drones = self.discover_drones_from_topics()
-                    for uav_id in new_drones:
-                        if uav_id not in self.drone_states:
-                            self.subscribe_to_drone(uav_id)
-                            logger.info("Discovered new drone: %s", uav_id)
+                    for uid in new_drones:
+                        if uid not in self.drone_states:
+                            logger.info("[Discovery] NEW drone: %s", uid)
+                            self.subscribe_to_drone(uid)
+                    if not new_drones and cycle == 0:
+                        logger.warning(
+                            "[Discovery] No drones found. "
+                            "Check PX4 simulator and ROS_DOMAIN_ID."
+                        )
 
-                # Poll DDS data
-                self.poll_dds_data()
-
-                # Only send if we have drone data
                 if self.drone_states:
-                    payload = self.build_telemetry_payload()
-                    self.send_to_backend(payload)
+                    now = time.time()
+                    active = sum(
+                        1 for s in self.drone_states.values()
+                        if now - s.last_update < 5
+                    )
+                    if active > 0:
+                        self.send_to_backend(self.build_telemetry_payload())
+                    elif cycle % 10 == 0:
+                        logger.warning(
+                            "[Forward] %d drone(s) tracked but none active",
+                            len(self.drone_states)
+                        )
 
+                self.log_statistics()
                 cycle += 1
                 time.sleep(self.poll_interval)
 
             except KeyboardInterrupt:
                 break
             except Exception as e:
-                logger.error("Error in main loop: %s", e)
+                logger.error("[MainLoop] %s", e, exc_info=True)
                 time.sleep(1)
 
-        logger.info("DDS Gateway stopped")
+        self._cleanup()
+        logger.info("[Shutdown] Gateway stopped")
+
+    def _cleanup(self):
+        """Clean up ROS2 resources."""
+        try:
+            import rclpy
+            if self._node:
+                self._node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+            logger.info("[Shutdown] Cleanup complete")
+        except Exception as e:
+            logger.debug("[Shutdown] %s", e)
 
     def stop(self):
         """Stop the gateway gracefully."""
@@ -397,7 +594,9 @@ class DDSGateway:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='DDS Gateway for UCS')
+    parser = argparse.ArgumentParser(
+        description='DDS Routing Gateway (Gateway 1) - PX4 Telemetry Forwarder'
+    )
     parser.add_argument(
         '--backend-url',
         default=os.environ.get('UCS_BACKEND_URL', 'http://localhost:8080'),
@@ -417,12 +616,12 @@ def main():
     parser.add_argument(
         '--drones',
         nargs='*',
-        help='Manually specify drone IDs to subscribe to (e.g., px4_1 px4_2)'
+        help='Manually specify drone IDs (e.g., px4_1 px4_2)'
     )
     parser.add_argument(
         '--verbose', '-v',
         action='store_true',
-        help='Enable verbose logging'
+        help='Enable verbose/debug logging'
     )
     args = parser.parse_args()
 
@@ -435,19 +634,19 @@ def main():
         poll_interval=args.interval
     )
 
-    # Register signal handlers for graceful shutdown
     def signal_handler(sig, frame):
-        logger.info("Received signal %s, shutting down...", sig)
+        logger.info("[Signal] %s received, stopping...", sig)
         gateway.stop()
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Manually subscribe to specified drones
     if args.drones:
-        for drone_id in args.drones:
-            gateway.subscribe_to_drone(drone_id)
-        logger.info("Manually subscribed to drones: %s", args.drones)
+        logger.info("[Config] Manual drones: %s", args.drones)
+        if gateway._rclpy_available:
+            gateway._init_ros2_node()
+            for d in args.drones:
+                gateway.subscribe_to_drone(d)
 
     gateway.run()
 

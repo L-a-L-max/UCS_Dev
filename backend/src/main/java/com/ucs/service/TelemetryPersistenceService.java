@@ -124,8 +124,13 @@ public class TelemetryPersistenceService {
             latestStateRepository.saveAll(latestStates);
         }
 
-        log.debug("Persisted {} telemetry records, {} latest states", 
+        log.info("[Persistence] Flushed buffer: {} telemetry records, {} latest states", 
                 telemetryList.size(), latestStates.size());
+        for (Map.Entry<String, TelemetryRecord> logEntry : latestByUav.entrySet()) {
+            TelemetryRecord lr = logEntry.getValue();
+            log.info("[Persistence]   Drone '{}': lat={}, lon={}, alt={}",
+                    lr.uavId, lr.lat, lr.lon, lr.alt);
+        }
     }
 
     /**
