@@ -18,7 +18,6 @@ CREATE TABLE IF NOT EXISTS teams (
     id BIGSERIAL PRIMARY KEY,
     team_name VARCHAR(100) NOT NULL,
     description VARCHAR(500),
-    created_by BIGINT,
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );

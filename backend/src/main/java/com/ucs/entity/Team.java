@@ -18,9 +18,6 @@ public class Team {
     @Column(length = 500)
     private String description;
     
-    @Column(name = "created_by")
-    private Long createdBy;
-    
     @Column(name = "created_at")
     private LocalDateTime createdAt;
     

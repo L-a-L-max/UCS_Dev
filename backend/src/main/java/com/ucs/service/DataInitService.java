@@ -136,7 +136,7 @@ public class DataInitService {
             Team team = new Team();
             team.setTeamName(teamData[0]);
             team.setDescription(teamData[1]);
-            team.setCreatedBy(1L);
+            // created_by removed per user request
             teamRepository.save(team);
         }
     }
