@@ -14,6 +14,7 @@ import com.ucs.security.JwtUtil;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import com.ucs.util.PartitionNameUtil;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -74,11 +75,17 @@ public class AuthService {
         }
         
         // Set user's subscription partitions
-        if (user.getPartitionName() != null) {
-            response.setPartitions(List.of(user.getPartitionName()));
-        } else {
-            response.setPartitions(List.of());
+        // Compute dynamically if not stored in DB
+        String partitionName = user.getPartitionName();
+        if (partitionName == null || partitionName.isEmpty()) {
+            // Compute from role + username + id
+            String primaryRole = roles.isEmpty() ? "operator" : roles.get(0);
+            partitionName = PartitionNameUtil.computePartitionName(primaryRole, user.getUsername(), user.getId());
+            // Persist computed partition name
+            user.setPartitionName(partitionName);
+            userRepository.save(user);
         }
+        response.setPartitions(List.of(partitionName));
         
         return response;
     }
@@ -93,6 +100,11 @@ public class AuthService {
         user.setPasswordHash(passwordEncoder.encode(password));
         user.setRealName(realName);
         user.setStatus(1);
+        user = userRepository.save(user);
+        
+        // Compute and set partition name after ID is generated
+        String partition = PartitionNameUtil.computePartitionName(roleName, username, user.getId());
+        user.setPartitionName(partition);
         user = userRepository.save(user);
         
         Role role = roleRepository.findByRoleName(roleName)

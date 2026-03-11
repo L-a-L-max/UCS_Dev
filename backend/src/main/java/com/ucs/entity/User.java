@@ -41,7 +41,8 @@ public class User {
      * Naming rules:
      * - observer role: fixed "observer"
      * - commander role: fixed "commander"
-     * - others: "user_{id}" (e.g., user_10001)
+     * - others: "{username_initials}_{id}" (e.g., zhangsan id=2 -> "zs_2", lisi id=3 -> "ls_3")
+     * Computed dynamically by PartitionNameUtil.computePartitionName()
      */
     @Column(name = "partition_name", length = 100)
     private String partitionName;

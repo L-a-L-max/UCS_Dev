@@ -9,6 +9,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ucs.util.PartitionNameUtil;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -18,7 +19,8 @@ import java.util.*;
  * 
  * Teams: 巡检队伍 (Inspection), 应急队伍 (Emergency)
  * Personnel: 8 total (2 leaders, 4 operators, 1 observer, 1 commander)
- * Partition naming: observer/commander fixed, others user_{id}
+ * Partition naming: observer/commander fixed, others {username_initials}_{id}
+ * (e.g., zhangsan id=2 -> "zs_2", lisi id=3 -> "ls_3")
  */
 @Slf4j
 @Service
@@ -144,7 +146,7 @@ public class DataInitService {
      * Initialize 8 users with partition naming:
      * - commander: partition = "commander"
      * - observer: partition = "observer"
-     * - others: partition = "user_{id}" (set after save to get the generated ID)
+     * - others: partition = "{username_initials}_{id}" (e.g., zhangsan id=2 -> "zs_2")
      * 
      * Team 1 (巡检队伍): zhangsan(leader), lisi(operator), wangwu(operator)
      * Team 2 (应急队伍): zhaoliu(leader), qianqi(operator), sunba(operator)
@@ -185,8 +187,8 @@ public class DataInitService {
             // Save first to get auto-generated ID
             user = userRepository.save(user);
             
-            // Set partition name based on role
-            String partitionName = computePartitionName(userData[3], user.getId());
+            // Set partition name based on role and username initials
+            String partitionName = PartitionNameUtil.computePartitionName(userData[3], userData[0], user.getId());
             user.setPartitionName(partitionName);
             user = userRepository.save(user);
             
@@ -225,19 +227,7 @@ public class DataInitService {
         }
     }
     
-    /**
-     * Compute partition name based on role and user ID.
-     * - observer → "observer"
-     * - commander → "commander"
-     * - others → "user_{id}"
-     */
-    private String computePartitionName(String roleName, Long userId) {
-        return switch (roleName) {
-            case "observer" -> "observer";
-            case "commander" -> "commander";
-            default -> "user_" + userId;
-        };
-    }
+    // Partition name computation delegated to PartitionNameUtil
     
     /**
      * Initialize drones with DDS-style identifiers (px4_1, px4_2, etc.)
