@@ -38,6 +38,20 @@ public class Drone {
     private Long defaultTeamId;
     
     /**
+     * Current control permission owner (user ID who can send commands).
+     * NULL means no one has control permission (new drone).
+     */
+    @Column(name = "control_owner_id")
+    private Long controlOwnerId;
+    
+    /**
+     * Current view permission owner at Leader/Pilot level.
+     * Each level only has one person. NULL means default viewing (observer+commander only).
+     */
+    @Column(name = "view_owner_id")
+    private Long viewOwnerId;
+    
+    /**
      * Current online status based on DDS heartbeat.
      */
     @Column(name = "online_status")

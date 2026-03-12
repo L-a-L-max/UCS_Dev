@@ -105,7 +105,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
           altitude: uav.alt,
           battery: undefined,
           flightStatus: uav.isActive ? 'FLYING' : 'IDLE',
-          onlineStatus: uav.isActive,
+          onlineStatus: true, // Receiving telemetry data means drone is online
           model: undefined,
           owner: undefined,
         });

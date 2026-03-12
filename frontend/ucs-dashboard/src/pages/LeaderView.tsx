@@ -103,7 +103,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
           altitude: uav.alt,
           battery: undefined,
           flightStatus: uav.isActive ? 'FLYING' : 'IDLE',
-          onlineStatus: uav.isActive,
+          onlineStatus: true, // Receiving telemetry data means drone is online
         });
       });
       return next;

@@ -349,14 +349,18 @@ public class PermissionService {
     
     /**
      * Recalculate drone partitions after individual ownership transfer.
-     * New partitions = observer + commander + new owner's partition + all team members' partitions
+     * New partitions = observer + commander + new owner's partition ONLY.
+     * 
+     * When transferring to an individual user (not team), only the new owner gets
+     * viewing access. The old owner's partition is removed via updateDronePartitions.
+     * Team-wide partition distribution only happens via transferPermissionToTeam.
      */
     private void recalculateDronePartitions(String uavId, Long newOwnerId) {
         Set<String> newPartitions = new LinkedHashSet<>();
         newPartitions.add("observer");
         newPartitions.add("commander");
 
-        // Add the new owner's partition
+        // Add ONLY the new owner's partition (not the entire team)
         Optional<User> ownerOpt = userRepository.findById(newOwnerId);
         if (ownerOpt.isPresent()) {
             User owner = ownerOpt.get();
@@ -364,17 +368,15 @@ public class PermissionService {
             if (ownerPartition != null) {
                 newPartitions.add(ownerPartition);
             }
+        }
 
-            // Add all team members' partitions if owner is in a team
-            if (owner.getTeamId() != null) {
-                addTeamMemberPartitions(owner.getTeamId(), newPartitions);
-            } else {
-                // Check TeamMember table as fallback
-                List<TeamMember> memberships = teamMemberRepository.findByUserId(newOwnerId);
-                if (!memberships.isEmpty()) {
-                    addTeamMemberPartitions(memberships.get(0).getTeamId(), newPartitions);
-                }
-            }
+        // Update drone entity with new control owner
+        Optional<Drone> droneOpt = droneRepository.findByUavId(uavId);
+        if (droneOpt.isPresent()) {
+            Drone drone = droneOpt.get();
+            drone.setControlOwnerId(newOwnerId);
+            drone.setViewOwnerId(newOwnerId);
+            droneRepository.save(drone);
         }
 
         partitionRoutingService.updateDronePartitions(uavId, newPartitions);
@@ -393,6 +395,15 @@ public class PermissionService {
 
         // Add all team members' partitions
         addTeamMemberPartitions(teamId, newPartitions);
+
+        // Update drone entity with new control owner (team leader) and view owner
+        Optional<Drone> droneOpt = droneRepository.findByUavId(uavId);
+        if (droneOpt.isPresent()) {
+            Drone drone = droneOpt.get();
+            drone.setControlOwnerId(leaderId);
+            drone.setViewOwnerId(leaderId);
+            droneRepository.save(drone);
+        }
 
         partitionRoutingService.updateDronePartitions(uavId, newPartitions);
         log.info("Recalculated partitions for drone {} after transfer to team {}: {}",

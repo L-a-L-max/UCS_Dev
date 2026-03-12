@@ -262,7 +262,7 @@ export default function MapPanel({
   // 聚焦无人机
   const focusOnDrones = useCallback(() => {
     if (!map.current || drones.length === 0) return;
-    const validDrones = drones.filter(d => d.lat && d.lng);
+    const validDrones = drones.filter(d => d.lat != null && d.lng != null);
     if (validDrones.length === 0) return;
 
     if (validDrones.length === 1) {
@@ -290,7 +290,9 @@ export default function MapPanel({
 
     // 添加/更新标记
     drones.forEach(drone => {
-      if (!drone.lat || !drone.lng) return;
+      // Use explicit null/undefined check instead of falsy check
+      // so that lat=0, lng=0 (default PX4 position before GPS lock) is not filtered out
+      if (drone.lat == null || drone.lng == null) return;
 
       // 支持多选高亮：如果有 selectedDroneIds 则检查是否在集合中，否则用单选 selectedDroneId
       const isSelected = selectedDroneIds ? selectedDroneIds.has(drone.uavId) : drone.uavId === selectedDroneId;
@@ -562,7 +564,7 @@ export default function MapPanel({
                 onClick={() => {
                   onDroneClick?.(drone.uavId);
                   // 聚焦到该无人机
-                  if (map.current && drone.lat && drone.lng) {
+                  if (map.current && drone.lat != null && drone.lng != null) {
                     map.current.flyTo({ center: [drone.lng, drone.lat], zoom: 14, duration: 800 });
                   }
                 }}

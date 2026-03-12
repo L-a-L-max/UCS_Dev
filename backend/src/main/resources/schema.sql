@@ -80,11 +80,15 @@ CREATE TABLE IF NOT EXISTS drones (
     manufacturer VARCHAR(100),
     capabilities VARCHAR(2000),
     default_team_id BIGINT,
+    control_owner_id BIGINT,
+    view_owner_id BIGINT,
     online_status BOOLEAN DEFAULT FALSE,
     last_heartbeat TIMESTAMP,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    CONSTRAINT fk_drones_team FOREIGN KEY (default_team_id) REFERENCES teams(id)
+    CONSTRAINT fk_drones_team FOREIGN KEY (default_team_id) REFERENCES teams(id),
+    CONSTRAINT fk_drones_control_owner FOREIGN KEY (control_owner_id) REFERENCES users(id),
+    CONSTRAINT fk_drones_view_owner FOREIGN KEY (view_owner_id) REFERENCES users(id)
 );
 
 -- 8. Drone Status
