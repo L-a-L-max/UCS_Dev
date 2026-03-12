@@ -109,9 +109,11 @@ public class PartitionRoutingService {
      */
     @Transactional
     public void updateDronePartitions(String uavId, Set<String> newPartitions) {
-        // Deactivate old partition mappings
+        // Deactivate old partition mappings and collect old partition names for Redis cleanup
         List<DronePartitionMap> existingMaps = dronePartitionMapRepository.findByUavIdAndIsActiveTrue(uavId);
+        Set<String> oldPartitions = new LinkedHashSet<>();
         for (DronePartitionMap dpm : existingMaps) {
+            oldPartitions.add(dpm.getPartitionName());
             dpm.setIsActive(false);
             dronePartitionMapRepository.save(dpm);
         }
@@ -134,11 +136,18 @@ public class PartitionRoutingService {
             dronePartitionMapRepository.save(dpm);
         }
 
-        // Update Redis
+        // Clean up old partition reverse indexes in Redis
+        for (String oldPartition : oldPartitions) {
+            if (!newPartitions.contains(oldPartition)) {
+                redisService.removeDroneFromPartition(uavId, oldPartition);
+            }
+        }
+
+        // Update Redis with new partitions
         redisService.setDronePartitions(uavId, newPartitions);
         syncPartitionDroneIndex(uavId, newPartitions);
 
-        log.info("Updated drone {} partitions to: {}", uavId, newPartitions);
+        log.info("Updated drone {} partitions: {} -> {}", uavId, oldPartitions, newPartitions);
     }
 
     /**

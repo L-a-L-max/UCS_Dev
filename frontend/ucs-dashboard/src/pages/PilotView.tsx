@@ -32,10 +32,12 @@ import {
   type ControlCommandResponse,
 } from '@/services/api';
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
+import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
 
 interface PilotViewProps {
   token: string;
   username: string;
+  partitions?: string[];
   onLogout: () => void;
 }
 
@@ -59,7 +61,7 @@ const QUICK_COMMANDS = [
   { type: 'HOLD', label: '悬停' },
 ];
 
-export default function PilotView({ token, username, onLogout }: PilotViewProps) {
+export default function PilotView({ token, username, partitions = [], onLogout }: PilotViewProps) {
   const [drones, setDrones] = useState<DroneInfo[]>([]);
   const [selectedDrone, setSelectedDrone] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -84,6 +86,34 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
 
   // TAKEOFF params - 默认20米
   const [takeoffAlt, setTakeoffAlt] = useState('20');
+
+  // Real-time telemetry from WebSocket
+  const [telemetryDrones, setTelemetryDrones] = useState<Map<string, MapDrone>>(new Map());
+
+  const handlePartitionData = useCallback((data: PartitionTelemetryMessage) => {
+    if (!data.drones || data.drones.length === 0) return;
+    setTelemetryDrones(prev => {
+      const next = new Map(prev);
+      data.drones.forEach(uav => {
+        next.set(uav.uavId, {
+          uavId: uav.uavId,
+          lat: uav.lat,
+          lng: uav.lon,
+          altitude: uav.alt,
+          battery: undefined,
+          flightStatus: uav.isActive ? 'FLYING' : 'IDLE',
+          onlineStatus: uav.isActive,
+        });
+      });
+      return next;
+    });
+  }, []);
+
+  useTelemetryWebSocket({
+    enabled: partitions.length > 0,
+    partitions,
+    onPartitionDataReceived: handlePartitionData,
+  });
 
   // Issue #8: Only show drones the pilot has permission to control
   const fetchDrones = useCallback(async () => {
@@ -186,12 +216,30 @@ export default function PilotView({ token, username, onLogout }: PilotViewProps)
 
   const selectedDroneInfo = drones.find(d => d.uavId === selectedDrone);
 
-  // 将 DroneInfo 转换为 MapDrone 格式
-  const mapDrones: MapDrone[] = drones.map(d => ({
-    uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
-    battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
-    model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
-  }));
+  // 将 DroneInfo 转换为 MapDrone 格式，合并 WebSocket 实时遥测
+  const mapDrones: MapDrone[] = (() => {
+    const droneMap = new Map<string, MapDrone>();
+    drones.forEach(d => {
+      droneMap.set(d.uavId, {
+        uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
+        battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
+        model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
+      });
+    });
+    telemetryDrones.forEach((td, uavId) => {
+      const existing = droneMap.get(uavId);
+      if (existing) {
+        existing.lat = td.lat;
+        existing.lng = td.lng;
+        existing.altitude = td.altitude;
+        existing.onlineStatus = td.onlineStatus;
+        if (td.flightStatus) existing.flightStatus = td.flightStatus;
+      } else {
+        droneMap.set(uavId, td);
+      }
+    });
+    return Array.from(droneMap.values());
+  })();
 
   return (
     <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">

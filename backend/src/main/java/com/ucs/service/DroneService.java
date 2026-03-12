@@ -11,6 +11,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Service
@@ -73,7 +74,7 @@ public class DroneService {
         
         return drones.stream().map(drone -> {
             DroneStatusDTO dto = new DroneStatusDTO();
-            dto.setUavId("UAV_" + String.format("%03d", drone.getId()));
+            dto.setUavId(drone.getUavId() != null ? drone.getUavId() : "UNKNOWN_" + drone.getId());
             dto.setDroneSn(drone.getDroneSn());
             dto.setModel(drone.getModel());
             dto.setOwner(ownerMap.get(drone.getId()));
@@ -138,7 +139,12 @@ public class DroneService {
         
         return statuses.stream()
                 .filter(status -> matchesFilter(status, filterType))
-                .map(status -> "UAV_" + String.format("%03d", status.getDroneId()))
+                .map(status -> {
+                    // Use actual uavId from drone entity instead of generated name
+                    return droneRepository.findById(status.getDroneId())
+                            .map(d -> d.getUavId() != null ? d.getUavId() : "UNKNOWN_" + d.getId())
+                            .orElse("UNKNOWN_" + status.getDroneId());
+                })
                 .collect(Collectors.toList());
     }
     
@@ -207,6 +213,12 @@ public class DroneService {
     }
     
     public Long parseDroneId(String uavId) {
+        // First try to find by uavId (DDS identifier like "px4_1")
+        Optional<Drone> droneOpt = droneRepository.findByUavId(uavId);
+        if (droneOpt.isPresent()) {
+            return droneOpt.get().getId();
+        }
+        // Legacy fallback: "UAV_001" format
         if (uavId.startsWith("UAV_")) {
             return Long.parseLong(uavId.substring(4));
         }

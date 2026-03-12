@@ -50,10 +50,12 @@ import {
   type OperationLog,
 } from '@/services/api';
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
+import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
 
 interface LeaderViewProps {
   token: string;
   username: string;
+  partitions?: string[];
   onLogout: () => void;
 }
 
@@ -66,7 +68,7 @@ const COMMANDS = [
   { type: 'HOLD', label: '悬停' },
 ];
 
-export default function LeaderView({ token, username, onLogout }: LeaderViewProps) {
+export default function LeaderView({ token, username, partitions = [], onLogout }: LeaderViewProps) {
   const [drones, setDrones] = useState<DroneInfo[]>([]);
   const [teamInfo, setTeamInfo] = useState<{ teamId: string; teamName: string; leader: string; memberCount: number } | null>(null);
   const [members, setMembers] = useState<Array<{ userId: string; username: string; realName: string; role: string }>>([]);
@@ -85,6 +87,34 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
   const [takeoffAlt, setTakeoffAlt] = useState('20');
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
+
+  // Real-time telemetry from WebSocket
+  const [telemetryDrones, setTelemetryDrones] = useState<Map<string, MapDrone>>(new Map());
+
+  const handlePartitionData = useCallback((data: PartitionTelemetryMessage) => {
+    if (!data.drones || data.drones.length === 0) return;
+    setTelemetryDrones(prev => {
+      const next = new Map(prev);
+      data.drones.forEach(uav => {
+        next.set(uav.uavId, {
+          uavId: uav.uavId,
+          lat: uav.lat,
+          lng: uav.lon,
+          altitude: uav.alt,
+          battery: undefined,
+          flightStatus: uav.isActive ? 'FLYING' : 'IDLE',
+          onlineStatus: uav.isActive,
+        });
+      });
+      return next;
+    });
+  }, []);
+
+  useTelemetryWebSocket({
+    enabled: partitions.length > 0,
+    partitions,
+    onPartitionDataReceived: handlePartitionData,
+  });
 
   // 详情控制面板状态（点击无人机显示/隐藏，可通过按钮一直隐藏）
   const [showDetailPanel, setShowDetailPanel] = useState(false);
@@ -227,12 +257,30 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
     try { return new Date(ts).toLocaleString('zh-CN'); } catch { return ts; }
   };
 
-  // 将 DroneInfo 转换为 MapDrone 格式
-  const mapDrones: MapDrone[] = drones.map(d => ({
-    uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
-    battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
-    model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
-  }));
+  // 将 DroneInfo 转换为 MapDrone 格式，合并 WebSocket 实时遥测
+  const mapDrones: MapDrone[] = (() => {
+    const droneMap = new Map<string, MapDrone>();
+    drones.forEach(d => {
+      droneMap.set(d.uavId, {
+        uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
+        battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
+        model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
+      });
+    });
+    telemetryDrones.forEach((td, uavId) => {
+      const existing = droneMap.get(uavId);
+      if (existing) {
+        existing.lat = td.lat;
+        existing.lng = td.lng;
+        existing.altitude = td.altitude;
+        existing.onlineStatus = td.onlineStatus;
+        if (td.flightStatus) existing.flightStatus = td.flightStatus;
+      } else {
+        droneMap.set(uavId, td);
+      }
+    });
+    return Array.from(droneMap.values());
+  })();
 
   return (
     <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">

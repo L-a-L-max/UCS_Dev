@@ -95,6 +95,16 @@ public class RedisService {
     }
     
     /**
+     * Remove a drone from a specific partition (reverse index cleanup).
+     */
+    public void removeDroneFromPartition(String uavId, String partitionName) {
+        String droneKey = String.format(DRONE_PARTITIONS_PREFIX, uavId);
+        String partKey = String.format(PARTITION_DRONES_PREFIX, partitionName);
+        stringRedisTemplate.opsForSet().remove(droneKey, partitionName);
+        stringRedisTemplate.opsForSet().remove(partKey, uavId);
+    }
+
+    /**
      * Get all drones in a partition.
      */
     public Set<String> getDronesInPartition(String partitionName) {

@@ -20,4 +20,8 @@ public class DroneStatusDTO {
     private Float heading;
     private String networkType;
     private Float signalStrength;
+    private Boolean onlineStatus;
+    private String teamName;
+    private String teamLeader;
+    private String lastHeartbeat;
 }
