@@ -429,7 +429,7 @@ export default function MapPanel({
           </span>
         </div>
         <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px;">
-          ${drone.battery != null ? `<span style="opacity: 0.8;">电量</span><span>${drone.battery}%</span>` : ''}
+          ${drone.battery != null ? `<span style="opacity: 0.8;">电量</span><span>${drone.battery.toFixed(1)}%</span>` : ''}
           <span style="opacity: 0.8;">高度</span><span>${drone.altitude != null ? drone.altitude.toFixed(2) + 'm' : 'N/A'}</span>
           <span style="opacity: 0.8;">位置</span><span>${drone.lat?.toFixed(4)}, ${drone.lng?.toFixed(4)}</span>
           ${drone.owner ? `<span style="opacity: 0.8;">操作员</span><span>${drone.owner}</span>` : ''}

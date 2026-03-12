@@ -35,6 +35,7 @@ public class CommanderController {
     private final DroneOwnershipRepository droneOwnershipRepository;
     private final TeamDroneMapRepository teamDroneMapRepository;
     private final TeamRepository teamRepository;
+    private final TeamMemberRepository teamMemberRepository;
     private final UserRepository userRepository;
     private final UserRoleMapRepository userRoleMapRepository;
     private final TeamServiceImpl teamService;
@@ -45,6 +46,7 @@ public class CommanderController {
                                 DroneOwnershipRepository droneOwnershipRepository,
                                 TeamDroneMapRepository teamDroneMapRepository,
                                 TeamRepository teamRepository,
+                                TeamMemberRepository teamMemberRepository,
                                 UserRepository userRepository,
                                 UserRoleMapRepository userRoleMapRepository,
                                 TeamServiceImpl teamService) {
@@ -54,6 +56,7 @@ public class CommanderController {
         this.droneOwnershipRepository = droneOwnershipRepository;
         this.teamDroneMapRepository = teamDroneMapRepository;
         this.teamRepository = teamRepository;
+        this.teamMemberRepository = teamMemberRepository;
         this.userRepository = userRepository;
         this.userRoleMapRepository = userRoleMapRepository;
         this.teamService = teamService;
@@ -116,14 +119,30 @@ public class CommanderController {
                 .filter(d -> d.getUavId() != null && redisService.isDroneOnline(d.getUavId()))
                 .count();
         
-        // Build team mapping: droneId -> teamName
+        // Build team mapping: droneId -> teamId, droneId -> teamName
         List<Team> allTeams = teamRepository.findAll();
         Map<Long, String> droneTeamMap = new HashMap<>();
+        Map<Long, Long> droneTeamIdMap = new HashMap<>();
         for (Team team : allTeams) {
             List<Long> teamDroneIds = teamDroneMapRepository.findDroneIdsByTeamId(team.getId());
             for (Long droneId : teamDroneIds) {
                 droneTeamMap.put(droneId, team.getTeamName());
+                droneTeamIdMap.put(droneId, team.getId());
             }
+        }
+        
+        // Build team leader mapping: teamId -> leader realName
+        Map<Long, String> teamLeaderMap = new HashMap<>();
+        for (Team team : allTeams) {
+            teamMemberRepository.findByTeamIdWithUser(team.getId()).stream()
+                    .filter(tm -> tm.getTeamRole() != null && "Leader".equalsIgnoreCase(tm.getTeamRole().getRoleName()))
+                    .findFirst()
+                    .ifPresent(leaderMember -> {
+                        User leaderUser = leaderMember.getUser();
+                        if (leaderUser != null) {
+                            teamLeaderMap.put(team.getId(), leaderUser.getRealName() != null ? leaderUser.getRealName() : leaderUser.getUsername());
+                        }
+                    });
         }
         
         List<Map<String, Object>> droneList = allDrones.stream()
@@ -136,32 +155,37 @@ public class CommanderController {
                     info.put("uavId", drone.getUavId() != null ? drone.getUavId() : "");
                     info.put("droneSn", drone.getDroneSn());
                     info.put("model", drone.getModel() != null ? drone.getModel() : "");
-                    info.put("online", online);
+                    info.put("onlineStatus", online);
                     info.put("controllerId", controllerId != null ? controllerId : -1);
                     
                     // Add team info
                     String teamName = droneTeamMap.getOrDefault(drone.getId(), "未分配队伍");
                     info.put("teamName", teamName);
                     
+                    // Add team leader name
+                    Long teamId = droneTeamIdMap.get(drone.getId());
+                    info.put("teamLeader", teamId != null ? teamLeaderMap.getOrDefault(teamId, "未知") : "未分配队伍");
+                    
                     // Add owner info (from drone_ownership)
                     droneOwnershipRepository.findActiveByDroneId(drone.getId()).ifPresentOrElse(
                             ownership -> {
                                 info.put("ownerId", ownership.getUserId());
                                 userRepository.findById(ownership.getUserId()).ifPresent(user ->
-                                        info.put("ownerName", user.getRealName() != null ? user.getRealName() : user.getUsername()));
+                                        info.put("owner", user.getRealName() != null ? user.getRealName() : user.getUsername()));
                             },
                             () -> {
                                 info.put("ownerId", -1);
-                                info.put("ownerName", "未分配");
+                                info.put("owner", "未分配");
                             }
                     );
                     
-                    // Add controller name
+                    // Add actual controller name (controlOwnerName for frontend)
                     if (controllerId != null) {
                         userRepository.findById(controllerId).ifPresent(user ->
-                                info.put("controllerName", user.getRealName() != null ? user.getRealName() : user.getUsername()));
+                                info.put("controlOwnerName", user.getRealName() != null ? user.getRealName() : user.getUsername()));
                     } else {
-                        info.put("controllerName", "无");
+                        // Fallback: use owner as controller
+                        info.putIfAbsent("controlOwnerName", info.getOrDefault("owner", "无"));
                     }
                     
                     return info;

@@ -44,6 +44,7 @@ export interface TelemetryData {
   isActive: boolean;
   armed: boolean;
   flightMode: string;
+  batteryPercent?: number;
 }
 
 export interface TelemetryBatch {

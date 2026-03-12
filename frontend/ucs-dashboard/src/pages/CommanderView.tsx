@@ -104,7 +104,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
           lat: uav.lat,
           lng: uav.lon,
           altitude: uav.alt,
-          battery: undefined,
+          battery: uav.batteryPercent != null && uav.batteryPercent >= 0 ? uav.batteryPercent : undefined,
           flightStatus: uav.armed ? 'FLYING' : 'IDLE',
           onlineStatus: true, // Receiving telemetry = online
           armed: uav.armed ?? uav.isActive ?? false,
@@ -375,7 +375,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
         controlOwnerName: d.controlOwnerName,
       });
     });
-    // Merge real-time telemetry data (WebSocket takes priority for position)
+    // Merge real-time telemetry data (WebSocket takes priority for position/battery)
     telemetryDrones.forEach((td, uavId) => {
       const existing = droneMap.get(uavId);
       if (existing) {
@@ -385,6 +385,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
         existing.altitude = td.altitude;
         existing.onlineStatus = td.onlineStatus;
         existing.armed = td.armed;
+        if (td.battery != null) existing.battery = td.battery;
         if (td.flightStatus) existing.flightStatus = td.flightStatus;
       } else {
         // New drone only seen via WebSocket telemetry
@@ -504,7 +505,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                           </div>
                         </div>
                         <div className="flex items-center gap-2 text-slate-400">
-                          <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery}%` : 'N/A'}</span>
+                          <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}</span>
                           <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
                           <span className="text-slate-500">{drone.teamName || ''}</span>
                           {drone.teamLeader && <span className="text-slate-500">队长:{drone.teamLeader}</span>}

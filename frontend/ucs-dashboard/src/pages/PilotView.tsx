@@ -101,7 +101,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
           lat: uav.lat,
           lng: uav.lon,
           altitude: uav.alt,
-          battery: undefined,
+          battery: uav.batteryPercent != null && uav.batteryPercent >= 0 ? uav.batteryPercent : undefined,
           flightStatus: uav.armed ? 'FLYING' : 'IDLE',
           onlineStatus: true, // Receiving telemetry = online
           armed: uav.armed ?? uav.isActive ?? false,
@@ -239,6 +239,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
         existing.altitude = td.altitude;
         existing.onlineStatus = td.onlineStatus;
         existing.armed = td.armed;
+        if (td.battery != null) existing.battery = td.battery;
         if (td.flightStatus) existing.flightStatus = td.flightStatus;
       } else {
         droneMap.set(uavId, td);
@@ -387,7 +388,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                 </Badge>
               </div>
               <div className="flex items-center gap-2 text-slate-400 mb-1">
-                <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery}%` : 'N/A'}</span>
+                <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}</span>
                 <span className="flex items-center gap-0.5"><MapPin className="w-2.5 h-2.5" />{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : 'N/A'}</span>
               </div>
               {/* 快捷控制按钮 - 直接在卡片上控制 */}
@@ -464,7 +465,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                     {multiSelectedDronesList.map(d => (
                       <div key={d.uavId} className="flex items-center justify-between text-[10px] bg-slate-700/50 rounded px-2 py-1">
                         <span className="text-blue-300">{d.uavId}</span>
-                        <span className="text-slate-400">{d.battery != null ? `${d.battery}%` : 'N/A'} | {d.altitude != null ? `${d.altitude.toFixed(2)}m` : 'N/A'}</span>
+                        <span className="text-slate-400">{d.battery != null ? `${d.battery.toFixed(1)}%` : 'N/A'} | {d.altitude != null ? `${d.altitude.toFixed(2)}m` : 'N/A'}</span>
                       </div>
                     ))}
                   </div>
@@ -513,7 +514,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                         <div className="text-[10px] text-slate-400 mb-0.5">电量</div>
                         <div className="text-sm font-bold flex items-center justify-center gap-0.5">
                           <Battery className={`w-3 h-3 ${(selectedDroneInfo.battery || 0) < 20 ? 'text-red-400' : 'text-green-400'}`} />
-                          {selectedDroneInfo.battery != null ? `${selectedDroneInfo.battery}%` : 'N/A'}
+                          {selectedDroneInfo.battery != null ? `${selectedDroneInfo.battery.toFixed(1)}%` : 'N/A'}
                         </div>
                       </div>
                       <div className="bg-slate-700/50 rounded p-2 text-center">
