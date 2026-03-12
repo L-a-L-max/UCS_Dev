@@ -63,7 +63,9 @@ export interface TelemetryBatch {
 export interface PartitionTelemetryMessage {
   partition: string;
   timestamp: string;
+  type?: string; // 'drone_removed' for removal notifications
   drones: TelemetryData[];
+  removedDrones?: string[]; // uavIds removed from this partition
 }
 
 interface UseTelemetryWebSocketOptions {
@@ -71,11 +73,12 @@ interface UseTelemetryWebSocketOptions {
   partitions?: string[];
   onTelemetryReceived?: (batch: TelemetryBatch) => void;
   onPartitionDataReceived?: (data: PartitionTelemetryMessage) => void;
+  onDroneRemoved?: (removedUavIds: string[]) => void;
   onConnectionChange?: (connected: boolean) => void;
 }
 
 export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}) {
-  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onConnectionChange } = options;
+  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onDroneRemoved, onConnectionChange } = options;
   const clientRef = useRef<Client | null>(null);
   const [connected, setConnected] = useState(false);
   const [lastBatch, setLastBatch] = useState<TelemetryBatch | null>(null);
@@ -84,12 +87,14 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   // Use refs for callbacks and partitions to avoid recreating connect/disconnect on every render
   const onTelemetryReceivedRef = useRef(onTelemetryReceived);
   const onPartitionDataReceivedRef = useRef(onPartitionDataReceived);
+  const onDroneRemovedRef = useRef(onDroneRemoved);
   const onConnectionChangeRef = useRef(onConnectionChange);
   const partitionsRef = useRef(partitions);
 
   // Keep refs in sync with latest props
   useEffect(() => { onTelemetryReceivedRef.current = onTelemetryReceived; }, [onTelemetryReceived]);
   useEffect(() => { onPartitionDataReceivedRef.current = onPartitionDataReceived; }, [onPartitionDataReceived]);
+  useEffect(() => { onDroneRemovedRef.current = onDroneRemoved; }, [onDroneRemoved]);
   useEffect(() => { onConnectionChangeRef.current = onConnectionChange; }, [onConnectionChange]);
   useEffect(() => { partitionsRef.current = partitions; }, [partitions]);
 
@@ -106,6 +111,12 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   const handlePartitionMessage = useCallback((message: IMessage) => {
     try {
       const data: PartitionTelemetryMessage = JSON.parse(message.body);
+      // Handle drone removal notifications
+      if (data.type === 'drone_removed' && data.removedDrones && data.removedDrones.length > 0) {
+        console.log('[WS] Drone removal notification:', data.partition, 'removed:', data.removedDrones);
+        onDroneRemovedRef.current?.(data.removedDrones);
+        return;
+      }
       console.log('[WS] Partition message received:', data.partition, 'drones:', data.drones?.length, data.drones?.map(d => `${d.uavId}(${d.lat},${d.lon},armed=${d.armed})`));
       onPartitionDataReceivedRef.current?.(data);
     } catch (error) {

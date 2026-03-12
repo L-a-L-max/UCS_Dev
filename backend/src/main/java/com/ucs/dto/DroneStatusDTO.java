@@ -23,5 +23,6 @@ public class DroneStatusDTO {
     private Boolean onlineStatus;
     private String teamName;
     private String teamLeader;
+    private String controlOwnerName;
     private String lastHeartbeat;
 }

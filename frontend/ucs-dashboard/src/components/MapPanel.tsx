@@ -82,6 +82,7 @@ export interface MapDrone {
   owner?: string;
   teamName?: string;
   teamLeader?: string;
+  controlOwnerName?: string;
 }
 
 interface MapPanelProps {
@@ -429,7 +430,7 @@ export default function MapPanel({
         </div>
         <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px;">
           ${drone.battery != null ? `<span style="opacity: 0.8;">电量</span><span>${drone.battery}%</span>` : ''}
-          <span style="opacity: 0.8;">高度</span><span>${drone.altitude != null ? drone.altitude + 'm' : 'N/A'}</span>
+          <span style="opacity: 0.8;">高度</span><span>${drone.altitude != null ? drone.altitude.toFixed(2) + 'm' : 'N/A'}</span>
           <span style="opacity: 0.8;">位置</span><span>${drone.lat?.toFixed(4)}, ${drone.lng?.toFixed(4)}</span>
           ${drone.owner ? `<span style="opacity: 0.8;">操作员</span><span>${drone.owner}</span>` : ''}
           ${drone.teamName ? `<span style="opacity: 0.8;">所属小队</span><span>${drone.teamName}</span>` : ''}

@@ -112,10 +112,26 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     });
   }, []);
 
+  // Handle drone removal notification from WebSocket (permission transfer)
+  const handleDroneRemoved = useCallback((removedUavIds: string[]) => {
+    console.log('[LeaderView] Drones removed from partition:', removedUavIds);
+    setTelemetryDrones(prev => {
+      const next = new Map(prev);
+      removedUavIds.forEach(id => next.delete(id));
+      return next;
+    });
+    // Clear selection if the selected drone was removed (don't auto-jump)
+    setSelectedMapDrone(prev => {
+      if (prev && removedUavIds.includes(prev)) return null;
+      return prev;
+    });
+  }, []);
+
   useTelemetryWebSocket({
     enabled: partitions.length > 0,
     partitions,
     onPartitionDataReceived: handlePartitionData,
+    onDroneRemoved: handleDroneRemoved,
   });
 
   // 详情控制面板状态（点击无人机显示/隐藏，可通过按钮一直隐藏）
@@ -456,7 +472,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                         </div>
                         <div className="flex items-center gap-2 text-slate-400 mb-1">
                           <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery}%` : 'N/A'}</span>
-                          <span>{drone.altitude != null ? `${drone.altitude}m` : ''}</span>
+                          <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
                           <span className="text-slate-500">{drone.teamName || ''}</span>
                           {drone.teamLeader && <span className="text-slate-500">队长:{drone.teamLeader}</span>}
                         </div>
@@ -560,11 +576,11 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-slate-700/50 rounded p-2 text-center">
                     <div className="text-[10px] text-slate-400 mb-0.5">最高高度</div>
-                    <div className="text-sm font-bold text-blue-300">{aggregateData.maxAlt}m</div>
+                    <div className="text-sm font-bold text-blue-300">{aggregateData.maxAlt.toFixed(2)}m</div>
                   </div>
                   <div className="bg-slate-700/50 rounded p-2 text-center">
                     <div className="text-[10px] text-slate-400 mb-0.5">最低高度</div>
-                    <div className="text-sm font-bold text-cyan-300">{aggregateData.minAlt}m</div>
+                    <div className="text-sm font-bold text-cyan-300">{aggregateData.minAlt.toFixed(2)}m</div>
                   </div>
                   <div className="bg-slate-700/50 rounded p-2 text-center">
                     <div className="text-[10px] text-slate-400 mb-0.5">低电量</div>
@@ -610,7 +626,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                     {multiSelectedDrones.map(d => (
                       <div key={d.uavId} className="flex items-center justify-between text-[10px] bg-slate-700/50 rounded px-2 py-1">
                         <span className="text-blue-300">{d.uavId}</span>
-                        <span className="text-slate-400">{d.battery != null ? `${d.battery}%` : 'N/A'} | {d.altitude != null ? `${d.altitude}m` : 'N/A'}</span>
+                        <span className="text-slate-400">{d.battery != null ? `${d.battery}%` : 'N/A'} | {d.altitude != null ? `${d.altitude.toFixed(2)}m` : 'N/A'}</span>
                       </div>
                     ))}
                   </div>
@@ -654,7 +670,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                     </div>
                     <div className="bg-slate-700/50 rounded p-2 text-center">
                       <div className="text-[10px] text-slate-400 mb-0.5">高度</div>
-                      <div className="text-sm font-bold">{drone.altitude != null ? `${drone.altitude}m` : 'N/A'}</div>
+                      <div className="text-sm font-bold">{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : 'N/A'}</div>
                     </div>
                     <div className="bg-slate-700/50 rounded p-2 text-center">
                       <div className="text-[10px] text-slate-400 mb-0.5">位置</div>

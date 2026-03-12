@@ -111,10 +111,26 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     });
   }, []);
 
+  // Handle drone removal notification from WebSocket (permission transfer)
+  const handleDroneRemoved = useCallback((removedUavIds: string[]) => {
+    console.log('[PilotView] Drones removed from partition:', removedUavIds);
+    setTelemetryDrones(prev => {
+      const next = new Map(prev);
+      removedUavIds.forEach(id => next.delete(id));
+      return next;
+    });
+    // Clear selection if the selected drone was removed (don't auto-jump)
+    setSelectedDrone(prev => {
+      if (prev && removedUavIds.includes(prev)) return null;
+      return prev;
+    });
+  }, []);
+
   useTelemetryWebSocket({
     enabled: partitions.length > 0,
     partitions,
     onPartitionDataReceived: handlePartitionData,
+    onDroneRemoved: handleDroneRemoved,
   });
 
   // Issue #8: Only show drones the pilot has permission to control
@@ -372,7 +388,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
               </div>
               <div className="flex items-center gap-2 text-slate-400 mb-1">
                 <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery}%` : 'N/A'}</span>
-                <span className="flex items-center gap-0.5"><MapPin className="w-2.5 h-2.5" />{drone.altitude != null ? `${drone.altitude}m` : 'N/A'}</span>
+                <span className="flex items-center gap-0.5"><MapPin className="w-2.5 h-2.5" />{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : 'N/A'}</span>
               </div>
               {/* 快捷控制按钮 - 直接在卡片上控制 */}
               <div className="flex flex-wrap gap-0.5 mt-1">
@@ -405,11 +421,11 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-slate-700/50 rounded p-2 text-center">
                     <div className="text-[10px] text-slate-400 mb-0.5">最高高度</div>
-                    <div className="text-sm font-bold text-blue-300">{aggregateData.maxAlt}m</div>
+                    <div className="text-sm font-bold text-blue-300">{aggregateData.maxAlt.toFixed(2)}m</div>
                   </div>
                   <div className="bg-slate-700/50 rounded p-2 text-center">
                     <div className="text-[10px] text-slate-400 mb-0.5">最低高度</div>
-                    <div className="text-sm font-bold text-cyan-300">{aggregateData.minAlt}m</div>
+                    <div className="text-sm font-bold text-cyan-300">{aggregateData.minAlt.toFixed(2)}m</div>
                   </div>
                   <div className="bg-slate-700/50 rounded p-2 text-center">
                     <div className="text-[10px] text-slate-400 mb-0.5">低电量</div>
@@ -448,7 +464,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                     {multiSelectedDronesList.map(d => (
                       <div key={d.uavId} className="flex items-center justify-between text-[10px] bg-slate-700/50 rounded px-2 py-1">
                         <span className="text-blue-300">{d.uavId}</span>
-                        <span className="text-slate-400">{d.battery != null ? `${d.battery}%` : 'N/A'} | {d.altitude != null ? `${d.altitude}m` : 'N/A'}</span>
+                        <span className="text-slate-400">{d.battery != null ? `${d.battery}%` : 'N/A'} | {d.altitude != null ? `${d.altitude.toFixed(2)}m` : 'N/A'}</span>
                       </div>
                     ))}
                   </div>
@@ -502,7 +518,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                       </div>
                       <div className="bg-slate-700/50 rounded p-2 text-center">
                         <div className="text-[10px] text-slate-400 mb-0.5">高度</div>
-                        <div className="text-sm font-bold">{selectedDroneInfo.altitude != null ? `${selectedDroneInfo.altitude}m` : 'N/A'}</div>
+                        <div className="text-sm font-bold">{selectedDroneInfo.altitude != null ? `${selectedDroneInfo.altitude.toFixed(2)}m` : 'N/A'}</div>
                       </div>
                       <div className="bg-slate-700/50 rounded p-2 text-center">
                         <div className="text-[10px] text-slate-400 mb-0.5">位置</div>

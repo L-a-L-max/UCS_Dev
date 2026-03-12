@@ -62,6 +62,31 @@ public class WebSocketGatewayService {
     }
 
     /**
+     * Notify specific partitions that a drone has been removed from their view.
+     * Called after permission transfer when a drone's partition routing changes.
+     *
+     * @param uavId              The drone identifier that was removed
+     * @param removedPartitions  The partitions that no longer have access to this drone
+     */
+    public void notifyDroneRemoved(String uavId, Set<String> removedPartitions) {
+        if (removedPartitions == null || removedPartitions.isEmpty()) return;
+
+        for (String partition : removedPartitions) {
+            String topic = "/topic/telemetry/partition/" + partition;
+            Map<String, Object> message = new LinkedHashMap<>();
+            message.put("partition", partition);
+            message.put("type", "drone_removed");
+            message.put("timestamp", Instant.now().toString());
+            message.put("removedDrones", List.of(uavId));
+            message.put("drones", List.of()); // empty drones list for compatibility
+            messagingTemplate.convertAndSend(topic, message);
+        }
+
+        log.info("[WebSocket] Notified {} partition(s) about drone '{}' removal: {}",
+                removedPartitions.size(), uavId, removedPartitions);
+    }
+
+    /**
      * Broadcast all telemetry data to the global topic (for monitoring/persistence).
      *
      * @param allTelemetry List of all drone telemetry messages

@@ -43,6 +43,7 @@ public class PermissionService {
     private final OperationLogService operationLogService;
     private final PartitionRoutingService partitionRoutingService;
     private final UserRoleMapRepository userRoleMapRepository;
+    private final WebSocketGatewayService webSocketGatewayService;
     
     /**
      * Transfer control permission for a drone from current owner to target user.
@@ -405,9 +406,20 @@ public class PermissionService {
             droneRepository.save(drone);
         }
 
+        // Get old partitions before updating to compute removed set
+        Set<String> oldPartitions = partitionRoutingService.getPartitionsForDrone(uavId);
+
         partitionRoutingService.updateDronePartitions(uavId, newPartitions);
-        log.info("Recalculated partitions for drone {} after transfer to user {}: {}",
-                uavId, newOwnerId, newPartitions);
+
+        // Notify old partitions (that are no longer in new set) about drone removal
+        Set<String> removedPartitions = new LinkedHashSet<>(oldPartitions);
+        removedPartitions.removeAll(newPartitions);
+        if (!removedPartitions.isEmpty()) {
+            webSocketGatewayService.notifyDroneRemoved(uavId, removedPartitions);
+        }
+
+        log.info("Recalculated partitions for drone {} after transfer to user {}: {} (removed from: {})",
+                uavId, newOwnerId, newPartitions, removedPartitions);
     }
 
     /**
@@ -438,9 +450,20 @@ public class PermissionService {
             droneRepository.save(drone);
         }
 
+        // Get old partitions before updating to compute removed set
+        Set<String> oldPartitions = partitionRoutingService.getPartitionsForDrone(uavId);
+
         partitionRoutingService.updateDronePartitions(uavId, newPartitions);
-        log.info("Recalculated partitions for drone {} after transfer to team {}: {}",
-                uavId, teamId, newPartitions);
+
+        // Notify old partitions (that are no longer in new set) about drone removal
+        Set<String> removedPartitions = new LinkedHashSet<>(oldPartitions);
+        removedPartitions.removeAll(newPartitions);
+        if (!removedPartitions.isEmpty()) {
+            webSocketGatewayService.notifyDroneRemoved(uavId, removedPartitions);
+        }
+
+        log.info("Recalculated partitions for drone {} after transfer to team {}: {} (removed from: {})",
+                uavId, teamId, newPartitions, removedPartitions);
     }
 
     /**

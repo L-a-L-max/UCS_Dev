@@ -116,11 +116,27 @@ export default function CommanderView({ token, username, partitions = [], onLogo
     });
   }, []);
 
+  // Handle drone removal notification from WebSocket (permission transfer)
+  const handleDroneRemoved = useCallback((removedUavIds: string[]) => {
+    console.log('[CommanderView] Drones removed from partition:', removedUavIds);
+    setTelemetryDrones(prev => {
+      const next = new Map(prev);
+      removedUavIds.forEach(id => next.delete(id));
+      return next;
+    });
+    // Clear selection if the selected drone was removed (don't auto-jump)
+    setSelectedMapDrone(prev => {
+      if (prev && removedUavIds.includes(prev)) return null;
+      return prev;
+    });
+  }, []);
+
   // Subscribe to partition-specific WebSocket topics for real-time telemetry
   useTelemetryWebSocket({
     enabled: partitions.length > 0,
     partitions,
     onPartitionDataReceived: handlePartitionData,
+    onDroneRemoved: handleDroneRemoved,
   });
 
   // 快捷转接弹窗状态
@@ -356,6 +372,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
         uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
         battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
         model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
+        controlOwnerName: d.controlOwnerName,
       });
     });
     // Merge real-time telemetry data (WebSocket takes priority for position)
@@ -488,9 +505,10 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                         </div>
                         <div className="flex items-center gap-2 text-slate-400">
                           <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery}%` : 'N/A'}</span>
-                          <span>{drone.altitude != null ? `${drone.altitude}m` : ''}</span>
+                          <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
                           <span className="text-slate-500">{drone.teamName || ''}</span>
                           {drone.teamLeader && <span className="text-slate-500">队长:{drone.teamLeader}</span>}
+                          {drone.controlOwnerName && <span className="text-amber-400">控制:{drone.controlOwnerName}</span>}
                           <Button size="sm" variant="outline"
                             className="text-[9px] h-4 px-1 py-0 bg-purple-700/30 border-purple-600/50 text-purple-300 hover:bg-purple-600 ml-auto"
                             onClick={e => {
