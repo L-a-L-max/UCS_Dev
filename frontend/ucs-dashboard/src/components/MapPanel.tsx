@@ -130,8 +130,8 @@ export default function MapPanel({
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
 
-  // Fix 6: 弹窗自动关闭逻辑 - 默认8秒后关闭，鼠标移入保持，移出后倒计时关闭
-  const POPUP_AUTO_CLOSE_MS = 8000;
+  // 弹窗自动关闭逻辑 - 默认5秒后关闭，鼠标移入保持，移出后倒计时关闭
+  const POPUP_AUTO_CLOSE_MS = 5000;
 
   const startPopupAutoClose = useCallback((uavId: string) => {
     // 清除旧定时器
@@ -457,6 +457,37 @@ export default function MapPanel({
       updateMarkers();
     }
   }, [drones, selectedDroneId, selectedDroneIds, updateMarkers]);
+
+  // 当 selectedDroneId 从外部变化时（如左侧列表点击），自动打开该无人机的弹窗并飞行聚焦
+  const prevSelectedRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    // 初始化时跳过
+    if (prevSelectedRef.current === undefined) {
+      prevSelectedRef.current = selectedDroneId;
+      return;
+    }
+    // 只在值实际变化时触发
+    if (selectedDroneId === prevSelectedRef.current) return;
+    prevSelectedRef.current = selectedDroneId;
+
+    if (!selectedDroneId || !map.current) return;
+    const entry = droneMarkersRef.current.get(selectedDroneId);
+    if (!entry) return;
+    // 如果弹窗已经打开则不重复操作
+    if (entry.popup.isOpen()) return;
+    // 关闭其他弹窗
+    droneMarkersRef.current.forEach((e, id) => {
+      if (id !== selectedDroneId && e.popup.isOpen()) e.popup.remove();
+    });
+    // 打开当前弹窗
+    if (map.current) {
+      entry.popup.addTo(map.current);
+      entry.popup.setLngLat(entry.marker.getLngLat());
+    }
+    // 飞行到该无人机
+    const lngLat = entry.marker.getLngLat();
+    map.current.flyTo({ center: [lngLat.lng, lngLat.lat], zoom: 14, duration: 800 });
+  }, [selectedDroneId]);
 
   // resize 地图 - 响应面板折叠/展开
   useEffect(() => {

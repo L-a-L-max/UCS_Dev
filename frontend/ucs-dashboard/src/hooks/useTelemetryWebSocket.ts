@@ -81,25 +81,37 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   const [lastBatch, setLastBatch] = useState<TelemetryBatch | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Use refs for callbacks and partitions to avoid recreating connect/disconnect on every render
+  const onTelemetryReceivedRef = useRef(onTelemetryReceived);
+  const onPartitionDataReceivedRef = useRef(onPartitionDataReceived);
+  const onConnectionChangeRef = useRef(onConnectionChange);
+  const partitionsRef = useRef(partitions);
+
+  // Keep refs in sync with latest props
+  useEffect(() => { onTelemetryReceivedRef.current = onTelemetryReceived; }, [onTelemetryReceived]);
+  useEffect(() => { onPartitionDataReceivedRef.current = onPartitionDataReceived; }, [onPartitionDataReceived]);
+  useEffect(() => { onConnectionChangeRef.current = onConnectionChange; }, [onConnectionChange]);
+  useEffect(() => { partitionsRef.current = partitions; }, [partitions]);
+
   const handleMessage = useCallback((message: IMessage) => {
     try {
       const batch: TelemetryBatch = JSON.parse(message.body);
       setLastBatch(batch);
-      onTelemetryReceived?.(batch);
+      onTelemetryReceivedRef.current?.(batch);
     } catch (error) {
       console.error('Failed to parse telemetry message:', error);
     }
-  }, [onTelemetryReceived]);
+  }, []);
 
   const handlePartitionMessage = useCallback((message: IMessage) => {
     try {
       const data: PartitionTelemetryMessage = JSON.parse(message.body);
       console.log('[WS] Partition message received:', data.partition, 'drones:', data.drones?.length, data.drones?.map(d => `${d.uavId}(${d.lat},${d.lon},armed=${d.armed})`));
-      onPartitionDataReceived?.(data);
+      onPartitionDataReceivedRef.current?.(data);
     } catch (error) {
       console.error('Failed to parse partition telemetry message:', error);
     }
-  }, [onPartitionDataReceived]);
+  }, []);
 
   const connect = useCallback(() => {
     if (clientRef.current?.active) {
@@ -107,7 +119,9 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
     }
 
     const wsUrl = getWsUrl();
-    console.log('Connecting to WebSocket:', wsUrl);
+    console.log('[WS] Connecting to WebSocket:', wsUrl);
+
+    const currentPartitions = partitionsRef.current;
 
     const client = new Client({
       brokerURL: wsUrl,
@@ -115,18 +129,18 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
       heartbeatIncoming: 4000,
       heartbeatOutgoing: 4000,
       onConnect: () => {
-        console.log('WebSocket connected');
+        console.log('[WS] WebSocket connected');
         setConnected(true);
-        onConnectionChange?.(true);
+        onConnectionChangeRef.current?.(true);
         
         // Subscribe to legacy telemetry topic (backward compatibility)
         client.subscribe('/topic/telemetry', handleMessage);
         console.log('[WS] Subscribed to /topic/telemetry');
         
         // Subscribe to partition-specific topics if partitions are provided
-        if (partitions && partitions.length > 0) {
-          console.log('[WS] Subscribing to partition topics:', partitions);
-          partitions.forEach(partition => {
+        if (currentPartitions && currentPartitions.length > 0) {
+          console.log('[WS] Subscribing to partition topics:', currentPartitions);
+          currentPartitions.forEach(partition => {
             const topic = `/topic/telemetry/partition/${partition}`;
             console.log('[WS] Subscribing to:', topic);
             client.subscribe(topic, handlePartitionMessage);
@@ -136,25 +150,25 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
         }
       },
       onDisconnect: () => {
-        console.log('WebSocket disconnected');
+        console.log('[WS] WebSocket disconnected');
         setConnected(false);
-        onConnectionChange?.(false);
+        onConnectionChangeRef.current?.(false);
       },
       onStompError: (frame) => {
-        console.error('STOMP error:', frame.headers['message']);
+        console.error('[WS] STOMP error:', frame.headers['message']);
         setConnected(false);
-        onConnectionChange?.(false);
+        onConnectionChangeRef.current?.(false);
       },
       onWebSocketError: (event) => {
-        console.error('WebSocket error:', event);
+        console.error('[WS] WebSocket error:', event);
         setConnected(false);
-        onConnectionChange?.(false);
+        onConnectionChangeRef.current?.(false);
       },
     });
 
     clientRef.current = client;
     client.activate();
-  }, [handleMessage, handlePartitionMessage, partitions, onConnectionChange]);
+  }, [handleMessage, handlePartitionMessage]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -180,7 +194,8 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
     return () => {
       disconnect();
     };
-  }, [enabled, connect, disconnect]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
 
   return {
     connected,

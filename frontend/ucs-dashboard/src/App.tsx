@@ -704,9 +704,10 @@ function App() {
     });
   }, [useLiveTelemetry]);
 
-  // WebSocket hook for real-time telemetry
+  // WebSocket hook for real-time telemetry (only for OBSERVER role - other roles use their own view-level WS)
+  const isObserverRole = !userRoles.some(r => ['COMMANDER', 'LEADER', 'PILOT', 'OPERATOR'].includes(r.toUpperCase()));
   const { connected: _telemetryConnected } = useTelemetryWebSocket({
-    enabled: isLoggedIn && useLiveTelemetry,
+    enabled: isLoggedIn && useLiveTelemetry && isObserverRole,
     onTelemetryReceived: handleTelemetryReceived,
     onConnectionChange: setWsConnected,
   });

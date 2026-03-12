@@ -451,29 +451,29 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                   {/* 统计卡片 - 始终固定显示 */}
                   <div className="grid grid-cols-4 gap-1.5 mb-2 flex-shrink-0">
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                      <div className="text-base font-bold text-blue-400">{drones.length}</div>
+                      <div className="text-base font-bold text-blue-400">{mapDrones.length}</div>
                       <div className="text-[9px] text-slate-400">总数</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                      <div className="text-base font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</div>
-                      <div className="text-[9px] text-slate-400">飞行中</div>
+                      <div className="text-base font-bold text-green-400">{mapDrones.filter(d => d.armed === true).length}</div>
+                      <div className="text-[9px] text-slate-400">已解锁</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                      <div className="text-base font-bold text-cyan-400">{drones.filter(d => d.onlineStatus === true).length}</div>
+                      <div className="text-base font-bold text-cyan-400">{mapDrones.filter(d => d.onlineStatus === true).length}</div>
                       <div className="text-[9px] text-slate-400">在线</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                      <div className="text-base font-bold text-red-400">{drones.filter(d => (d.battery || 0) < 20).length}</div>
+                      <div className="text-base font-bold text-red-400">{mapDrones.filter(d => (d.battery || 0) < 20).length}</div>
                       <div className="text-[9px] text-slate-400">低电量</div>
                     </CardContent></Card>
                   </div>
                   {/* 无人机列表（在线优先排序）- 独立滚动区域 */}
                   <div className="flex-1 overflow-y-auto space-y-1 scrollbar-thin" style={{ scrollbarWidth: 'thin', scrollbarColor: '#475569 #1e293b' }}>
-                    {[...drones].sort((a, b) => {
+                    {[...mapDrones].sort((a, b) => {
                       const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
                       if (aO !== bO) return bO - aO;
-                      const aF = a.flightStatus === 'FLYING' ? 1 : 0, bF = b.flightStatus === 'FLYING' ? 1 : 0;
-                      return bF - aF;
+                      const aA = a.armed === true ? 1 : 0, bA = b.armed === true ? 1 : 0;
+                      return bA - aA;
                     }).map(drone => (
                       <div key={drone.uavId}
                         className={`p-2 rounded text-xs cursor-pointer transition-all ${selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
@@ -481,8 +481,8 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                         <div className="flex items-center justify-between mb-0.5">
                           <span className="font-bold text-blue-300">{drone.uavId}</span>
                           <div className="flex items-center gap-1">
-                            <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus === true ? 'bg-blue-600' : 'bg-slate-600'}`}>
-                              {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
+                            <Badge className={`text-[10px] px-1 py-0 ${!drone.onlineStatus ? 'bg-slate-600' : drone.armed === true ? 'bg-green-600' : 'bg-blue-600'}`}>
+                              {!drone.onlineStatus ? '离线' : drone.armed === true ? '已解锁' : '未解锁'}
                             </Badge>
                           </div>
                         </div>
@@ -507,7 +507,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                         </div>
                       </div>
                     ))}
-                    {drones.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无无人机数据</div>}
+                    {mapDrones.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无无人机数据</div>}
                   </div>
                 </div>
               )}

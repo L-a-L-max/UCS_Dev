@@ -205,19 +205,6 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     }
   };
 
-  // 多选聚合数据
-  const multiSelectedDronesList = drones.filter(d => selectedDrones.has(d.uavId));
-  const aggregateData = multiSelectedDronesList.length >= 2 ? {
-    count: multiSelectedDronesList.length,
-    maxAlt: Math.max(...multiSelectedDronesList.map(d => d.altitude ?? 0)),
-    minAlt: Math.min(...multiSelectedDronesList.map(d => d.altitude ?? 0)),
-    lowBatteryCount: multiSelectedDronesList.filter(d => (d.battery ?? 0) < 20).length,
-    onlineCount: multiSelectedDronesList.filter(d => d.onlineStatus === true).length,
-    flyingCount: multiSelectedDronesList.filter(d => d.flightStatus === 'FLYING').length,
-  } : null;
-
-  const selectedDroneInfo = drones.find(d => d.uavId === selectedDrone);
-
   // 将 DroneInfo 转换为 MapDrone 格式，合并 WebSocket 实时遥测
   const mapDrones: MapDrone[] = (() => {
     const droneMap = new Map<string, MapDrone>();
@@ -243,6 +230,19 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     });
     return Array.from(droneMap.values());
   })();
+
+  // 多选聚合数据
+  const multiSelectedDronesList = mapDrones.filter(d => selectedDrones.has(d.uavId));
+  const aggregateData = multiSelectedDronesList.length >= 2 ? {
+    count: multiSelectedDronesList.length,
+    maxAlt: Math.max(...multiSelectedDronesList.map(d => d.altitude ?? 0)),
+    minAlt: Math.min(...multiSelectedDronesList.map(d => d.altitude ?? 0)),
+    lowBatteryCount: multiSelectedDronesList.filter(d => (d.battery ?? 0) < 20).length,
+    onlineCount: multiSelectedDronesList.filter(d => d.onlineStatus === true).length,
+    flyingCount: multiSelectedDronesList.filter(d => d.flightStatus === 'FLYING').length,
+  } : null;
+
+  const selectedDroneInfo = mapDrones.find(d => d.uavId === selectedDrone);
 
   return (
     <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">
@@ -312,12 +312,12 @@ export default function PilotView({ token, username, partitions = [], onLogout }
               [{quickFeedback.uavId}] {quickFeedback.message}
             </div>
           )}
-          {drones.length === 0 && <p className="text-slate-500 text-xs text-center py-6">暂无可控制的无人机</p>}
-          {[...drones].sort((a, b) => {
+          {mapDrones.length === 0 && <p className="text-slate-500 text-xs text-center py-6">暂无可控制的无人机</p>}
+          {[...mapDrones].sort((a, b) => {
             const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
             if (aO !== bO) return bO - aO;
-            const aF = a.flightStatus === 'FLYING' ? 1 : 0, bF = b.flightStatus === 'FLYING' ? 1 : 0;
-            return bF - aF;
+            const aA = a.armed === true ? 1 : 0, bA = b.armed === true ? 1 : 0;
+            return bA - aA;
           }).map(drone => (
             <div key={drone.uavId}
               className={`p-2 rounded text-xs cursor-pointer transition-all ${
@@ -365,9 +365,9 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                   {drone.uavId}
                 </span>
                 <Badge className={`text-[10px] px-1 py-0 ${
-                  drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus === true ? 'bg-blue-600' : 'bg-slate-600'
+                  !drone.onlineStatus ? 'bg-slate-600' : drone.armed === true ? 'bg-green-600' : 'bg-blue-600'
                 }`}>
-                  {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
+                  {!drone.onlineStatus ? '离线' : drone.armed === true ? '已解锁' : '未解锁'}
                 </Badge>
               </div>
               <div className="flex items-center gap-2 text-slate-400 mb-1">

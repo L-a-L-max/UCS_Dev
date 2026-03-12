@@ -243,17 +243,6 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     setTimeout(() => setCommandFeedback(null), 3000);
   };
 
-  // 多选聚合数据
-  const multiSelectedDrones = drones.filter(d => selectedDrones.has(d.uavId));
-  const aggregateData = multiSelectedDrones.length >= 2 ? {
-    count: multiSelectedDrones.length,
-    maxAlt: Math.max(...multiSelectedDrones.map(d => d.altitude ?? 0)),
-    minAlt: Math.min(...multiSelectedDrones.map(d => d.altitude ?? 0)),
-    lowBatteryCount: multiSelectedDrones.filter(d => (d.battery ?? 0) < 20).length,
-    onlineCount: multiSelectedDrones.filter(d => d.onlineStatus === true).length,
-    flyingCount: multiSelectedDrones.filter(d => d.flightStatus === 'FLYING').length,
-  } : null;
-
   const formatTime = (ts: string) => {
     if (!ts) return '-';
     try { return new Date(ts).toLocaleString('zh-CN'); } catch { return ts; }
@@ -284,6 +273,17 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     });
     return Array.from(droneMap.values());
   })();
+
+  // 多选聚合数据
+  const multiSelectedDrones = mapDrones.filter(d => selectedDrones.has(d.uavId));
+  const aggregateData = multiSelectedDrones.length >= 2 ? {
+    count: multiSelectedDrones.length,
+    maxAlt: Math.max(...multiSelectedDrones.map(d => d.altitude ?? 0)),
+    minAlt: Math.min(...multiSelectedDrones.map(d => d.altitude ?? 0)),
+    lowBatteryCount: multiSelectedDrones.filter(d => (d.battery ?? 0) < 20).length,
+    onlineCount: multiSelectedDrones.filter(d => d.onlineStatus === true).length,
+    flyingCount: multiSelectedDrones.filter(d => d.flightStatus === 'FLYING').length,
+  } : null;
 
   return (
     <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">
@@ -384,29 +384,29 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                   {/* 统计 */}
                   <div className="grid grid-cols-2 gap-2">
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-blue-400">{drones.length}</div>
+                      <div className="text-lg font-bold text-blue-400">{mapDrones.length}</div>
                       <div className="text-[10px] text-slate-400">无人机数</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</div>
-                      <div className="text-[10px] text-slate-400">飞行中</div>
+                      <div className="text-lg font-bold text-green-400">{mapDrones.filter(d => d.armed === true).length}</div>
+                      <div className="text-[10px] text-slate-400">已解锁</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-cyan-400">{drones.filter(d => d.onlineStatus === true).length}</div>
+                      <div className="text-lg font-bold text-cyan-400">{mapDrones.filter(d => d.onlineStatus === true).length}</div>
                       <div className="text-[10px] text-slate-400">在线</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-red-400">{drones.filter(d => (d.battery || 0) < 20).length}</div>
+                      <div className="text-lg font-bold text-red-400">{mapDrones.filter(d => (d.battery || 0) < 20).length}</div>
                       <div className="text-[10px] text-slate-400">低电量</div>
                     </CardContent></Card>
                   </div>
                   {/* 无人机列表（在线优先） */}
                   <div className="space-y-1">
-                    {[...drones].sort((a, b) => {
+                    {[...mapDrones].sort((a, b) => {
                       const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
                       if (aO !== bO) return bO - aO;
-                      const aF = a.flightStatus === 'FLYING' ? 1 : 0, bF = b.flightStatus === 'FLYING' ? 1 : 0;
-                      return bF - aF;
+                      const aA = a.armed === true ? 1 : 0, bA = b.armed === true ? 1 : 0;
+                      return bA - aA;
                     }).map(drone => (
                       <div key={drone.uavId}
                         className={`p-2 rounded text-xs cursor-pointer transition-all ${
@@ -450,8 +450,8 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                               : <Square className="w-3 h-3 text-slate-500" />)}
                             {drone.uavId}
                           </span>
-                          <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus === true ? 'bg-blue-600' : 'bg-slate-600'}`}>
-                            {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
+                          <Badge className={`text-[10px] px-1 py-0 ${!drone.onlineStatus ? 'bg-slate-600' : drone.armed === true ? 'bg-green-600' : 'bg-blue-600'}`}>
+                            {!drone.onlineStatus ? '离线' : drone.armed === true ? '已解锁' : '未解锁'}
                           </Badge>
                         </div>
                         <div className="flex items-center gap-2 text-slate-400 mb-1">
@@ -475,7 +475,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                         </div>
                       </div>
                     ))}
-                    {drones.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无数据</div>}
+                    {mapDrones.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无数据</div>}
                   </div>
                 </div>
               )}
@@ -622,7 +622,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
 
         {/* 中间: 详情控制面板（单选模式下点击显示，多选模式下选中1个时显示） */}
         {showDetailPanel && selectedMapDrone && !aggregateData && (() => {
-          const drone = drones.find(d => d.uavId === selectedMapDrone);
+          const drone = mapDrones.find(d => d.uavId === selectedMapDrone);
           if (!drone) return null;
           return (
             <div className="w-[280px] min-w-[240px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-3">
