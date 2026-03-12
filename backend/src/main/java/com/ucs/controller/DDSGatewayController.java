@@ -97,9 +97,12 @@ public class DDSGatewayController {
                 // Mark drone as online
                 redisService.setDroneOnline(uavId);
 
-                // Enrich message with uavName for frontend display
+                // Enrich message with fields expected by frontend
                 droneData.put("uavName", uavId);
                 droneData.put("timestamp", timestamp.toString());
+                // Frontend expects isActive field (derived from armed status)
+                Object armed = droneData.get("armed");
+                droneData.put("isActive", armed != null && Boolean.TRUE.equals(armed));
                 allTelemetry.add(droneData);
 
                 // === Gateway 2: Persistence Gateway ===

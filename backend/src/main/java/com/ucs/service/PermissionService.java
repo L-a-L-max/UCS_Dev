@@ -349,24 +349,50 @@ public class PermissionService {
     
     /**
      * Recalculate drone partitions after individual ownership transfer.
-     * New partitions = observer + commander + new owner's partition ONLY.
      * 
-     * When transferring to an individual user (not team), only the new owner gets
-     * viewing access. The old owner's partition is removed via updateDronePartitions.
-     * Team-wide partition distribution only happens via transferPermissionToTeam.
+     * Rules:
+     *   - Always include: observer + commander
+     *   - If new owner is a Leader: + leader's partition only
+     *   - If new owner is a Pilot: + pilot's partition + their team leader's partition
      */
     private void recalculateDronePartitions(String uavId, Long newOwnerId) {
         Set<String> newPartitions = new LinkedHashSet<>();
         newPartitions.add("observer");
         newPartitions.add("commander");
 
-        // Add ONLY the new owner's partition (not the entire team)
+        // Add new owner's partition
         Optional<User> ownerOpt = userRepository.findById(newOwnerId);
         if (ownerOpt.isPresent()) {
             User owner = ownerOpt.get();
             String ownerPartition = getOrComputePartition(owner);
             if (ownerPartition != null) {
                 newPartitions.add(ownerPartition);
+            }
+
+            // If target is a Pilot (not Leader), also add their team leader's partition
+            List<TeamMember> memberships = teamMemberRepository.findByUserId(newOwnerId);
+            if (!memberships.isEmpty()) {
+                TeamMember membership = memberships.get(0);
+                // Check if this user is a Pilot (not Leader)
+                boolean isLeader = membership.getTeamRole() != null &&
+                        membership.getTeamRole().getRoleName().equalsIgnoreCase("Leader");
+                if (!isLeader) {
+                    // Find the team leader and add their partition
+                    List<TeamMember> teamMembers = teamMemberRepository.findByTeamIdWithUser(membership.getTeamId());
+                    for (TeamMember tm : teamMembers) {
+                        if (tm.getTeamRole() != null &&
+                                tm.getTeamRole().getRoleName().equalsIgnoreCase("Leader")) {
+                            Optional<User> leaderOpt = userRepository.findById(tm.getUserId());
+                            if (leaderOpt.isPresent()) {
+                                String leaderPartition = getOrComputePartition(leaderOpt.get());
+                                if (leaderPartition != null) {
+                                    newPartitions.add(leaderPartition);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
             }
         }
 
@@ -386,15 +412,22 @@ public class PermissionService {
 
     /**
      * Recalculate drone partitions after team ownership transfer.
-     * New partitions = observer + commander + team leader's partition + all team members' partitions
+     * Assigns to team leader, so partitions = observer + commander + leader's partition ONLY.
+     * (Not all team members - they get access only when drone is further transferred to them)
      */
     private void recalculateDronePartitionsForTeam(String uavId, Long teamId, Long leaderId) {
         Set<String> newPartitions = new LinkedHashSet<>();
         newPartitions.add("observer");
         newPartitions.add("commander");
 
-        // Add all team members' partitions
-        addTeamMemberPartitions(teamId, newPartitions);
+        // Add ONLY the team leader's partition (not all team members)
+        Optional<User> leaderOpt = userRepository.findById(leaderId);
+        if (leaderOpt.isPresent()) {
+            String leaderPartition = getOrComputePartition(leaderOpt.get());
+            if (leaderPartition != null) {
+                newPartitions.add(leaderPartition);
+            }
+        }
 
         // Update drone entity with new control owner (team leader) and view owner
         Optional<Drone> droneOpt = droneRepository.findByUavId(uavId);
