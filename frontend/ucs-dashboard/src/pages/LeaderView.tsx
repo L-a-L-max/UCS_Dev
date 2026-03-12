@@ -93,6 +93,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
 
   const handlePartitionData = useCallback((data: PartitionTelemetryMessage) => {
     if (!data.drones || data.drones.length === 0) return;
+    console.log('[LeaderView] handlePartitionData:', data.partition, data.drones.length, 'drones');
     setTelemetryDrones(prev => {
       const next = new Map(prev);
       data.drones.forEach(uav => {
@@ -102,8 +103,9 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
           lng: uav.lon,
           altitude: uav.alt,
           battery: undefined,
-          flightStatus: uav.isActive ? 'FLYING' : 'IDLE',
-          onlineStatus: true, // Receiving telemetry data means drone is online
+          flightStatus: uav.armed ? 'FLYING' : 'IDLE',
+          onlineStatus: true, // Receiving telemetry = online
+          armed: uav.armed ?? uav.isActive ?? false,
         });
       });
       return next;
@@ -274,6 +276,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
         existing.lng = td.lng;
         existing.altitude = td.altitude;
         existing.onlineStatus = td.onlineStatus;
+        existing.armed = td.armed;
         if (td.flightStatus) existing.flightStatus = td.flightStatus;
       } else {
         droneMap.set(uavId, td);

@@ -72,6 +72,12 @@ export interface MapDrone {
   battery?: number;
   flightStatus?: string;
   onlineStatus?: boolean;
+  /** Whether the drone is armed (motors unlocked). Used for three-state display:
+   *  - offline (onlineStatus=false)
+   *  - disarmed/unlocked (onlineStatus=true, armed=false)
+   *  - armed/online (onlineStatus=true, armed=true)
+   */
+  armed?: boolean;
   model?: string;
   owner?: string;
   teamName?: string;
@@ -376,9 +382,10 @@ export default function MapPanel({
   }, [drones, selectedDroneId, selectedDroneIds, startPopupAutoClose, clearPopupAutoClose]);
 
   function createMarkerHTML(drone: MapDrone, isSelected: boolean): string {
-    const isFlying = drone.flightStatus === 'FLYING';
     const isOnline = drone.onlineStatus === true;
-    const color = isFlying ? '#22c55e' : isOnline ? '#3b82f6' : '#64748b';
+    const isArmed = drone.armed === true;
+    // Three states: armed (green), disarmed/online (blue), offline (gray)
+    const color = !isOnline ? '#64748b' : isArmed ? '#22c55e' : '#3b82f6';
     const borderColor = isSelected ? '#f59e0b' : color;
     const size = isSelected ? 40 : 32;
 
@@ -406,14 +413,18 @@ export default function MapPanel({
   }
 
   function createPopupHTML(drone: MapDrone): string {
-    const isFlying = drone.flightStatus === 'FLYING';
+    const isOnline = drone.onlineStatus === true;
+    const isArmed = drone.armed === true;
+    // Three states: armed (green), disarmed (blue), offline (gray)
+    const statusColor = !isOnline ? '#64748b' : isArmed ? '#22c55e' : '#3b82f6';
+    const statusText = !isOnline ? '离线' : isArmed ? '已解锁' : '未解锁';
     return `
       <div style="background: linear-gradient(135deg, rgba(30, 58, 138, 0.95), rgba(59, 130, 246, 0.9)); padding: 12px; border-radius: 8px; min-width: 200px; color: white; font-family: system-ui, sans-serif; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 8px;">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>
           <h3 style="margin: 0; font-size: 14px; font-weight: bold;">${drone.uavId}</h3>
-          <span style="margin-left: auto; background: ${isFlying ? '#22c55e' : '#64748b'}; padding: 2px 8px; border-radius: 4px; font-size: 11px;">
-            ${isFlying ? '飞行中' : '待机'}
+          <span style="margin-left: auto; background: ${statusColor}; padding: 2px 8px; border-radius: 4px; font-size: 11px;">
+            ${statusText}
           </span>
         </div>
         <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px;">
@@ -572,13 +583,13 @@ export default function MapPanel({
                 <div className="flex items-center justify-between mb-0.5">
                   <span className="font-bold text-white">{drone.uavId}</span>
                   <Badge className={`text-[10px] px-1 py-0 ${
-                    drone.flightStatus === 'FLYING'
-                      ? 'bg-green-600'
-                      : drone.onlineStatus === true
-                        ? 'bg-blue-600'
-                        : 'bg-slate-600'
+                    !drone.onlineStatus
+                      ? 'bg-slate-600'
+                      : drone.armed === true
+                        ? 'bg-green-600'
+                        : 'bg-blue-600'
                   }`}>
-                    {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
+                    {!drone.onlineStatus ? '离线' : drone.armed === true ? '已解锁' : '未解锁'}
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2 text-slate-400">

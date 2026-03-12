@@ -95,6 +95,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
   // WebSocket telemetry handler - updates drone positions in real-time
   const handlePartitionData = useCallback((data: PartitionTelemetryMessage) => {
     if (!data.drones || data.drones.length === 0) return;
+    console.log('[CommanderView] handlePartitionData:', data.partition, data.drones.length, 'drones');
     setTelemetryDrones(prev => {
       const next = new Map(prev);
       data.drones.forEach(uav => {
@@ -104,8 +105,9 @@ export default function CommanderView({ token, username, partitions = [], onLogo
           lng: uav.lon,
           altitude: uav.alt,
           battery: undefined,
-          flightStatus: uav.isActive ? 'FLYING' : 'IDLE',
-          onlineStatus: true, // Receiving telemetry data means drone is online
+          flightStatus: uav.armed ? 'FLYING' : 'IDLE',
+          onlineStatus: true, // Receiving telemetry = online
+          armed: uav.armed ?? uav.isActive ?? false,
           model: undefined,
           owner: undefined,
         });
@@ -365,13 +367,18 @@ export default function CommanderView({ token, username, partitions = [], onLogo
         existing.lng = td.lng;
         existing.altitude = td.altitude;
         existing.onlineStatus = td.onlineStatus;
+        existing.armed = td.armed;
         if (td.flightStatus) existing.flightStatus = td.flightStatus;
       } else {
         // New drone only seen via WebSocket telemetry
         droneMap.set(uavId, td);
       }
     });
-    return Array.from(droneMap.values());
+    const result = Array.from(droneMap.values());
+    if (telemetryDrones.size > 0) {
+      console.log('[CommanderView] mapDrones:', result.length, 'total,', telemetryDrones.size, 'from WS');
+    }
+    return result;
   })();
 
   // 事件日志格式化为地图面板使用

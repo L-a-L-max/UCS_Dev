@@ -14,10 +14,13 @@ const getApiBase = () => {
 const API_BASE = getApiBase();
 
 // Convert HTTP URL to WebSocket URL
+// Use /ws/websocket path for raw WebSocket through SockJS transport layer.
+// Spring Boot registers SockJS at /ws which intercepts raw /ws connections;
+// the actual raw WebSocket endpoint is at /ws/websocket.
 const getWsUrl = () => {
   const url = new URL(API_BASE);
   const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${url.host}/ws`;
+  return `${protocol}//${url.host}/ws/websocket`;
 };
 
 export interface TelemetryData {
@@ -39,6 +42,8 @@ export interface TelemetryData {
   dataAge: number;
   msgCount: number;
   isActive: boolean;
+  armed: boolean;
+  flightMode: string;
 }
 
 export interface TelemetryBatch {
@@ -89,6 +94,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   const handlePartitionMessage = useCallback((message: IMessage) => {
     try {
       const data: PartitionTelemetryMessage = JSON.parse(message.body);
+      console.log('[WS] Partition message received:', data.partition, 'drones:', data.drones?.length, data.drones?.map(d => `${d.uavId}(${d.lat},${d.lon},armed=${d.armed})`));
       onPartitionDataReceived?.(data);
     } catch (error) {
       console.error('Failed to parse partition telemetry message:', error);
@@ -115,14 +121,18 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
         
         // Subscribe to legacy telemetry topic (backward compatibility)
         client.subscribe('/topic/telemetry', handleMessage);
+        console.log('[WS] Subscribed to /topic/telemetry');
         
         // Subscribe to partition-specific topics if partitions are provided
         if (partitions && partitions.length > 0) {
+          console.log('[WS] Subscribing to partition topics:', partitions);
           partitions.forEach(partition => {
             const topic = `/topic/telemetry/partition/${partition}`;
-            console.log('Subscribing to partition topic:', topic);
+            console.log('[WS] Subscribing to:', topic);
             client.subscribe(topic, handlePartitionMessage);
           });
+        } else {
+          console.warn('[WS] No partitions provided, partition topics will not be subscribed');
         }
       },
       onDisconnect: () => {
