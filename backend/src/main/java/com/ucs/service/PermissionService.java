@@ -1,11 +1,7 @@
 package com.ucs.service;
 
-import com.ucs.entity.Drone;
-import com.ucs.entity.DroneOwnership;
-import com.ucs.entity.User;
-import com.ucs.repository.DroneOwnershipRepository;
-import com.ucs.repository.DroneRepository;
-import com.ucs.repository.UserRepository;
+import com.ucs.entity.*;
+import com.ucs.repository.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -37,6 +33,9 @@ public class PermissionService {
     private final DroneRepository droneRepository;
     private final DroneOwnershipRepository droneOwnershipRepository;
     private final UserRepository userRepository;
+    private final TeamRepository teamRepository;
+    private final TeamMemberRepository teamMemberRepository;
+    private final TeamDroneMapRepository teamDroneMapRepository;
     private final RedisService redisService;
     private final OperationLogService operationLogService;
     
@@ -100,6 +99,28 @@ public class PermissionService {
             newOwnership.setUserId(toUserId);
             newOwnership.setAssignedBy(operatorId);
             droneOwnershipRepository.save(newOwnership);
+            
+            // 2.5 同步更新无人机所属队伍：转接给个人时，无人机队伍应变为目标人员所在队伍
+            List<TeamMember> targetMemberships = teamMemberRepository.findByUserId(toUserId);
+            if (!targetMemberships.isEmpty()) {
+                Long targetTeamId = targetMemberships.get(0).getTeamId();
+                // 将旧的队伍-无人机映射标记为移除
+                List<TeamDroneMap> oldMappings = teamDroneMapRepository.findActiveByDroneId(drone.getId());
+                for (TeamDroneMap tdm : oldMappings) {
+                    if (!tdm.getTeamId().equals(targetTeamId)) {
+                        tdm.setRemovedAt(LocalDateTime.now());
+                        teamDroneMapRepository.save(tdm);
+                    }
+                }
+                // 添加新的队伍-无人机映射（如果不存在）
+                List<Long> existingDroneIds = teamDroneMapRepository.findDroneIdsByTeamId(targetTeamId);
+                if (!existingDroneIds.contains(drone.getId())) {
+                    TeamDroneMap newTdm = new TeamDroneMap();
+                    newTdm.setTeamId(targetTeamId);
+                    newTdm.setDroneId(drone.getId());
+                    teamDroneMapRepository.save(newTdm);
+                }
+            }
             
             // 3. Update Redis cache
             redisService.setDroneController(uavId, toUserId);
@@ -173,8 +194,166 @@ public class PermissionService {
         return null;
     }
     
+    /**
+     * Build human-readable transfer detail instead of raw JSON.
+     */
     private String buildTransferDetail(Long fromUserId, Long toUserId) {
-        return String.format("{\"fromUserId\":%s,\"toUserId\":%d}",
-                fromUserId != null ? fromUserId.toString() : "null", toUserId);
+        String fromName = "未分配";
+        String toName = "未知用户";
+        if (fromUserId != null) {
+            fromName = userRepository.findById(fromUserId)
+                    .map(u -> u.getRealName() != null ? u.getRealName() : u.getUsername())
+                    .orElse("用户#" + fromUserId);
+        }
+        toName = userRepository.findById(toUserId)
+                .map(u -> u.getRealName() != null ? u.getRealName() : u.getUsername())
+                .orElse("用户#" + toUserId);
+        return String.format("控制权转移: %s → %s", fromName, toName);
+    }
+    
+    /**
+     * Transfer drone control to a team (assigns to team leader).
+     * Implements Issue #4: Permission transfer should target teams, not just users.
+     * The drone is assigned to the team's leader, and the team-drone mapping is updated.
+     *
+     * @param uavId         The drone's unique identifier
+     * @param toTeamId      Target team to receive control
+     * @param operatorId    The user performing the transfer
+     * @param operatorName  The username for logging
+     * @return true if transfer succeeded
+     */
+    @Transactional
+    public boolean transferPermissionToTeam(String uavId, Long toTeamId,
+                                             Long operatorId, String operatorName) {
+        // Find the drone
+        Optional<Drone> droneOpt = droneRepository.findByUavId(uavId);
+        if (droneOpt.isEmpty()) {
+            operationLogService.logFailure(operatorId, operatorName, "PERMISSION_TRANSFER",
+                    null, uavId, "无人机不存在: " + uavId, "Drone not found: " + uavId);
+            return false;
+        }
+        Drone drone = droneOpt.get();
+        
+        // Verify target team exists
+        Optional<Team> teamOpt = teamRepository.findById(toTeamId);
+        if (teamOpt.isEmpty()) {
+            operationLogService.logFailure(operatorId, operatorName, "PERMISSION_TRANSFER",
+                    drone.getId(), uavId, "目标队伍不存在: " + toTeamId, "Team not found: " + toTeamId);
+            return false;
+        }
+        Team team = teamOpt.get();
+        
+        // Find team leader to assign control to
+        List<TeamMember> members = teamMemberRepository.findByTeamIdWithUser(toTeamId);
+        Optional<TeamMember> leaderMember = members.stream()
+                .filter(m -> m.getTeamRole() != null &&
+                        m.getTeamRole().getRoleName().equalsIgnoreCase("Leader"))
+                .findFirst();
+        
+        Long toUserId;
+        if (leaderMember.isPresent()) {
+            toUserId = leaderMember.get().getUserId();
+        } else if (!members.isEmpty()) {
+            // Fallback: assign to first member if no leader
+            toUserId = members.get(0).getUserId();
+        } else {
+            operationLogService.logFailure(operatorId, operatorName, "PERMISSION_TRANSFER",
+                    drone.getId(), uavId, "队伍 " + team.getTeamName() + " 没有成员",
+                    "Team has no members");
+            return false;
+        }
+        
+        // Acquire distributed lock
+        String lockValue = UUID.randomUUID().toString();
+        boolean lockAcquired = redisService.tryAcquireLock(uavId, lockValue);
+        if (!lockAcquired) {
+            operationLogService.logFailure(operatorId, operatorName, "PERMISSION_TRANSFER",
+                    drone.getId(), uavId, "获取锁失败，另一个转移正在进行中",
+                    "Failed to acquire lock");
+            return false;
+        }
+        
+        try {
+            // 1. Expire current ownership
+            Optional<DroneOwnership> currentOwnership = droneOwnershipRepository.findActiveByDroneId(drone.getId());
+            String fromName = "未分配";
+            if (currentOwnership.isPresent()) {
+                Long fromUserId = currentOwnership.get().getUserId();
+                fromName = userRepository.findById(fromUserId)
+                        .map(u -> u.getRealName() != null ? u.getRealName() : u.getUsername())
+                        .orElse("用户#" + fromUserId);
+                currentOwnership.get().setExpiredAt(LocalDateTime.now());
+                droneOwnershipRepository.save(currentOwnership.get());
+            }
+            
+            // 2. Create new ownership (assigned to team leader)
+            DroneOwnership newOwnership = new DroneOwnership();
+            newOwnership.setDroneId(drone.getId());
+            newOwnership.setUserId(toUserId);
+            newOwnership.setAssignedBy(operatorId);
+            droneOwnershipRepository.save(newOwnership);
+            
+            // 3. Update team-drone mapping: 先移除旧队伍映射，再添加新队伍映射
+            List<TeamDroneMap> oldMappings = teamDroneMapRepository.findActiveByDroneId(drone.getId());
+            for (TeamDroneMap oldTdm : oldMappings) {
+                if (!oldTdm.getTeamId().equals(toTeamId)) {
+                    oldTdm.setRemovedAt(LocalDateTime.now());
+                    teamDroneMapRepository.save(oldTdm);
+                }
+            }
+            List<Long> existingTeamDroneIds = teamDroneMapRepository.findDroneIdsByTeamId(toTeamId);
+            if (!existingTeamDroneIds.contains(drone.getId())) {
+                TeamDroneMap tdm = new TeamDroneMap();
+                tdm.setTeamId(toTeamId);
+                tdm.setDroneId(drone.getId());
+                teamDroneMapRepository.save(tdm);
+            }
+            
+            // 4. Update Redis cache
+            redisService.setDroneController(uavId, toUserId);
+            
+            // 5. Log operation with human-readable detail
+            String leaderName = userRepository.findById(toUserId)
+                    .map(u -> u.getRealName() != null ? u.getRealName() : u.getUsername())
+                    .orElse("用户#" + toUserId);
+            String detail = String.format("控制权转移至队伍[%s], 队长[%s]接管 (原控制: %s)",
+                    team.getTeamName(), leaderName, fromName);
+            
+            operationLogService.recordOperation(operatorId, operatorName, "PERMISSION_TRANSFER",
+                    drone.getId(), uavId, toUserId, detail, "SUCCESS", null, null);
+            
+            log.info("Permission transferred to team: drone={}, team={}, leader={}, by={}",
+                    uavId, team.getTeamName(), toUserId, operatorId);
+            return true;
+            
+        } catch (Exception e) {
+            log.error("Team permission transfer failed for drone {}: {}", uavId, e.getMessage());
+            operationLogService.logFailure(operatorId, operatorName, "PERMISSION_TRANSFER",
+                    drone.getId(), uavId, "队伍转移失败: " + e.getMessage(), e.getMessage());
+            throw e;
+        } finally {
+            redisService.releaseLock(uavId, lockValue);
+        }
+    }
+    
+    /**
+     * Batch transfer permissions to a team.
+     *
+     * @return List of uavIds that were successfully transferred
+     */
+    public List<String> batchTransferPermissionToTeam(List<String> uavIds, Long toTeamId,
+                                                        Long operatorId, String operatorName) {
+        List<String> successList = new ArrayList<>();
+        for (String uavId : uavIds) {
+            try {
+                boolean ok = transferPermissionToTeam(uavId, toTeamId, operatorId, operatorName);
+                if (ok) {
+                    successList.add(uavId);
+                }
+            } catch (Exception e) {
+                log.error("Batch team transfer failed for drone {}: {}", uavId, e.getMessage());
+            }
+        }
+        return successList;
     }
 }

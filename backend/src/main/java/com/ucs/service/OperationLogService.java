@@ -103,6 +103,17 @@ public class OperationLogService {
     }
     
     /**
+     * Get operation logs filtered by multiple user IDs (for team-scoped logs).
+     */
+    public Page<OperationLog> getLogsByUserIds(List<Long> userIds, int page, int size) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Page.empty();
+        }
+        Pageable pageable = PageRequest.of(page, size);
+        return operationLogRepository.findByUserIdInOrderByCreatedAtDesc(userIds, pageable);
+    }
+    
+    /**
      * Get a single operation log by ID.
      */
     public Optional<OperationLog> getLogById(Long id) {

@@ -13,4 +13,7 @@ public interface TeamDroneMapRepository extends JpaRepository<TeamDroneMap, Long
     
     @Query("SELECT tdm.droneId FROM TeamDroneMap tdm WHERE tdm.teamId = :teamId AND tdm.removedAt IS NULL")
     List<Long> findDroneIdsByTeamId(Long teamId);
+
+    @Query("SELECT tdm FROM TeamDroneMap tdm WHERE tdm.droneId = :droneId AND tdm.removedAt IS NULL")
+    List<TeamDroneMap> findActiveByDroneId(Long droneId);
 }
