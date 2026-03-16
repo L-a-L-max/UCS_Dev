@@ -43,7 +43,7 @@ import {
 } from '@/services/api';
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
 import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
-import { PieChart, Pie, BarChart, Bar, Cell, Tooltip, ResponsiveContainer } from 'recharts';
+import { PieChart, Pie, BarChart, Bar, XAxis, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface CommanderViewProps {
   token: string;
@@ -526,31 +526,47 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                             className={`text-[9px] px-1.5 py-0.5 rounded ${chartType === 'bar' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}>柱状图</button>
                         </div>
                       </div>
-                      <div className="bg-slate-800 rounded border border-slate-700 p-1" style={{ height: 120 }}>
-                        <ResponsiveContainer width="100%" height="100%">
-                          {chartType === 'pie' ? (
-                            <PieChart>
-                              <Pie data={droneChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={40}
-                                animationDuration={600} label={({ name, value }) => `${name}: ${value}`}
-                                labelLine={false} fontSize={9}>
-                                {droneChartData.map((entry, index) => (
-                                  <Cell key={`cell-${index}`} fill={entry.color} />
-                                ))}
-                              </Pie>
-                              <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #475569', fontSize: 11 }} />
-                            </PieChart>
-                          ) : (
-                            <BarChart data={droneChartData}>
-                              <Bar dataKey="value" animationDuration={600} radius={[4, 4, 0, 0]}>
+                      <div className="bg-slate-800 rounded border border-slate-700 p-1" style={{ height: chartType === 'pie' ? 90 : 100 }}>
+                        {chartType === 'pie' ? (
+                          <div className="flex items-center h-full">
+                            <div style={{ width: 80, height: 80 }}>
+                              <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                  <Pie data={droneChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={35} innerRadius={18}
+                                    animationDuration={600} labelLine={false} fontSize={9} strokeWidth={1}>
+                                    {droneChartData.map((entry, index) => (
+                                      <Cell key={`cell-${index}`} fill={entry.color} />
+                                    ))}
+                                  </Pie>
+                                </PieChart>
+                              </ResponsiveContainer>
+                            </div>
+                            <div className="flex-1 pl-2 space-y-1">
+                              {droneChartData.map((entry) => (
+                                <div key={entry.name} className="flex items-center gap-1.5 text-[10px]">
+                                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: entry.color }} />
+                                  <span className="text-slate-300 truncate">{entry.name}</span>
+                                  <span className="text-white font-bold ml-auto">{entry.value}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={droneChartData} barCategoryGap="20%">
+                              <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                              <Bar dataKey="value" animationDuration={600} radius={[4, 4, 0, 0]}
+                                label={{ position: 'top', fontSize: 10, fill: '#e2e8f0' }}>
                                 {droneChartData.map((entry, index) => (
                                   <Cell key={`cell-${index}`} fill={entry.color} />
                                 ))}
                               </Bar>
-                              <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #475569', fontSize: 11 }}
+                              <Tooltip cursor={false}
+                                contentStyle={{ background: '#1e293b', border: '1px solid #475569', fontSize: 11 }}
                                 formatter={(value: number, name: string, props: { payload?: { name?: string } }) => [value, props.payload?.name || name]} />
                             </BarChart>
-                          )}
-                        </ResponsiveContainer>
+                          </ResponsiveContainer>
+                        )}
                       </div>
                     </div>
                   )}

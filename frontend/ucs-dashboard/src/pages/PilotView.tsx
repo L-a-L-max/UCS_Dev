@@ -276,7 +276,26 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   const selectedDroneInfo = mapDrones.find(d => d.uavId === selectedDrone);
 
   return (
-    <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">
+    <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden relative">
+      {/* 浮动 Toast 反馈 - 固定定位，不影响布局 */}
+      {(quickFeedback || commandAckFeedback) && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-1.5 pointer-events-none" style={{ minWidth: 280, maxWidth: 420 }}>
+          {quickFeedback && (
+            <div className={`px-4 py-2 rounded-lg text-xs shadow-lg backdrop-blur-sm pointer-events-auto transition-all duration-300 ${
+              quickFeedback.success ? 'bg-green-900/70 border border-green-600/50 text-green-200' : 'bg-red-900/70 border border-red-600/50 text-red-200'
+            }`}>
+              <span className="font-medium">[{quickFeedback.uavId}]</span> {quickFeedback.message}
+            </div>
+          )}
+          {commandAckFeedback && (
+            <div className={`px-4 py-2 rounded-lg text-xs shadow-lg backdrop-blur-sm pointer-events-auto transition-all duration-300 ${
+              commandAckFeedback.success ? 'bg-emerald-900/70 border border-emerald-500/50 text-emerald-200' : 'bg-orange-900/70 border border-orange-500/50 text-orange-200'
+            }`}>
+              <span className="font-medium">[{commandAckFeedback.uavId}]</span> {commandAckFeedback.message}
+            </div>
+          )}
+        </div>
+      )}
       {/* 顶部栏 */}
       <header className="flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
         <h1 className="text-xl font-bold flex items-center gap-2">
@@ -337,18 +356,6 @@ export default function PilotView({ token, username, partitions = [], onLogout }
         {/* 左侧: 无人机列表（带快捷控制按钮） */}
         <div className="w-72 bg-slate-800 border-r border-slate-700 overflow-y-auto p-2 space-y-1">
           <h2 className="text-xs font-semibold text-slate-400 mb-1">我的无人机</h2>
-          {/* 快捷指令反馈 (Stage 1: 后端已接受) */}
-          {quickFeedback && (
-            <div className={`p-1.5 rounded text-[10px] mb-1 ${quickFeedback.success ? 'bg-green-900/30 border border-green-700 text-green-300' : 'bg-red-900/30 border border-red-700 text-red-300'}`}>
-              [{quickFeedback.uavId}] {quickFeedback.message}
-            </div>
-          )}
-          {/* PX4 确认反馈 (Stage 2: PX4已执行) */}
-          {commandAckFeedback && (
-            <div className={`p-1.5 rounded text-[10px] mb-1 ${commandAckFeedback.success ? 'bg-emerald-900/30 border border-emerald-600 text-emerald-300' : 'bg-orange-900/30 border border-orange-600 text-orange-300'}`}>
-              [{commandAckFeedback.uavId}] {commandAckFeedback.message}
-            </div>
-          )}
           {mapDrones.length === 0 && <p className="text-slate-500 text-xs text-center py-6">暂无可控制的无人机</p>}
           {[...mapDrones].sort((a, b) => {
             const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;

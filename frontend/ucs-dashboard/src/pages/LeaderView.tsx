@@ -329,7 +329,26 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   } : null;
 
   return (
-    <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">
+    <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden relative">
+      {/* 浮动 Toast 反馈 - 固定定位，不影响布局 */}
+      {(commandFeedback || commandAckFeedback) && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-1.5 pointer-events-none" style={{ minWidth: 280, maxWidth: 420 }}>
+          {commandFeedback && (
+            <div className={`px-4 py-2 rounded-lg text-xs shadow-lg backdrop-blur-sm pointer-events-auto transition-all duration-300 ${
+              commandFeedback.success ? 'bg-green-900/70 border border-green-600/50 text-green-200' : 'bg-red-900/70 border border-red-600/50 text-red-200'
+            }`}>
+              <span className="font-medium">[{commandFeedback.uavId}]</span> {commandFeedback.message}
+            </div>
+          )}
+          {commandAckFeedback && (
+            <div className={`px-4 py-2 rounded-lg text-xs shadow-lg backdrop-blur-sm pointer-events-auto transition-all duration-300 ${
+              commandAckFeedback.success ? 'bg-emerald-900/70 border border-emerald-500/50 text-emerald-200' : 'bg-orange-900/70 border border-orange-500/50 text-orange-200'
+            }`}>
+              <span className="font-medium">[{commandAckFeedback.uavId}]</span> {commandAckFeedback.message}
+            </div>
+          )}
+        </div>
+      )}
       {/* 顶部栏 */}
       <header className="flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
         <h1 className="text-xl font-bold flex items-center gap-2">
@@ -415,22 +434,6 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
               {/* 无人机 Tab */}
               {activeTab === 'drones' && (
                 <div className="space-y-3">
-                  {/* 指令反馈 (Stage 1: 后端已接受) */}
-                  {commandFeedback && (
-                    <div className={`p-2 rounded text-xs ${commandFeedback.success ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'}`}>
-                      <span className={commandFeedback.success ? 'text-green-300' : 'text-red-300'}>
-                        [{commandFeedback.uavId}] {commandFeedback.message}
-                      </span>
-                    </div>
-                  )}
-                  {/* PX4 确认反馈 (Stage 2: PX4已执行) */}
-                  {commandAckFeedback && (
-                    <div className={`p-2 rounded text-xs ${commandAckFeedback.success ? 'bg-emerald-900/30 border border-emerald-600' : 'bg-orange-900/30 border border-orange-600'}`}>
-                      <span className={commandAckFeedback.success ? 'text-emerald-300' : 'text-orange-300'}>
-                        [{commandAckFeedback.uavId}] {commandAckFeedback.message}
-                      </span>
-                    </div>
-                  )}
                   {/* 统计 */}
                   <div className="grid grid-cols-2 gap-2">
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">

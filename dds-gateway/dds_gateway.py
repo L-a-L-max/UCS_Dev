@@ -407,6 +407,10 @@ class DDSGateway:
 
         PX4 result codes: 0=ACCEPTED, 1=TEMPORARILY_REJECTED, 2=DENIED,
         3=UNSUPPORTED, 4=FAILED, 5=IN_PROGRESS, 6=CANCELLED
+
+        Includes deduplication to prevent rejection loops: if the same
+        (uavId, command, result) was forwarded within the last 5 seconds,
+        the duplicate ack is suppressed.
         """
         command = getattr(msg, 'command', 0)
         result = getattr(msg, 'result', -1)
@@ -414,13 +418,34 @@ class DDSGateway:
         self._stats[f'{uav_id}/command_ack'] += 1
         self._stats['total_messages'] += 1
 
+        # Deduplicate acks to prevent rejection loops
+        if not hasattr(self, '_recent_acks'):
+            self._recent_acks = {}
+        ack_key = f"{uav_id}:{command}:{result}"
+        now = time.time()
+        last_forwarded = self._recent_acks.get(ack_key, 0)
+        if now - last_forwarded < 5.0:
+            logger.debug("[CommandAck] Suppressing duplicate ack %s (%.1fs ago)", ack_key, now - last_forwarded)
+            return
+        self._recent_acks[ack_key] = now
+
+        # Clean up old entries periodically
+        if len(self._recent_acks) > 100:
+            cutoff = now - 10.0
+            self._recent_acks = {k: v for k, v in self._recent_acks.items() if v > cutoff}
+
+        # If OFFBOARD-related command is rejected, stop heartbeat to prevent loop
+        if result != 0 and command in (176, 192):  # DO_SET_MODE, VEHICLE_CMD_DO_SET_ACT
+            logger.warning("[CommandAck] OFFBOARD command rejected for %s, stopping heartbeat", uav_id)
+            self.stop_offboard_heartbeat(uav_id)
+
         # Forward ack to backend asynchronously
         try:
             ack_payload = {
                 'uavId': uav_id,
                 'command': int(command),
                 'result': int(result),
-                'timestamp': time.time(),
+                'timestamp': now,
             }
             threading.Thread(
                 target=self._forward_command_ack,
@@ -677,6 +702,34 @@ class DDSGateway:
     # Command Publishing (Backend -> DDS)
     # ============================================================
 
+    def _extract_system_id(self, uav_id: str) -> int:
+        """Extract PX4 system ID from uav_id.
+
+        In multi-SITL, each drone has a unique system ID:
+          px4_1 -> 1, px4_2 -> 2, px4_3 -> 3, etc.
+        This ensures commands are routed to the correct drone.
+        """
+        try:
+            # Extract numeric suffix: px4_1 -> 1, px4_2 -> 2
+            parts = uav_id.split('_')
+            if len(parts) >= 2 and parts[-1].isdigit():
+                return int(parts[-1])
+        except (ValueError, IndexError):
+            pass
+        return 1  # Default to system 1
+
+    def _get_or_create_publisher(self, topic: str, msg_type):
+        """Get a cached publisher or create a new one.
+
+        Avoids creating a new publisher for every command, which can cause
+        DDS resource leaks and delayed message delivery.
+        """
+        if not hasattr(self, '_command_publishers'):
+            self._command_publishers = {}
+        if topic not in self._command_publishers:
+            self._command_publishers[topic] = self._node.create_publisher(msg_type, topic, 10)
+        return self._command_publishers[topic]
+
     def publish_vehicle_command(self, uav_id: str, command: int, param1: float = 0.0,
                                  param2: float = 0.0, param7: float = 0.0) -> bool:
         """Publish a VehicleCommand to /{uav_id}/fmu/in/vehicle_command.
@@ -685,6 +738,12 @@ class DDSGateway:
             uav_id: Target drone ID (e.g., 'px4_1')
             command: PX4 command code (e.g., 400=ARM, 176=DO_SET_MODE, 22=TAKEOFF)
             param1-param7: Command-specific parameters
+
+        Notes:
+            - target_system is derived from uav_id (px4_N -> N) to ensure
+              commands are routed to the correct drone in multi-SITL.
+            - source_system=255, source_component=190 matches QGC convention.
+            - Commands are published to drone-specific topics: /{uav_id}/fmu/in/...
         """
         if not self._rclpy_available or not self._px4_msgs_available or not self._node:
             logger.error("[Command] ROS2/px4_msgs not available for command publishing")
@@ -693,23 +752,25 @@ class DDSGateway:
         try:
             import px4_msgs.msg as px4
             topic = f"/{uav_id}/fmu/in/vehicle_command"
-            pub = self._node.create_publisher(px4.VehicleCommand, topic, 10)
+            pub = self._get_or_create_publisher(topic, px4.VehicleCommand)
+
+            target_sys = self._extract_system_id(uav_id)
 
             msg = px4.VehicleCommand()
             msg.command = command
             msg.param1 = param1
             msg.param2 = param2
             msg.param7 = param7
-            msg.target_system = 1
+            msg.target_system = target_sys
             msg.target_component = 1
             msg.source_system = 255
-            msg.source_component = 0
+            msg.source_component = 190  # Match QGC convention
             msg.from_external = True
             msg.timestamp = int(time.time() * 1e6)
 
             pub.publish(msg)
-            logger.info("[Command] Published VehicleCommand cmd=%d p1=%.1f p2=%.1f p7=%.1f -> %s",
-                        command, param1, param2, param7, topic)
+            logger.info("[Command] Published VehicleCommand cmd=%d p1=%.1f p2=%.1f p7=%.1f -> %s (target_sys=%d)",
+                        command, param1, param2, param7, topic, target_sys)
             return True
         except Exception as e:
             logger.error("[Command] Failed to publish VehicleCommand: %s", e)
@@ -722,7 +783,7 @@ class DDSGateway:
         try:
             import px4_msgs.msg as px4
             topic = f"/{uav_id}/fmu/in/offboard_control_mode"
-            pub = self._node.create_publisher(px4.OffboardControlMode, topic, 10)
+            pub = self._get_or_create_publisher(topic, px4.OffboardControlMode)
 
             msg = px4.OffboardControlMode()
             msg.position = position
@@ -745,7 +806,7 @@ class DDSGateway:
         try:
             import px4_msgs.msg as px4
             topic = f"/{uav_id}/fmu/in/trajectory_setpoint"
-            pub = self._node.create_publisher(px4.TrajectorySetpoint, topic, 10)
+            pub = self._get_or_create_publisher(topic, px4.TrajectorySetpoint)
 
             msg = px4.TrajectorySetpoint()
             msg.position = [x, y, z]
@@ -772,9 +833,12 @@ class DDSGateway:
         logger.info("[Command] Handling %s for %s params=%s", command_type, uav_id, params)
 
         if command_type == 'ARM':
-            ok = self.publish_vehicle_command(uav_id, command=400, param1=1.0, param2=21196.0)
+            # ARM: command=400 (COMPONENT_ARM_DISARM), param1=1.0 (arm)
+            # param2=0 for normal arm (NOT 21196 which is force-arm and gets rejected)
+            ok = self.publish_vehicle_command(uav_id, command=400, param1=1.0, param2=0.0)
         elif command_type == 'DISARM':
-            ok = self.publish_vehicle_command(uav_id, command=400, param1=0.0, param2=21196.0)
+            # DISARM: param1=0.0 (disarm), param2=0 for normal disarm
+            ok = self.publish_vehicle_command(uav_id, command=400, param1=0.0, param2=0.0)
         elif command_type == 'TAKEOFF':
             alt = params.get('altitude', 5.0)
             ok = self.publish_vehicle_command(uav_id, command=22, param7=float(alt))
