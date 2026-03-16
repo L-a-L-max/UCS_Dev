@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -43,6 +43,7 @@ import {
 } from '@/services/api';
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
 import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
+import { PieChart, Pie, BarChart, Bar, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface CommanderViewProps {
   token: string;
@@ -72,6 +73,10 @@ export default function CommanderView({ token, username, partitions = [], onLogo
   const [logTotalPages, setLogTotalPages] = useState(0);
   const [logFilter, setLogFilter] = useState('ALL');
   const [logLoading, setLogLoading] = useState(false);
+  const [logPageSize, setLogPageSize] = useState(10);
+
+  // Chart state
+  const [chartType, setChartType] = useState<'pie' | 'bar'>('pie');
 
   // Active tab state
   const [activeTab, setActiveTab] = useState<'fleet' | 'permission' | 'logs' | 'teams'>('fleet');
@@ -110,6 +115,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
           armed: uav.armed ?? uav.isActive ?? false,
           model: undefined,
           owner: undefined,
+          heading: uav.heading,
         });
       });
       return next;
@@ -167,13 +173,25 @@ export default function CommanderView({ token, username, partitions = [], onLogo
     }
   }, [token]);
 
+  // Dynamic log page size based on viewport
+  useEffect(() => {
+    const calculatePageSize = () => {
+      // Each log item ~68px, overhead ~220px (header, tabs, filters, pagination)
+      const available = window.innerHeight - 220;
+      setLogPageSize(Math.max(5, Math.floor(available / 68)));
+    };
+    calculatePageSize();
+    window.addEventListener('resize', calculatePageSize);
+    return () => window.removeEventListener('resize', calculatePageSize);
+  }, []);
+
   // Fetch operation logs
   const fetchLogs = useCallback(async (page: number = 0, filter: string = 'ALL') => {
     setLogLoading(true);
     try {
       const res = filter === 'ALL'
-        ? await getOperationLogs(token, page, 15)
-        : await getLogsByType(token, filter, page, 15);
+        ? await getOperationLogs(token, page, logPageSize)
+        : await getLogsByType(token, filter, page, logPageSize);
       if (res.code === 0 && res.data) {
         setLogs(res.data.content || []);
         setLogTotalPages(res.data.totalPages || 0);
@@ -184,7 +202,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
     } finally {
       setLogLoading(false);
     }
-  }, [token]);
+  }, [token, logPageSize]);
 
   // Fetch teams via commander API (fixes Issue #2: "暂无团队数据")
   const fetchTeams = useCallback(async () => {
@@ -399,6 +417,18 @@ export default function CommanderView({ token, username, partitions = [], onLogo
     return result;
   })();
 
+  // Chart data for fleet overview
+  const droneChartData = useMemo(() => {
+    const armed = mapDrones.filter(d => d.onlineStatus === true && d.armed === true).length;
+    const disarmed = mapDrones.filter(d => d.onlineStatus === true && d.armed !== true).length;
+    const offline = mapDrones.filter(d => !d.onlineStatus).length;
+    return [
+      { name: '在线已解锁', value: armed, color: '#22c55e' },
+      { name: '在线未解锁', value: disarmed, color: '#3b82f6' },
+      { name: '离线', value: offline, color: '#64748b' },
+    ].filter(d => d.value > 0);
+  }, [mapDrones]);
+
   // 事件日志格式化为地图面板使用
   const eventLogsForMap = logs.slice(0, 20).map(log => ({
     id: log.id, time: formatTime(log.createdAt),
@@ -439,8 +469,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
       {/* 主体: 左右分栏布局 */}
       <div className="flex-1 flex overflow-hidden">
         {/* 左侧面板: 控制功能 - 右侧收起时自动扩展 */}
-        {!leftPanelCollapsed && (
-          <div className={`${rightPanelCollapsed ? 'flex-1' : 'w-[420px] min-w-[320px]'} bg-slate-900 border-r border-slate-700 flex flex-col`}>
+          <div className={`${leftPanelCollapsed ? 'w-0 min-w-0 overflow-hidden' : rightPanelCollapsed ? 'flex-1' : 'w-[420px] min-w-[320px]'} bg-slate-900 border-r border-slate-700 flex flex-col transition-all duration-500 ease-in-out`}>
             {/* Tab 切换 */}
             <div className="flex gap-0.5 bg-slate-800 border-b border-slate-700 p-1">
               <button onClick={() => setActiveTab('fleet')}
@@ -485,6 +514,46 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                       <div className="text-[9px] text-slate-400">低电量</div>
                     </CardContent></Card>
                   </div>
+                  {/* 状态分布图表 */}
+                  {droneChartData.length > 0 && (
+                    <div className="mb-2 flex-shrink-0">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[10px] text-slate-400">状态分布</span>
+                        <div className="flex gap-0.5">
+                          <button onClick={() => setChartType('pie')}
+                            className={`text-[9px] px-1.5 py-0.5 rounded ${chartType === 'pie' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}>饼图</button>
+                          <button onClick={() => setChartType('bar')}
+                            className={`text-[9px] px-1.5 py-0.5 rounded ${chartType === 'bar' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}>柱状图</button>
+                        </div>
+                      </div>
+                      <div className="bg-slate-800 rounded border border-slate-700 p-1" style={{ height: 120 }}>
+                        <ResponsiveContainer width="100%" height="100%">
+                          {chartType === 'pie' ? (
+                            <PieChart>
+                              <Pie data={droneChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={40}
+                                animationDuration={600} label={({ name, value }) => `${name}: ${value}`}
+                                labelLine={false} fontSize={9}>
+                                {droneChartData.map((entry, index) => (
+                                  <Cell key={`cell-${index}`} fill={entry.color} />
+                                ))}
+                              </Pie>
+                              <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #475569', fontSize: 11 }} />
+                            </PieChart>
+                          ) : (
+                            <BarChart data={droneChartData}>
+                              <Bar dataKey="value" animationDuration={600} radius={[4, 4, 0, 0]}>
+                                {droneChartData.map((entry, index) => (
+                                  <Cell key={`cell-${index}`} fill={entry.color} />
+                                ))}
+                              </Bar>
+                              <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #475569', fontSize: 11 }}
+                                formatter={(value: number, name: string, props: { payload?: { name?: string } }) => [value, props.payload?.name || name]} />
+                            </BarChart>
+                          )}
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
                   {/* 无人机列表（在线优先排序）- 独立滚动区域 */}
                   <div className="flex-1 overflow-y-auto space-y-1 scrollbar-thin" style={{ scrollbarWidth: 'thin', scrollbarColor: '#475569 #1e293b' }}>
                     {[...mapDrones].sort((a, b) => {
@@ -495,7 +564,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                     }).map(drone => (
                       <div key={drone.uavId}
                         className={`p-2 rounded text-xs cursor-pointer transition-all ${selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
-                        onClick={() => setSelectedMapDrone(drone.uavId)}>
+                        onClick={() => setSelectedMapDrone(prev => prev === drone.uavId ? null : drone.uavId)}>
                         <div className="flex items-center justify-between mb-0.5">
                           <span className="font-bold text-blue-300">{drone.uavId}</span>
                           <div className="flex items-center gap-1">
@@ -612,15 +681,15 @@ export default function CommanderView({ token, username, partitions = [], onLogo
 
               {/* 操作日志 */}
               {activeTab === 'logs' && (
-                <div className="space-y-3">
-                  <div className="flex flex-wrap gap-1 mb-2">
+                <div className="flex flex-col h-full">
+                  <div className="flex flex-wrap gap-1 mb-2 flex-shrink-0">
                     {LOG_TYPES.map(lt => (
                       <Button key={lt.value} size="sm" variant={logFilter === lt.value ? 'default' : 'outline'}
                         className={`text-xs h-6 ${logFilter === lt.value ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'}`}
                         onClick={() => { setLogFilter(lt.value); fetchLogs(0, lt.value); }}>{lt.label}</Button>
                     ))}
                   </div>
-                  <div className="space-y-1">
+                  <div className="flex-1 space-y-1">
                     {logs.map(log => (
                       <div key={log.id} className="p-2 rounded bg-slate-800 border border-slate-700 text-xs">
                         <div className="flex items-center justify-between mb-0.5">
@@ -639,15 +708,13 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                     ))}
                     {logs.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">{logLoading ? '加载中...' : '暂无操作日志'}</div>}
                   </div>
-                  {logTotalPages > 1 && (
-                    <div className="flex items-center justify-center gap-2 pt-2">
-                      <Button size="sm" variant="outline" disabled={logPage === 0} onClick={() => fetchLogs(logPage - 1, logFilter)}
-                        className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronLeft className="w-3 h-3" /></Button>
-                      <span className="text-xs text-slate-400">{logPage + 1} / {logTotalPages}</span>
-                      <Button size="sm" variant="outline" disabled={logPage >= logTotalPages - 1} onClick={() => fetchLogs(logPage + 1, logFilter)}
-                        className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronRight className="w-3 h-3" /></Button>
-                    </div>
-                  )}
+                  <div className="flex items-center justify-center gap-2 pt-2 flex-shrink-0 border-t border-slate-700 mt-1">
+                    <Button size="sm" variant="outline" disabled={logPage === 0} onClick={() => fetchLogs(logPage - 1, logFilter)}
+                      className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronLeft className="w-3 h-3" /></Button>
+                    <span className="text-xs text-slate-400">{logPage + 1} / {Math.max(1, logTotalPages)}</span>
+                    <Button size="sm" variant="outline" disabled={logPage >= logTotalPages - 1} onClick={() => fetchLogs(logPage + 1, logFilter)}
+                      className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronRight className="w-3 h-3" /></Button>
+                  </div>
                 </div>
               )}
 
@@ -690,15 +757,12 @@ export default function CommanderView({ token, username, partitions = [], onLogo
               )}
             </div>
           </div>
-        )}
 
         {/* 右侧面板: 地图视图 (约2/3宽度) */}
-        {!rightPanelCollapsed && (
-          <div className="flex-1 h-full">
+          <div className={`${rightPanelCollapsed ? 'w-0 overflow-hidden' : 'flex-1'} h-full transition-all duration-500 ease-in-out`}>
             <MapPanel drones={mapDrones} selectedDroneId={selectedMapDrone} onDroneClick={setSelectedMapDrone}
               showDroneList={leftPanelCollapsed} showEventLog={true} eventLogs={eventLogsForMap} />
           </div>
-        )}
 
         {/* 两侧都收起时显示提示 */}
         {leftPanelCollapsed && rightPanelCollapsed && (

@@ -16,15 +16,17 @@ import java.util.Optional;
 
 /**
  * Service for handling drone control commands.
- * Validates permissions and logs operations.
+ * Validates permissions, publishes to DDS via gateway, and logs operations.
  * 
  * Control flow:
  * 1. Validate user has control permission for the drone (via DroneOwnership)
  * 2. Check drone is online (via Redis heartbeat)
- * 3. Log command to command_log table
- * 4. Log operation to operation_log table
+ * 3. Publish command to DDS gateway (which forwards to PX4 via ROS2)
+ * 4. Log command to command_log table
+ * 5. Log operation to operation_log table
  * 
- * Note: Actual DDS command publishing is deferred to future implementation.
+ * DDS command publishing is handled by the DDS gateway (Python/rclpy) which
+ * exposes a REST API on port 5050 for receiving commands from this service.
  */
 @Slf4j
 @Service
@@ -36,10 +38,11 @@ public class ControlService {
     private final CommandLogRepository commandLogRepository;
     private final RedisService redisService;
     private final OperationLogService operationLogService;
+    private final DdsCommandService ddsCommandService;
     
     /**
      * Send a control command to a drone.
-     * Currently logs the command; actual DDS publishing deferred.
+     * Publishes to DDS gateway and logs the operation.
      */
     @Transactional
     public ControlCommandResponse sendControlCommand(ControlCommandRequest request,
@@ -70,10 +73,12 @@ public class ControlService {
         // 3. Check drone online status via Redis
         boolean isOnline = redisService.isDroneOnline(uavId);
         if (!isOnline) {
-            log.warn("Drone {} is offline, command will be queued/rejected", uavId);
+            operationLogService.logFailure(userId, username, "CONTROL_COMMAND",
+                    drone.getId(), uavId, commandType, "Drone is offline");
+            return ControlCommandResponse.failed(uavId, "Drone is offline: " + uavId);
         }
         
-        // 4. Log to command_log table (actual DDS publish deferred)
+        // 4. Log to command_log table with PENDING status
         CommandLog cmdLog = new CommandLog();
         cmdLog.setDroneId(drone.getId());
         cmdLog.setUserId(userId);
@@ -82,13 +87,33 @@ public class ControlService {
         cmdLog.setStatus("PENDING");
         commandLogRepository.save(cmdLog);
         
-        // 5. Log to operation_log table
-        String detail = buildHumanReadableDetail(commandType, uavId);
+        // 5. Publish command to DDS gateway
+        boolean published = ddsCommandService.sendCommand(uavId, commandType, request.getParams());
         
+        if (published) {
+            cmdLog.setStatus("SENT");
+            commandLogRepository.save(cmdLog);
+            
+            // Handle OFFBOARD heartbeat lifecycle
+            if ("OFFBOARD".equalsIgnoreCase(commandType)) {
+                ddsCommandService.startHeartbeat(uavId);
+            } else if ("LAND".equalsIgnoreCase(commandType)
+                    || "RTL".equalsIgnoreCase(commandType)
+                    || "DISARM".equalsIgnoreCase(commandType)) {
+                ddsCommandService.stopHeartbeat(uavId);
+            }
+        } else {
+            cmdLog.setStatus("GATEWAY_UNREACHABLE");
+            commandLogRepository.save(cmdLog);
+            log.warn("DDS gateway unreachable for command {} -> {}, logged for retry", commandType, uavId);
+        }
+        
+        // 6. Log to operation_log table
+        String detail = buildHumanReadableDetail(commandType, uavId);
         operationLogService.logSuccess(userId, username, "CONTROL_COMMAND",
                 drone.getId(), uavId, detail);
         
-        log.info("Control command logged: {} -> {} (DDS publish deferred)", commandType, uavId);
+        log.info("Control command {} -> {} status={}", commandType, uavId, cmdLog.getStatus());
         return ControlCommandResponse.success("CMD_" + cmdLog.getId(), uavId);
     }
     

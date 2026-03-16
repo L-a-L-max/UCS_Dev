@@ -32,7 +32,7 @@ import {
   type ControlCommandResponse,
 } from '@/services/api';
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
-import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
+import { useTelemetryWebSocket, type PartitionTelemetryMessage, type CommandAckMessage } from '@/hooks/useTelemetryWebSocket';
 
 interface PilotViewProps {
   token: string;
@@ -70,6 +70,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   const [sendingCommand, setSendingCommand] = useState<string | null>(null);
   // 快捷指令反馈
   const [quickFeedback, setQuickFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
+  // Two-stage command ack feedback from PX4 via WebSocket
+  const [commandAckFeedback, setCommandAckFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
 
   // 详细控制面板显示开关（默认隐藏，点击无人机后显示）
   const [showDetailPanel, setShowDetailPanel] = useState(false);
@@ -84,8 +86,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   const [gotoLon, setGotoLon] = useState('116.4074');
   const [gotoAlt, setGotoAlt] = useState('50');
 
-  // TAKEOFF params - 默认20米
-  const [takeoffAlt, setTakeoffAlt] = useState('20');
+  // TAKEOFF params - 默认5米
+  const [takeoffAlt, setTakeoffAlt] = useState('5');
 
   // Real-time telemetry from WebSocket
   const [telemetryDrones, setTelemetryDrones] = useState<Map<string, MapDrone>>(new Map());
@@ -105,6 +107,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
           flightStatus: uav.armed ? 'FLYING' : 'IDLE',
           onlineStatus: true, // Receiving telemetry = online
           armed: uav.armed ?? uav.isActive ?? false,
+          heading: uav.heading,
         });
       });
       return next;
@@ -126,11 +129,22 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     });
   }, []);
 
+  // Two-stage feedback: Stage 2 - PX4 acknowledged the command
+  const handleCommandAck = useCallback((ack: CommandAckMessage) => {
+    const success = ack.result === 0; // 0 = ACCEPTED
+    const msg = success
+      ? `PX4 确认执行: ${ack.resultText}`
+      : `PX4 拒绝: ${ack.resultText}`;
+    setCommandAckFeedback({ uavId: ack.uavId, message: msg, success });
+    setTimeout(() => setCommandAckFeedback(null), 4000);
+  }, []);
+
   useTelemetryWebSocket({
     enabled: partitions.length > 0,
     partitions,
     onPartitionDataReceived: handlePartitionData,
     onDroneRemoved: handleDroneRemoved,
+    onCommandAck: handleCommandAck,
   });
 
   // Issue #8: Only show drones the pilot has permission to control
@@ -178,7 +192,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
 
     let params = '{}';
     if (commandType === 'TAKEOFF') {
-      params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 20 });
+      params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
     } else if (commandType === 'GOTO') {
       params = JSON.stringify({
         lat: parseFloat(gotoLat) || 0,
@@ -323,10 +337,16 @@ export default function PilotView({ token, username, partitions = [], onLogout }
         {/* 左侧: 无人机列表（带快捷控制按钮） */}
         <div className="w-72 bg-slate-800 border-r border-slate-700 overflow-y-auto p-2 space-y-1">
           <h2 className="text-xs font-semibold text-slate-400 mb-1">我的无人机</h2>
-          {/* 快捷指令反馈 */}
+          {/* 快捷指令反馈 (Stage 1: 后端已接受) */}
           {quickFeedback && (
             <div className={`p-1.5 rounded text-[10px] mb-1 ${quickFeedback.success ? 'bg-green-900/30 border border-green-700 text-green-300' : 'bg-red-900/30 border border-red-700 text-red-300'}`}>
               [{quickFeedback.uavId}] {quickFeedback.message}
+            </div>
+          )}
+          {/* PX4 确认反馈 (Stage 2: PX4已执行) */}
+          {commandAckFeedback && (
+            <div className={`p-1.5 rounded text-[10px] mb-1 ${commandAckFeedback.success ? 'bg-emerald-900/30 border border-emerald-600 text-emerald-300' : 'bg-orange-900/30 border border-orange-600 text-orange-300'}`}>
+              [{commandAckFeedback.uavId}] {commandAckFeedback.message}
             </div>
           )}
           {mapDrones.length === 0 && <p className="text-slate-500 text-xs text-center py-6">暂无可控制的无人机</p>}

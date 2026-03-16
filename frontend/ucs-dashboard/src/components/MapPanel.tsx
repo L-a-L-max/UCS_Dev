@@ -83,6 +83,8 @@ export interface MapDrone {
   teamName?: string;
   teamLeader?: string;
   controlOwnerName?: string;
+  /** Heading in degrees (0-360) for drone icon rotation */
+  heading?: number;
 }
 
 interface MapPanelProps {
@@ -401,7 +403,7 @@ export default function MapPanel({
         transition: all 0.2s;
         ${isSelected ? 'animation: pulse 1.5s infinite;' : ''}
       ">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="white">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="white" style="transform: rotate(${drone.heading != null ? drone.heading : 0}deg); transition: transform 0.5s ease;">
           <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/>
         </svg>
       </div>
@@ -627,9 +629,9 @@ export default function MapPanel({
                 <div className="flex items-center gap-2 text-slate-400">
                   <span className="flex items-center gap-0.5">
                     <Battery className="w-2.5 h-2.5" />
-                    {drone.battery != null ? `${drone.battery}%` : 'N/A'}
+                    {drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}
                   </span>
-                  <span>{drone.altitude != null ? `${drone.altitude}m` : ''}</span>
+                  <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
                 </div>
               </div>
             ))}

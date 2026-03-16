@@ -61,6 +61,7 @@ TOPIC_SUFFIX_VARIANTS = {
     'vehicle_attitude': ['vehicle_attitude'],
     'vehicle_status': ['vehicle_status', 'vehicle_status_v1'],
     'battery_status': ['battery_status', 'battery_status_v1'],
+    'vehicle_command_ack': ['vehicle_command_ack'],
 }
 
 ALL_KNOWN_SUFFIXES = set()
@@ -274,6 +275,11 @@ class DDSGateway:
                 px4.BatteryStatus,
                 lambda msg, uid=uav_id: self._on_battery_status(uid, msg)
             )
+        if hasattr(px4, 'VehicleCommandAck'):
+            topic_handlers['vehicle_command_ack'] = (
+                px4.VehicleCommandAck,
+                lambda msg, uid=uav_id: self._on_vehicle_command_ack(uid, msg)
+            )
 
         available_topics = dict(self._node.get_topic_names_and_types())
 
@@ -392,6 +398,56 @@ class DDSGateway:
             s.msg_count += 1
             self._stats[f'{uav_id}/battery_status'] += 1
             self._stats['total_messages'] += 1
+
+    def _on_vehicle_command_ack(self, uav_id, msg):
+        """Handle VehicleCommandAck from PX4.
+
+        Forwards the acknowledgment to the backend so it can update command status
+        and notify the frontend via WebSocket for two-stage feedback.
+
+        PX4 result codes: 0=ACCEPTED, 1=TEMPORARILY_REJECTED, 2=DENIED,
+        3=UNSUPPORTED, 4=FAILED, 5=IN_PROGRESS, 6=CANCELLED
+        """
+        command = getattr(msg, 'command', 0)
+        result = getattr(msg, 'result', -1)
+        logger.info("[CommandAck] %s: command=%d result=%d", uav_id, command, result)
+        self._stats[f'{uav_id}/command_ack'] += 1
+        self._stats['total_messages'] += 1
+
+        # Forward ack to backend asynchronously
+        try:
+            ack_payload = {
+                'uavId': uav_id,
+                'command': int(command),
+                'result': int(result),
+                'timestamp': time.time(),
+            }
+            threading.Thread(
+                target=self._forward_command_ack,
+                args=(ack_payload,),
+                daemon=True
+            ).start()
+        except Exception as e:
+            logger.error("[CommandAck] Failed to forward ack: %s", e)
+
+    def _forward_command_ack(self, ack_payload: dict):
+        """Forward a command ack to the backend REST API."""
+        try:
+            resp = requests.post(
+                f"{self.backend_url}/api/v1/dds-gateway/command-ack",
+                json=ack_payload,
+                headers={
+                    "X-Gateway-Key": self.api_key,
+                    "Content-Type": "application/json"
+                },
+                timeout=5
+            )
+            if resp.status_code == 200:
+                logger.info("[CommandAck] Forwarded ack to backend: %s", ack_payload)
+            else:
+                logger.warn("[CommandAck] Backend returned %d: %s", resp.status_code, resp.text[:200])
+        except Exception as e:
+            logger.error("[CommandAck] Forward failed: %s", e)
 
     @staticmethod
     def _nav_state_to_mode(nav_state: int) -> str:
@@ -541,6 +597,10 @@ class DDSGateway:
             logger.error("[Startup] Failed to init ROS2 node. Exiting.")
             return
 
+        # Start command HTTP server for receiving commands from backend
+        cmd_port = int(os.environ.get('DDS_COMMAND_PORT', '5050'))
+        self.start_command_server(port=cmd_port)
+
         logger.info("[Startup] Checking backend...")
         for attempt in range(3):
             if self.check_backend_health():
@@ -612,6 +672,256 @@ class DDSGateway:
     def stop(self):
         """Stop the gateway gracefully."""
         self.running = False
+
+    # ============================================================
+    # Command Publishing (Backend -> DDS)
+    # ============================================================
+
+    def publish_vehicle_command(self, uav_id: str, command: int, param1: float = 0.0,
+                                 param2: float = 0.0, param7: float = 0.0) -> bool:
+        """Publish a VehicleCommand to /{uav_id}/fmu/in/vehicle_command.
+
+        Args:
+            uav_id: Target drone ID (e.g., 'px4_1')
+            command: PX4 command code (e.g., 400=ARM, 176=DO_SET_MODE, 22=TAKEOFF)
+            param1-param7: Command-specific parameters
+        """
+        if not self._rclpy_available or not self._px4_msgs_available or not self._node:
+            logger.error("[Command] ROS2/px4_msgs not available for command publishing")
+            return False
+
+        try:
+            import px4_msgs.msg as px4
+            topic = f"/{uav_id}/fmu/in/vehicle_command"
+            pub = self._node.create_publisher(px4.VehicleCommand, topic, 10)
+
+            msg = px4.VehicleCommand()
+            msg.command = command
+            msg.param1 = param1
+            msg.param2 = param2
+            msg.param7 = param7
+            msg.target_system = 1
+            msg.target_component = 1
+            msg.source_system = 255
+            msg.source_component = 0
+            msg.from_external = True
+            msg.timestamp = int(time.time() * 1e6)
+
+            pub.publish(msg)
+            logger.info("[Command] Published VehicleCommand cmd=%d p1=%.1f p2=%.1f p7=%.1f -> %s",
+                        command, param1, param2, param7, topic)
+            return True
+        except Exception as e:
+            logger.error("[Command] Failed to publish VehicleCommand: %s", e)
+            return False
+
+    def publish_offboard_control_mode(self, uav_id: str, position: bool = True) -> bool:
+        """Publish OffboardControlMode to enable offboard position control."""
+        if not self._rclpy_available or not self._px4_msgs_available or not self._node:
+            return False
+        try:
+            import px4_msgs.msg as px4
+            topic = f"/{uav_id}/fmu/in/offboard_control_mode"
+            pub = self._node.create_publisher(px4.OffboardControlMode, topic, 10)
+
+            msg = px4.OffboardControlMode()
+            msg.position = position
+            msg.velocity = False
+            msg.acceleration = False
+            msg.attitude = False
+            msg.body_rate = False
+            msg.timestamp = int(time.time() * 1e6)
+
+            pub.publish(msg)
+            return True
+        except Exception as e:
+            logger.error("[Command] Failed to publish OffboardControlMode: %s", e)
+            return False
+
+    def publish_trajectory_setpoint(self, uav_id: str, x: float, y: float, z: float) -> bool:
+        """Publish TrajectorySetpoint for position control (NED frame)."""
+        if not self._rclpy_available or not self._px4_msgs_available or not self._node:
+            return False
+        try:
+            import px4_msgs.msg as px4
+            topic = f"/{uav_id}/fmu/in/trajectory_setpoint"
+            pub = self._node.create_publisher(px4.TrajectorySetpoint, topic, 10)
+
+            msg = px4.TrajectorySetpoint()
+            msg.position = [x, y, z]
+            msg.yaw = float('nan')  # Don't control yaw
+            msg.timestamp = int(time.time() * 1e6)
+
+            pub.publish(msg)
+            logger.info("[Command] Published TrajectorySetpoint [%.2f, %.2f, %.2f] -> %s",
+                        x, y, z, topic)
+            return True
+        except Exception as e:
+            logger.error("[Command] Failed to publish TrajectorySetpoint: %s", e)
+            return False
+
+    def handle_command(self, uav_id: str, command_type: str, params: dict) -> dict:
+        """Handle a command request from the backend.
+
+        Translates high-level command types to PX4 DDS messages.
+
+        Returns:
+            dict with 'success' (bool) and 'message' (str)
+        """
+        command_type = command_type.upper()
+        logger.info("[Command] Handling %s for %s params=%s", command_type, uav_id, params)
+
+        if command_type == 'ARM':
+            ok = self.publish_vehicle_command(uav_id, command=400, param1=1.0, param2=21196.0)
+        elif command_type == 'DISARM':
+            ok = self.publish_vehicle_command(uav_id, command=400, param1=0.0, param2=21196.0)
+        elif command_type == 'TAKEOFF':
+            alt = params.get('altitude', 5.0)
+            ok = self.publish_vehicle_command(uav_id, command=22, param7=float(alt))
+        elif command_type == 'LAND':
+            ok = self.publish_vehicle_command(uav_id, command=21)
+        elif command_type == 'RTL':
+            ok = self.publish_vehicle_command(uav_id, command=20)
+        elif command_type == 'HOLD':
+            ok = self.publish_vehicle_command(uav_id, command=17)
+        elif command_type == 'OFFBOARD':
+            # Switch to OFFBOARD mode: publish OffboardControlMode first, then mode switch
+            self.publish_offboard_control_mode(uav_id, position=True)
+            ok = self.publish_vehicle_command(uav_id, command=176, param1=1.0, param2=6.0)
+        elif command_type == 'GOTO':
+            x = params.get('x', params.get('lat', 0.0))
+            y = params.get('y', params.get('lon', 0.0))
+            z = params.get('z', -(params.get('alt', 5.0)))  # NED: z is negative altitude
+            self.publish_offboard_control_mode(uav_id, position=True)
+            ok = self.publish_trajectory_setpoint(uav_id, float(x), float(y), float(z))
+        else:
+            return {'success': False, 'message': f'Unknown command type: {command_type}'}
+
+        if ok:
+            return {'success': True, 'message': f'{command_type} command sent to {uav_id}'}
+        else:
+            return {'success': False, 'message': f'Failed to publish {command_type} to DDS'}
+
+    # ============================================================
+    # Offboard Heartbeat (>2Hz for OFFBOARD mode)
+    # ============================================================
+
+    def start_offboard_heartbeat(self, uav_id: str, interval: float = 0.4):
+        """Start publishing OffboardControlMode at >2Hz for a drone.
+
+        PX4 requires continuous OffboardControlMode messages to stay in OFFBOARD mode.
+        """
+        key = f"heartbeat_{uav_id}"
+        if hasattr(self, '_heartbeat_threads') and key in self._heartbeat_threads:
+            logger.info("[Heartbeat] Already running for %s", uav_id)
+            return
+
+        if not hasattr(self, '_heartbeat_threads'):
+            self._heartbeat_threads = {}
+            self._heartbeat_active = {}
+
+        self._heartbeat_active[uav_id] = True
+
+        def _heartbeat_loop():
+            logger.info("[Heartbeat] Started for %s at %.1f Hz", uav_id, 1.0 / interval)
+            while self._heartbeat_active.get(uav_id, False) and self.running:
+                self.publish_offboard_control_mode(uav_id, position=True)
+                time.sleep(interval)
+            logger.info("[Heartbeat] Stopped for %s", uav_id)
+
+        t = threading.Thread(target=_heartbeat_loop, daemon=True, name=f"heartbeat-{uav_id}")
+        t.start()
+        self._heartbeat_threads[key] = t
+
+    def stop_offboard_heartbeat(self, uav_id: str):
+        """Stop the offboard heartbeat for a drone."""
+        if hasattr(self, '_heartbeat_active'):
+            self._heartbeat_active[uav_id] = False
+
+    # ============================================================
+    # Command HTTP Server (receives commands from backend)
+    # ============================================================
+
+    def start_command_server(self, port: int = 5050):
+        """Start a lightweight HTTP server to receive commands from the backend."""
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+
+        gateway = self
+
+        class CommandHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                if self.path == '/api/command':
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(content_length)
+                    try:
+                        data = json.loads(body)
+                        uav_id = data.get('uavId', '')
+                        command_type = data.get('commandType', '')
+                        params = data.get('params', {})
+                        if isinstance(params, str):
+                            params = json.loads(params) if params else {}
+
+                        result = gateway.handle_command(uav_id, command_type, params)
+
+                        # Start/stop heartbeat for OFFBOARD mode
+                        if command_type.upper() == 'OFFBOARD' and result['success']:
+                            gateway.start_offboard_heartbeat(uav_id)
+                        elif command_type.upper() in ('LAND', 'RTL', 'DISARM'):
+                            gateway.stop_offboard_heartbeat(uav_id)
+
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps(result).encode())
+                    except Exception as e:
+                        self.send_response(500)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps({'success': False, 'message': str(e)}).encode())
+                elif self.path == '/api/heartbeat/start':
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(content_length)
+                    data = json.loads(body)
+                    gateway.start_offboard_heartbeat(data.get('uavId', ''))
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'success': True}).encode())
+                elif self.path == '/api/heartbeat/stop':
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(content_length)
+                    data = json.loads(body)
+                    gateway.stop_offboard_heartbeat(data.get('uavId', ''))
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'success': True}).encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def do_GET(self):
+                if self.path == '/api/health':
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        'status': 'ok',
+                        'drones': list(gateway.drone_states.keys()),
+                        'subscriptions': len(gateway._subscriptions),
+                    }).encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, format, *args):
+                logger.debug("[CommandServer] %s", format % args)
+
+        server = HTTPServer(('0.0.0.0', port), CommandHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True, name='command-server')
+        thread.start()
+        logger.info("[CommandServer] Listening on port %d", port)
+        return server
 
 
 def main():

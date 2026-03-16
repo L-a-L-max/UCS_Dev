@@ -69,17 +69,33 @@ export interface PartitionTelemetryMessage {
   removedDrones?: string[]; // uavIds removed from this partition
 }
 
+/**
+ * Command acknowledgment message from PX4 via DDS gateway -> backend -> WebSocket.
+ * Used for two-stage command feedback:
+ *   Stage 1: Backend accepted the command (immediate HTTP response)
+ *   Stage 2: PX4 acknowledged execution (this WebSocket message)
+ */
+export interface CommandAckMessage {
+  type: 'command_ack';
+  uavId: string;
+  command: number;
+  result: number;
+  resultText: string;
+  timestamp: string;
+}
+
 interface UseTelemetryWebSocketOptions {
   enabled?: boolean;
   partitions?: string[];
   onTelemetryReceived?: (batch: TelemetryBatch) => void;
   onPartitionDataReceived?: (data: PartitionTelemetryMessage) => void;
   onDroneRemoved?: (removedUavIds: string[]) => void;
+  onCommandAck?: (ack: CommandAckMessage) => void;
   onConnectionChange?: (connected: boolean) => void;
 }
 
 export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}) {
-  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onDroneRemoved, onConnectionChange } = options;
+  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onDroneRemoved, onCommandAck, onConnectionChange } = options;
   const clientRef = useRef<Client | null>(null);
   const [connected, setConnected] = useState(false);
   const [lastBatch, setLastBatch] = useState<TelemetryBatch | null>(null);
@@ -89,6 +105,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   const onTelemetryReceivedRef = useRef(onTelemetryReceived);
   const onPartitionDataReceivedRef = useRef(onPartitionDataReceived);
   const onDroneRemovedRef = useRef(onDroneRemoved);
+  const onCommandAckRef = useRef(onCommandAck);
   const onConnectionChangeRef = useRef(onConnectionChange);
   const partitionsRef = useRef(partitions);
 
@@ -96,6 +113,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   useEffect(() => { onTelemetryReceivedRef.current = onTelemetryReceived; }, [onTelemetryReceived]);
   useEffect(() => { onPartitionDataReceivedRef.current = onPartitionDataReceived; }, [onPartitionDataReceived]);
   useEffect(() => { onDroneRemovedRef.current = onDroneRemoved; }, [onDroneRemoved]);
+  useEffect(() => { onCommandAckRef.current = onCommandAck; }, [onCommandAck]);
   useEffect(() => { onConnectionChangeRef.current = onConnectionChange; }, [onConnectionChange]);
   useEffect(() => { partitionsRef.current = partitions; }, [partitions]);
 
@@ -125,6 +143,16 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
     }
   }, []);
 
+  const handleCommandAck = useCallback((message: IMessage) => {
+    try {
+      const ack: CommandAckMessage = JSON.parse(message.body);
+      console.log('[WS] Command ack received:', ack.uavId, 'result:', ack.resultText);
+      onCommandAckRef.current?.(ack);
+    } catch (error) {
+      console.error('Failed to parse command ack message:', error);
+    }
+  }, []);
+
   const connect = useCallback(() => {
     if (clientRef.current?.active) {
       return;
@@ -149,6 +177,10 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
         client.subscribe('/topic/telemetry', handleMessage);
         console.log('[WS] Subscribed to /topic/telemetry');
         
+        // Subscribe to command acknowledgment topic
+        client.subscribe('/topic/command-ack', handleCommandAck);
+        console.log('[WS] Subscribed to /topic/command-ack');
+        
         // Subscribe to partition-specific topics if partitions are provided
         if (currentPartitions && currentPartitions.length > 0) {
           console.log('[WS] Subscribing to partition topics:', currentPartitions);
@@ -156,6 +188,8 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
             const topic = `/topic/telemetry/partition/${partition}`;
             console.log('[WS] Subscribing to:', topic);
             client.subscribe(topic, handlePartitionMessage);
+            // Subscribe to partition-specific command acks
+            client.subscribe(`/topic/command-ack/partition/${partition}`, handleCommandAck);
           });
         } else {
           console.warn('[WS] No partitions provided, partition topics will not be subscribed');
@@ -180,7 +214,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
 
     clientRef.current = client;
     client.activate();
-  }, [handleMessage, handlePartitionMessage]);
+  }, [handleMessage, handlePartitionMessage, handleCommandAck]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {

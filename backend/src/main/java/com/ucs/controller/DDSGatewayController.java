@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
@@ -38,6 +39,7 @@ public class DDSGatewayController {
     private final TelemetryPersistenceService telemetryPersistenceService;  // Gateway 2: Persistence
     private final WebSocketGatewayService webSocketGatewayService;          // Gateway 3: WebSocket
     private final RedisService redisService;
+    private final SimpMessagingTemplate messagingTemplate;
 
     @Value("${dds.gateway.api-key:ucs-dds-gateway-secret-2024}")
     private String gatewayApiKey;
@@ -143,6 +145,77 @@ public class DDSGatewayController {
             return ResponseEntity.internalServerError()
                     .body(Map.of("error", e.getMessage()));
         }
+    }
+
+    /**
+     * Receive command acknowledgment from the DDS gateway.
+     * PX4 sends VehicleCommandAck after processing a command.
+     * This endpoint forwards the ack to frontend clients via WebSocket
+     * for two-stage command feedback (Stage 1: command sent, Stage 2: PX4 acknowledged).
+     *
+     * Request body format:
+     * {
+     *   "uavId": "px4_1",
+     *   "command": 400,
+     *   "result": 0,
+     *   "timestamp": 1700000000.0
+     * }
+     *
+     * PX4 result codes: 0=ACCEPTED, 1=TEMPORARILY_REJECTED, 2=DENIED,
+     * 3=UNSUPPORTED, 4=FAILED, 5=IN_PROGRESS, 6=CANCELLED
+     */
+    @PostMapping("/command-ack")
+    @Operation(summary = "Receive command acknowledgment from DDS gateway")
+    public ResponseEntity<Map<String, Object>> receiveCommandAck(
+            @RequestHeader(value = "X-Gateway-Key", required = false) String apiKey,
+            @RequestBody Map<String, Object> payload) {
+
+        if (!gatewayApiKey.equals(apiKey)) {
+            return ResponseEntity.status(401).body(Map.of("error", "Invalid API key"));
+        }
+
+        try {
+            String uavId = String.valueOf(payload.get("uavId"));
+            int command = ((Number) payload.getOrDefault("command", 0)).intValue();
+            int result = ((Number) payload.getOrDefault("result", -1)).intValue();
+
+            log.info("[CommandAck] uavId={}, command={}, result={}", uavId, command, result);
+
+            // Broadcast command ack to frontend via WebSocket
+            Map<String, Object> ackMessage = new LinkedHashMap<>();
+            ackMessage.put("type", "command_ack");
+            ackMessage.put("uavId", uavId);
+            ackMessage.put("command", command);
+            ackMessage.put("result", result);
+            ackMessage.put("resultText", commandResultToText(result));
+            ackMessage.put("timestamp", Instant.now().toString());
+            messagingTemplate.convertAndSend("/topic/command-ack", ackMessage);
+
+            // Also send to partition-specific topics
+            Set<String> partitions = partitionRoutingService.getPartitionsForDrone(uavId);
+            for (String partition : partitions) {
+                messagingTemplate.convertAndSend(
+                        "/topic/command-ack/partition/" + partition, ackMessage);
+            }
+
+            return ResponseEntity.ok(Map.of("status", "ok"));
+        } catch (Exception e) {
+            log.error("[CommandAck] Failed to process: {}", e.getMessage());
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    private static String commandResultToText(int result) {
+        return switch (result) {
+            case 0 -> "ACCEPTED";
+            case 1 -> "TEMPORARILY_REJECTED";
+            case 2 -> "DENIED";
+            case 3 -> "UNSUPPORTED";
+            case 4 -> "FAILED";
+            case 5 -> "IN_PROGRESS";
+            case 6 -> "CANCELLED";
+            default -> "UNKNOWN(" + result + ")";
+        };
     }
 
     /**

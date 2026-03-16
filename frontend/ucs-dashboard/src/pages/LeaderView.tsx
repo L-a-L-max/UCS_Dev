@@ -50,7 +50,7 @@ import {
   type OperationLog,
 } from '@/services/api';
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
-import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
+import { useTelemetryWebSocket, type PartitionTelemetryMessage, type CommandAckMessage } from '@/hooks/useTelemetryWebSocket';
 
 interface LeaderViewProps {
   token: string;
@@ -76,7 +76,10 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   const [logs, setLogs] = useState<OperationLog[]>([]);
   const [logPage, setLogPage] = useState(0);
   const [logTotalPages, setLogTotalPages] = useState(0);
+  const [logPageSize, setLogPageSize] = useState(8);
   const [commandFeedback, setCommandFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
+  // Two-stage command ack feedback from PX4 via WebSocket
+  const [commandAckFeedback, setCommandAckFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
   const [activeTab, setActiveTab] = useState<'drones' | 'members' | 'logs'>('drones');
 
   // GOTO 参数
@@ -84,7 +87,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   const [gotoLon, setGotoLon] = useState('116.4074');
   const [gotoAlt, setGotoAlt] = useState('50');
   // 起飞高度
-  const [takeoffAlt, setTakeoffAlt] = useState('20');
+  const [takeoffAlt, setTakeoffAlt] = useState('5');
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
 
@@ -106,6 +109,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
           flightStatus: uav.armed ? 'FLYING' : 'IDLE',
           onlineStatus: true, // Receiving telemetry = online
           armed: uav.armed ?? uav.isActive ?? false,
+          heading: uav.heading,
         });
       });
       return next;
@@ -127,11 +131,22 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     });
   }, []);
 
+  // Two-stage feedback: Stage 2 - PX4 acknowledged the command
+  const handleCommandAck = useCallback((ack: CommandAckMessage) => {
+    const success = ack.result === 0;
+    const msg = success
+      ? `PX4 确认执行: ${ack.resultText}`
+      : `PX4 拒绝: ${ack.resultText}`;
+    setCommandAckFeedback({ uavId: ack.uavId, message: msg, success });
+    setTimeout(() => setCommandAckFeedback(null), 4000);
+  }, []);
+
   useTelemetryWebSocket({
     enabled: partitions.length > 0,
     partitions,
     onPartitionDataReceived: handlePartitionData,
     onDroneRemoved: handleDroneRemoved,
+    onCommandAck: handleCommandAck,
   });
 
   // 详情控制面板状态（点击无人机显示/隐藏，可通过按钮一直隐藏）
@@ -148,6 +163,17 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   const [transferToUserId, setTransferToUserId] = useState('');
   const [transferLoading, setTransferLoading] = useState(false);
   const [transferResult, setTransferResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Dynamic log page size based on viewport
+  useEffect(() => {
+    const calculatePageSize = () => {
+      const available = window.innerHeight - 220;
+      setLogPageSize(Math.max(4, Math.floor(available / 68)));
+    };
+    calculatePageSize();
+    window.addEventListener('resize', calculatePageSize);
+    return () => window.removeEventListener('resize', calculatePageSize);
+  }, []);
 
   // Fetch team drones (Issue #7: team-scoped)
   const fetchDrones = useCallback(async () => {
@@ -191,7 +217,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   // Fetch team-scoped logs (Issue #7)
   const fetchLogs = useCallback(async (page: number = 0) => {
     try {
-      const res = await getLeaderTeamLogs(token, page, 10);
+      const res = await getLeaderTeamLogs(token, page, logPageSize);
       if (res.code === 0 && res.data) {
         setLogs(res.data.content || []);
         setLogTotalPages(res.data.totalPages || 0);
@@ -200,7 +226,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     } catch (err) {
       console.error('Failed to fetch team logs:', err);
     }
-  }, [token]);
+  }, [token, logPageSize]);
 
   useEffect(() => {
     fetchDrones();
@@ -239,7 +265,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   const handleQuickCommand = async (uavId: string, commandType: string) => {
     setCommandFeedback(null);
     try {
-      const params = commandType === 'TAKEOFF' ? JSON.stringify({ altitude: parseFloat(takeoffAlt) || 20 })
+      const params = commandType === 'TAKEOFF' ? JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 })
         : commandType === 'GOTO' ? JSON.stringify({ lat: parseFloat(gotoLat) || 0, lon: parseFloat(gotoLon) || 0, alt: parseFloat(gotoAlt) || 50 })
         : '{}';
       const res = await sendControlCommand(token, {
@@ -367,8 +393,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
       {/* 主体: 左右分栏 */}
       <div className="flex-1 flex overflow-hidden">
         {/* 左侧面板: 控制功能 */}
-        {!leftPanelCollapsed && (
-          <div className="w-[420px] min-w-[320px] bg-slate-900 border-r border-slate-700 flex flex-col">
+          <div className={`${leftPanelCollapsed ? 'w-0 min-w-0 overflow-hidden' : 'w-[420px] min-w-[320px]'} bg-slate-900 border-r border-slate-700 flex flex-col transition-all duration-500 ease-in-out`}>
             {/* Tab 切换 */}
             <div className="flex gap-0.5 bg-slate-800 border-b border-slate-700 p-1">
               <button onClick={() => setActiveTab('drones')}
@@ -390,11 +415,19 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
               {/* 无人机 Tab */}
               {activeTab === 'drones' && (
                 <div className="space-y-3">
-                  {/* 指令反馈 */}
+                  {/* 指令反馈 (Stage 1: 后端已接受) */}
                   {commandFeedback && (
                     <div className={`p-2 rounded text-xs ${commandFeedback.success ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'}`}>
                       <span className={commandFeedback.success ? 'text-green-300' : 'text-red-300'}>
                         [{commandFeedback.uavId}] {commandFeedback.message}
+                      </span>
+                    </div>
+                  )}
+                  {/* PX4 确认反馈 (Stage 2: PX4已执行) */}
+                  {commandAckFeedback && (
+                    <div className={`p-2 rounded text-xs ${commandAckFeedback.success ? 'bg-emerald-900/30 border border-emerald-600' : 'bg-orange-900/30 border border-orange-600'}`}>
+                      <span className={commandAckFeedback.success ? 'text-emerald-300' : 'text-orange-300'}>
+                        [{commandAckFeedback.uavId}] {commandAckFeedback.message}
                       </span>
                     </div>
                   )}
@@ -528,38 +561,37 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
 
               {/* 日志 Tab */}
               {activeTab === 'logs' && (
-                <div className="space-y-2">
-                  {logs.map(log => (
-                    <div key={log.id} className="p-2 rounded bg-slate-800 border border-slate-700 text-xs">
-                      <div className="flex items-center justify-between mb-0.5">
-                        <span className="text-slate-500">{formatTime(log.createdAt)}</span>
-                        <Badge className={`text-[10px] px-1 py-0 ${log.result === 'SUCCESS' ? 'bg-green-600' : 'bg-red-600'}`}>
-                          {log.result === 'SUCCESS' ? '成功' : log.result === 'FAILURE' ? '失败' : log.result || '-'}
-                        </Badge>
+                <div className="flex flex-col h-full">
+                  <div className="flex-1 space-y-1">
+                    {logs.map(log => (
+                      <div key={log.id} className="p-2 rounded bg-slate-800 border border-slate-700 text-xs">
+                        <div className="flex items-center justify-between mb-0.5">
+                          <span className="text-slate-500">{formatTime(log.createdAt)}</span>
+                          <Badge className={`text-[10px] px-1 py-0 ${log.result === 'SUCCESS' ? 'bg-green-600' : 'bg-red-600'}`}>
+                            {log.result === 'SUCCESS' ? '成功' : log.result === 'FAILURE' ? '失败' : log.result || '-'}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge className="bg-blue-600 text-[10px] px-1 py-0">{log.operationType}</Badge>
+                          <span className="text-slate-300">{log.username || '-'}</span>
+                          {log.targetUavId && <span className="text-blue-300 font-mono">{log.targetUavId}</span>}
+                        </div>
+                        {log.detail && <div className="text-slate-400 mt-0.5 truncate">{log.detail}</div>}
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Badge className="bg-blue-600 text-[10px] px-1 py-0">{log.operationType}</Badge>
-                        <span className="text-slate-300">{log.username || '-'}</span>
-                        {log.targetUavId && <span className="text-blue-300 font-mono">{log.targetUavId}</span>}
-                      </div>
-                      {log.detail && <div className="text-slate-400 mt-0.5 truncate">{log.detail}</div>}
-                    </div>
-                  ))}
-                  {logs.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无日志</div>}
-                  {logTotalPages > 1 && (
-                    <div className="flex items-center justify-center gap-2 pt-2">
-                      <Button size="sm" variant="outline" disabled={logPage === 0} onClick={() => fetchLogs(logPage - 1)}
-                        className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronLeft className="w-3 h-3" /></Button>
-                      <span className="text-xs text-slate-400">{logPage + 1} / {logTotalPages}</span>
-                      <Button size="sm" variant="outline" disabled={logPage >= logTotalPages - 1} onClick={() => fetchLogs(logPage + 1)}
-                        className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronRight className="w-3 h-3" /></Button>
-                    </div>
-                  )}
+                    ))}
+                    {logs.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无日志</div>}
+                  </div>
+                  <div className="flex items-center justify-center gap-2 pt-2 flex-shrink-0 border-t border-slate-700 mt-1">
+                    <Button size="sm" variant="outline" disabled={logPage === 0} onClick={() => fetchLogs(logPage - 1)}
+                      className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronLeft className="w-3 h-3" /></Button>
+                    <span className="text-xs text-slate-400">{logPage + 1} / {Math.max(1, logTotalPages)}</span>
+                    <Button size="sm" variant="outline" disabled={logPage >= logTotalPages - 1} onClick={() => fetchLogs(logPage + 1)}
+                      className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronRight className="w-3 h-3" /></Button>
+                  </div>
                 </div>
               )}
             </div>
           </div>
-        )}
 
         {/* 中间: 多选聚合数据面板（受 detailPanelEnabled 控制） */}
         {multiSelectMode && aggregateData && detailPanelEnabled && (
