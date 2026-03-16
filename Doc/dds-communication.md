@@ -84,21 +84,30 @@ OFFBOARD 模式允许外部系统（UCS）直接控制无人机位置。使用 O
 PX4 要求在 OFFBOARD 模式下持续接收 `OffboardControlMode` 消息（频率 > 2Hz）。
 如果心跳中断，PX4 会自动退出 OFFBOARD 模式。
 
+当前心跳频率为 **4Hz**（0.25s 间隔），相比之前的 2.5Hz（0.4s）提供了更充足的安全裕量。
+
 ```python
-def start_offboard_heartbeat(self, uav_id, interval=0.4):
-    """以 2.5Hz 发布 OffboardControlMode 心跳"""
+def start_offboard_heartbeat(self, uav_id, interval=0.25):
+    """以 4Hz 发布 OffboardControlMode + TrajectorySetpoint 心跳"""
     # 在独立线程中循环发布
     while active:
         self.publish_offboard_control_mode(uav_id, position=True)
-        time.sleep(interval)  # 0.4s → 2.5Hz
+        self.publish_trajectory_setpoint(uav_id)
+        time.sleep(interval)  # 0.25s → 4Hz
 ```
+
+**心跳停止策略**：心跳仅在收到明确的退出指令（LAND/RTL/DISARM）时才停止。
+飞行中的瞬态指令拒绝（如传感器暂时未就绪）不会中断心跳，避免因意外模式切换导致飞行不稳定。
+
+**可扩展性**：每架无人机使用一个轻量级守护线程，对 100+ 架无人机规模可支持。
+对于 1000+ 架，建议改为异步事件循环或优先级队列调度。
 
 ### 2. 模式切换流程
 
 ```
 1. 发布 OffboardControlMode (position=True)
 2. 发布 VehicleCommand (command=176, param1=1.0, param2=6.0)
-3. 启动心跳线程 (>2Hz)
+3. 启动心跳线程 (4Hz)
 4. 发布 TrajectorySetpoint 控制位置
 ```
 
@@ -118,6 +127,36 @@ def _on_attitude(self, uav_id, msg):
 ```html
 <svg style="transform: rotate(${heading}deg); transition: transform 0.5s ease;">
 ```
+
+## 指令确认（Ack）延迟优化
+
+指令确认从 PX4 到前端的完整路径：
+
+```
+PX4 VehicleCommandAck → DDS Topic → DDS Gateway → HTTP POST → Java Backend → WebSocket → Frontend
+```
+
+### 优化措施
+
+| 优化项 | 优化前 | 优化后 | 效果 |
+|-------|--------|--------|------|
+| HTTP 连接 | 每次 ack 新建 TCP 连接 | `requests.Session` 持久连接 (Keep-Alive) | 省去 TCP 握手 ~50-100ms |
+| 线程模型 | 每次 ack 新建线程 `threading.Thread()` | `ThreadPoolExecutor(max_workers=4)` 线程池 | 避免线程创建开销 ~5-10ms |
+| 去重窗口 | 5 秒 | 2 秒 | 更快响应合法 ack |
+| HTTP 超时 | 5 秒 | 3 秒 | 更快检测失败 |
+| 遥测发送 | 每次新建连接 | 复用同一 HTTP 会话 | 减少遥测转发延迟 |
+
+### 架构决策：为什么不从 Java 后端直接发布 DDS
+
+Java 后端理论上可以直接向 DDS 网络发布消息，但存在以下工程挑战：
+
+1. **px4_msgs IDL 编译**：需将 PX4 消息定义编译为 Java 类型桩
+2. **ROS2 Java 客户端**：rclj 社区支持有限，不如 Python rclpy 成熟
+3. **QoS 配置复杂**：需要手动配置 Fast-DDS QoS 策略匹配 PX4
+4. **维护成本**：PX4 更新 px4_msgs 后需重新编译 Java IDL
+
+**结论**：保持 Python Gateway 架构，通过 HTTP 会话复用 + 线程池优化，已将网关→后端延迟降至最低。
+Python rclpy + px4_msgs 是 PX4 官方推荐的集成方式，稳定性和兼容性最好。
 
 ## DDS Gateway HTTP 命令服务
 

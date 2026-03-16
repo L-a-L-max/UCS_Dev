@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
@@ -111,6 +112,20 @@ class DDSGateway:
         self._stats = defaultdict(int)
         self._last_stats_time = time.time()
 
+        # Persistent HTTP session for connection reuse (avoids TCP handshake per request)
+        self._http_session = requests.Session()
+        self._http_session.headers.update({
+            "X-Gateway-Key": api_key,
+            "Content-Type": "application/json"
+        })
+
+        # Thread pool for async ack forwarding (avoids creating a thread per ack)
+        self._ack_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='ack-fwd')
+
+        # Ack deduplication state
+        self._recent_acks: Dict[str, float] = {}
+        self._ack_dedup_window = 2.0  # seconds
+
         try:
             import rclpy
             self._rclpy_available = True
@@ -148,7 +163,7 @@ class DDSGateway:
     def check_backend_health(self) -> bool:
         """Verify backend is reachable."""
         try:
-            resp = requests.get(
+            resp = self._http_session.get(
                 f"{self.backend_url}/api/v1/dds-gateway/health", timeout=5
             )
             if resp.status_code == 200:
@@ -408,9 +423,10 @@ class DDSGateway:
         PX4 result codes: 0=ACCEPTED, 1=TEMPORARILY_REJECTED, 2=DENIED,
         3=UNSUPPORTED, 4=FAILED, 5=IN_PROGRESS, 6=CANCELLED
 
-        Includes deduplication to prevent rejection loops: if the same
-        (uavId, command, result) was forwarded within the last 5 seconds,
-        the duplicate ack is suppressed.
+        Latency optimization:
+        - Uses persistent HTTP session (connection reuse, no TCP handshake per ack)
+        - Uses ThreadPoolExecutor instead of spawning a thread per ack
+        - Dedup window reduced to 2s (from 5s) for faster feedback
         """
         command = getattr(msg, 'command', 0)
         result = getattr(msg, 'result', -1)
@@ -419,12 +435,10 @@ class DDSGateway:
         self._stats['total_messages'] += 1
 
         # Deduplicate acks to prevent rejection loops
-        if not hasattr(self, '_recent_acks'):
-            self._recent_acks = {}
         ack_key = f"{uav_id}:{command}:{result}"
         now = time.time()
         last_forwarded = self._recent_acks.get(ack_key, 0)
-        if now - last_forwarded < 5.0:
+        if now - last_forwarded < self._ack_dedup_window:
             logger.debug("[CommandAck] Suppressing duplicate ack %s (%.1fs ago)", ack_key, now - last_forwarded)
             return
         self._recent_acks[ack_key] = now
@@ -434,12 +448,7 @@ class DDSGateway:
             cutoff = now - 10.0
             self._recent_acks = {k: v for k, v in self._recent_acks.items() if v > cutoff}
 
-        # If OFFBOARD-related command is rejected, stop heartbeat to prevent loop
-        if result != 0 and command in (176, 192):  # DO_SET_MODE, VEHICLE_CMD_DO_SET_ACT
-            logger.warning("[CommandAck] OFFBOARD command rejected for %s, stopping heartbeat", uav_id)
-            self.stop_offboard_heartbeat(uav_id)
-
-        # Forward ack to backend asynchronously
+        # Forward ack to backend via thread pool (much faster than spawning threads)
         try:
             ack_payload = {
                 'uavId': uav_id,
@@ -447,30 +456,27 @@ class DDSGateway:
                 'result': int(result),
                 'timestamp': now,
             }
-            threading.Thread(
-                target=self._forward_command_ack,
-                args=(ack_payload,),
-                daemon=True
-            ).start()
+            self._ack_executor.submit(self._forward_command_ack, ack_payload)
         except Exception as e:
             logger.error("[CommandAck] Failed to forward ack: %s", e)
 
     def _forward_command_ack(self, ack_payload: dict):
-        """Forward a command ack to the backend REST API."""
+        """Forward a command ack to the backend REST API.
+
+        Uses persistent HTTP session for connection reuse (keep-alive),
+        avoiding TCP handshake overhead on each ack.
+        Timeout reduced to 3s for faster failure detection.
+        """
         try:
-            resp = requests.post(
+            resp = self._http_session.post(
                 f"{self.backend_url}/api/v1/dds-gateway/command-ack",
                 json=ack_payload,
-                headers={
-                    "X-Gateway-Key": self.api_key,
-                    "Content-Type": "application/json"
-                },
-                timeout=5
+                timeout=3
             )
             if resp.status_code == 200:
                 logger.info("[CommandAck] Forwarded ack to backend: %s", ack_payload)
             else:
-                logger.warn("[CommandAck] Backend returned %d: %s", resp.status_code, resp.text[:200])
+                logger.warning("[CommandAck] Backend returned %d: %s", resp.status_code, resp.text[:200])
         except Exception as e:
             logger.error("[CommandAck] Forward failed: %s", e)
 
@@ -520,15 +526,14 @@ class DDSGateway:
         }
 
     def send_to_backend(self, payload: dict) -> bool:
-        """Send telemetry batch to the backend REST API."""
+        """Send telemetry batch to the backend REST API.
+
+        Uses persistent HTTP session for connection reuse.
+        """
         try:
-            resp = requests.post(
+            resp = self._http_session.post(
                 f"{self.backend_url}/api/v1/dds-gateway/telemetry",
                 json=payload,
-                headers={
-                    "X-Gateway-Key": self.api_key,
-                    "Content-Type": "application/json"
-                },
                 timeout=5
             )
             if resp.status_code == 200:
@@ -683,16 +688,36 @@ class DDSGateway:
         logger.info("[Shutdown] Gateway stopped")
 
     def _cleanup(self):
-        """Clean up ROS2 resources."""
+        """Clean up ROS2 resources, thread pool, and HTTP session."""
+        # Stop all heartbeat threads
+        if hasattr(self, '_heartbeat_active'):
+            for uav_id in list(self._heartbeat_active.keys()):
+                self._heartbeat_active[uav_id] = False
+
+        # Shut down ack forwarding thread pool
+        try:
+            self._ack_executor.shutdown(wait=False)
+            logger.info("[Shutdown] Ack executor shut down")
+        except Exception as e:
+            logger.debug("[Shutdown] Ack executor: %s", e)
+
+        # Close persistent HTTP session
+        try:
+            self._http_session.close()
+            logger.info("[Shutdown] HTTP session closed")
+        except Exception as e:
+            logger.debug("[Shutdown] HTTP session: %s", e)
+
+        # Clean up ROS2
         try:
             import rclpy
             if self._node:
                 self._node.destroy_node()
             if rclpy.ok():
                 rclpy.shutdown()
-            logger.info("[Shutdown] Cleanup complete")
+            logger.info("[Shutdown] ROS2 cleanup complete")
         except Exception as e:
-            logger.debug("[Shutdown] %s", e)
+            logger.debug("[Shutdown] ROS2: %s", e)
 
     def stop(self):
         """Stop the gateway gracefully."""
@@ -870,15 +895,34 @@ class DDSGateway:
     # Offboard Heartbeat (>2Hz for OFFBOARD mode)
     # ============================================================
 
-    def start_offboard_heartbeat(self, uav_id: str, interval: float = 0.4):
-        """Start publishing OffboardControlMode at >2Hz for a drone.
+    def start_offboard_heartbeat(self, uav_id: str, interval: float = 0.25):
+        """Start publishing OffboardControlMode + TrajectorySetpoint at 4Hz for a drone.
 
-        PX4 requires continuous OffboardControlMode messages to stay in OFFBOARD mode.
+        PX4 requires continuous OffboardControlMode messages at >2Hz to stay in
+        OFFBOARD mode. We publish at 4Hz (0.25s interval) to provide sufficient
+        margin over the 2Hz minimum requirement.
+
+        Previous frequency was 2.5Hz (0.4s interval) which left very little margin
+        and could cause mode fallback on timing jitter.
+
+        The heartbeat is ONLY stopped by explicit exit commands (LAND, RTL, DISARM)
+        via the command server. It is NOT stopped on transient command rejections,
+        because rejections during flight (e.g., sensor not ready) should not cause
+        a mode switch that could destabilize the drone.
+
+        Scalability: Each drone gets one lightweight daemon thread that sleeps most
+        of the time. For 100+ drones this is acceptable; for 1000+ consider an
+        async event loop or a single scheduling thread with a priority queue.
         """
         key = f"heartbeat_{uav_id}"
         if hasattr(self, '_heartbeat_threads') and key in self._heartbeat_threads:
-            logger.info("[Heartbeat] Already running for %s", uav_id)
-            return
+            # Check if the existing thread is still alive
+            if self._heartbeat_threads[key].is_alive():
+                logger.info("[Heartbeat] Already running for %s", uav_id)
+                return
+            else:
+                # Thread died, clean up and restart
+                del self._heartbeat_threads[key]
 
         if not hasattr(self, '_heartbeat_threads'):
             self._heartbeat_threads = {}
@@ -887,9 +931,14 @@ class DDSGateway:
         self._heartbeat_active[uav_id] = True
 
         def _heartbeat_loop():
-            logger.info("[Heartbeat] Started for %s at %.1f Hz", uav_id, 1.0 / interval)
+            logger.info("[Heartbeat] Started for %s at %.1f Hz (interval=%.3fs)",
+                        uav_id, 1.0 / interval, interval)
             while self._heartbeat_active.get(uav_id, False) and self.running:
-                self.publish_offboard_control_mode(uav_id, position=True)
+                try:
+                    self.publish_offboard_control_mode(uav_id, position=True)
+                    self.publish_trajectory_setpoint(uav_id)
+                except Exception as e:
+                    logger.error("[Heartbeat] Publish error for %s: %s", uav_id, e)
                 time.sleep(interval)
             logger.info("[Heartbeat] Stopped for %s", uav_id)
 
@@ -898,8 +947,14 @@ class DDSGateway:
         self._heartbeat_threads[key] = t
 
     def stop_offboard_heartbeat(self, uav_id: str):
-        """Stop the offboard heartbeat for a drone."""
+        """Stop the offboard heartbeat for a drone.
+
+        Called only by explicit exit commands (LAND, RTL, DISARM) from the
+        command server, never by transient command rejections.
+        """
         if hasattr(self, '_heartbeat_active'):
+            if self._heartbeat_active.get(uav_id, False):
+                logger.info("[Heartbeat] Stopping heartbeat for %s (explicit command)", uav_id)
             self._heartbeat_active[uav_id] = False
 
     # ============================================================
