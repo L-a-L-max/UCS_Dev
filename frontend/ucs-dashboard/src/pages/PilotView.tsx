@@ -29,7 +29,6 @@ import {
   getDroneStatus,
   getPilotDrones,
   type DroneInfo,
-  type ControlCommandResponse,
 } from '@/services/api';
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
 import { useTelemetryWebSocket, type PartitionTelemetryMessage, type CommandAckMessage } from '@/hooks/useTelemetryWebSocket';
@@ -65,8 +64,6 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   const [drones, setDrones] = useState<DroneInfo[]>([]);
   const [selectedDrone, setSelectedDrone] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [commandResult, setCommandResult] = useState<ControlCommandResponse | null>(null);
-  const [commandError, setCommandError] = useState<string | null>(null);
   const [sendingCommand, setSendingCommand] = useState<string | null>(null);
   // 快捷指令反馈
   const [quickFeedback, setQuickFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
@@ -185,10 +182,6 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     const targetUav = uavId || selectedDrone;
     if (!targetUav) return;
     setSendingCommand(commandType);
-    if (!uavId) {
-      setCommandResult(null);
-      setCommandError(null);
-    }
 
     let params = '{}';
     if (commandType === 'TAKEOFF') {
@@ -209,27 +202,15 @@ export default function PilotView({ token, username, partitions = [], onLogout }
         confirmed: true,
       });
       if (res.code === 0 && res.data) {
-        if (uavId) {
-          setQuickFeedback({ uavId, message: `${commandType} 指令已发送`, success: true });
-          setTimeout(() => setQuickFeedback(null), 3000);
-        } else {
-          setCommandResult(res.data);
-        }
-      } else {
-        if (uavId) {
-          setQuickFeedback({ uavId, message: res.msg || '指令发送失败', success: false });
-          setTimeout(() => setQuickFeedback(null), 3000);
-        } else {
-          setCommandError(res.msg || '指令发送失败');
-        }
-      }
-    } catch {
-      if (uavId) {
-        setQuickFeedback({ uavId, message: '网络错误', success: false });
+        setQuickFeedback({ uavId: targetUav, message: `${commandType} 指令已发送`, success: true });
         setTimeout(() => setQuickFeedback(null), 3000);
       } else {
-        setCommandError('网络错误，请检查后端服务');
+        setQuickFeedback({ uavId: targetUav, message: res.msg || '指令发送失败', success: false });
+        setTimeout(() => setQuickFeedback(null), 3000);
       }
+    } catch {
+      setQuickFeedback({ uavId: targetUav, message: '网络错误，请检查后端服务', success: false });
+      setTimeout(() => setQuickFeedback(null), 3000);
     } finally {
       setSendingCommand(null);
     }
@@ -622,21 +603,6 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                 </Card>
               </div>
 
-              {/* 指令结果 */}
-              {(commandResult || commandError) && (
-                <div className={`p-2 rounded text-xs ${commandError ? 'bg-red-900/30 border border-red-700' : 'bg-green-900/30 border border-green-700'}`}>
-                  {commandError ? (
-                    <div className="flex items-center gap-1 text-red-300">
-                      <AlertTriangle className="w-3 h-3" /><span>{commandError}</span>
-                    </div>
-                  ) : commandResult && (
-                    <div className="flex items-center gap-1 text-green-300">
-                      <Activity className="w-3 h-3" />
-                      <span>指令 <strong>{commandResult.commandType}</strong> 已发送至 {commandResult.uavId}</span>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           )}
           </div>

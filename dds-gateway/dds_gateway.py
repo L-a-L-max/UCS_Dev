@@ -835,7 +835,18 @@ class DDSGateway:
         if command_type == 'ARM':
             # ARM: command=400 (COMPONENT_ARM_DISARM), param1=1.0 (arm)
             # param2=0 for normal arm (NOT 21196 which is force-arm and gets rejected)
+            #
+            # After ARM, PX4 will auto-disarm if no takeoff command is received
+            # within ~10 seconds ("Disarmed by auto preflight disarming").
+            # To prevent this, we automatically send a TAKEOFF command after ARM.
             ok = self.publish_vehicle_command(uav_id, command=400, param1=1.0, param2=0.0)
+            if ok:
+                default_alt = params.get('altitude', params.get('defaultAltitude', 5.0))
+                logger.info("[Command] ARM succeeded, auto-sending TAKEOFF to %.1fm for %s",
+                            default_alt, uav_id)
+                # Small delay to let PX4 process ARM before TAKEOFF
+                time.sleep(0.5)
+                self.publish_vehicle_command(uav_id, command=22, param7=float(default_alt))
         elif command_type == 'DISARM':
             # DISARM: param1=0.0 (disarm), param2=0 for normal disarm
             ok = self.publish_vehicle_command(uav_id, command=400, param1=0.0, param2=0.0)
