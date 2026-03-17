@@ -821,6 +821,27 @@ class DDSGateway:
             logger.error("[Command] Failed to publish TrajectorySetpoint: %s", e)
             return False
 
+    def _get_takeoff_amsl(self, uav_id: str, relative_alt: float) -> float:
+        """Convert a relative takeoff altitude to AMSL (absolute) altitude.
+
+        PX4's VehicleCommand param7 for MAV_CMD_NAV_TAKEOFF (22) expects AMSL altitude.
+        If we send a small number like 5.0, PX4 compares it against the drone's current
+        AMSL altitude (e.g., ~488m in SITL) and rejects with "Already higher than takeoff
+        altitude". We must add the drone's current AMSL altitude to get the correct target.
+        """
+        with self._lock:
+            state = self.drone_states.get(uav_id)
+            if state and state.alt > 0:
+                amsl = state.alt + relative_alt
+                logger.info("[Altitude] %s: current AMSL=%.2fm + relative=%.1fm = target AMSL=%.2fm",
+                            uav_id, state.alt, relative_alt, amsl)
+                return amsl
+        # Fallback: if no altitude data available, use relative alt directly
+        # This may still fail but is better than nothing
+        logger.warning("[Altitude] %s: no AMSL data available, using relative alt %.1fm as fallback",
+                       uav_id, relative_alt)
+        return relative_alt
+
     def handle_command(self, uav_id: str, command_type: str, params: dict) -> dict:
         """Handle a command request from the backend.
 
@@ -841,18 +862,24 @@ class DDSGateway:
             # To prevent this, we automatically send a TAKEOFF command after ARM.
             ok = self.publish_vehicle_command(uav_id, command=400, param1=1.0, param2=0.0)
             if ok:
-                default_alt = params.get('altitude', params.get('defaultAltitude', 5.0))
-                logger.info("[Command] ARM succeeded, auto-sending TAKEOFF to %.1fm for %s",
-                            default_alt, uav_id)
+                relative_alt = float(params.get('altitude', params.get('defaultAltitude', 5.0)))
+                # PX4 VehicleCommand param7 for TAKEOFF (cmd 22) expects AMSL altitude,
+                # not relative altitude. We must add the drone's current AMSL alt.
+                amsl_alt = self._get_takeoff_amsl(uav_id, relative_alt)
+                logger.info("[Command] ARM succeeded, auto-sending TAKEOFF: relative=%.1fm, AMSL=%.1fm for %s",
+                            relative_alt, amsl_alt, uav_id)
                 # Small delay to let PX4 process ARM before TAKEOFF
                 time.sleep(0.5)
-                self.publish_vehicle_command(uav_id, command=22, param7=float(default_alt))
+                self.publish_vehicle_command(uav_id, command=22, param7=amsl_alt)
         elif command_type == 'DISARM':
             # DISARM: param1=0.0 (disarm), param2=0 for normal disarm
             ok = self.publish_vehicle_command(uav_id, command=400, param1=0.0, param2=0.0)
         elif command_type == 'TAKEOFF':
-            alt = params.get('altitude', 5.0)
-            ok = self.publish_vehicle_command(uav_id, command=22, param7=float(alt))
+            relative_alt = float(params.get('altitude', 5.0))
+            amsl_alt = self._get_takeoff_amsl(uav_id, relative_alt)
+            logger.info("[Command] TAKEOFF: relative=%.1fm, AMSL=%.1fm for %s",
+                        relative_alt, amsl_alt, uav_id)
+            ok = self.publish_vehicle_command(uav_id, command=22, param7=amsl_alt)
         elif command_type == 'LAND':
             ok = self.publish_vehicle_command(uav_id, command=21)
         elif command_type == 'RTL':

@@ -184,7 +184,10 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     setSendingCommand(commandType);
 
     let params = '{}';
-    if (commandType === 'TAKEOFF') {
+    if (commandType === 'ARM') {
+      // Pass takeoff altitude to gateway so ARM auto-takeoff uses correct height
+      params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
+    } else if (commandType === 'TAKEOFF') {
       params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
     } else if (commandType === 'GOTO') {
       params = JSON.stringify({

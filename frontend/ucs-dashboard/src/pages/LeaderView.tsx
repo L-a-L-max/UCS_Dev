@@ -265,7 +265,8 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   const handleQuickCommand = async (uavId: string, commandType: string) => {
     setCommandFeedback(null);
     try {
-      const params = commandType === 'TAKEOFF' ? JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 })
+      const params = commandType === 'ARM' ? JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 })
+        : commandType === 'TAKEOFF' ? JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 })
         : commandType === 'GOTO' ? JSON.stringify({ lat: parseFloat(gotoLat) || 0, lon: parseFloat(gotoLon) || 0, alt: parseFloat(gotoAlt) || 50 })
         : '{}';
       const res = await sendControlCommand(token, {
