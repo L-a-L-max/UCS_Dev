@@ -804,8 +804,13 @@ class DDSGateway:
             logger.error("[Command] Failed to publish OffboardControlMode: %s", e)
             return False
 
-    def publish_trajectory_setpoint(self, uav_id: str, x: float, y: float, z: float) -> bool:
-        """Publish TrajectorySetpoint for position control (NED frame)."""
+    def publish_trajectory_setpoint(self, uav_id: str, x: float, y: float, z: float,
+                                      log: bool = True) -> bool:
+        """Publish TrajectorySetpoint for position control (NED frame).
+
+        NaN values mean "hold current" for that axis. For takeoff from ground:
+          x=NaN, y=NaN (hold position), z=-5.0 (climb to 5m above home)
+        """
         if not self._rclpy_available or not self._px4_msgs_available or not self._node:
             return False
         try:
@@ -819,8 +824,9 @@ class DDSGateway:
             msg.timestamp = int(time.time() * 1e6)
 
             pub.publish(msg)
-            logger.info("[Command] Published TrajectorySetpoint [%.2f, %.2f, %.2f] -> %s",
-                        x, y, z, topic)
+            if log:
+                logger.info("[Command] Published TrajectorySetpoint [%.2f, %.2f, %.2f] -> %s",
+                            x, y, z, topic)
             return True
         except Exception as e:
             logger.error("[Command] Failed to publish TrajectorySetpoint: %s", e)
@@ -859,60 +865,74 @@ class DDSGateway:
         logger.info("[Command] Handling %s for %s params=%s", command_type, uav_id, params)
 
         if command_type == 'ARM':
-            # ARM: command=400 (COMPONENT_ARM_DISARM), param1=1.0 (arm)
-            # param2=0 for normal arm (NOT 21196 which is force-arm and gets rejected)
+            # ARM + auto-takeoff via OFFBOARD mode
             #
-            # After ARM, PX4 will auto-disarm if no takeoff command is received
-            # within ~10 seconds ("Disarmed by auto preflight disarming").
-            # To prevent this, we automatically trigger AUTO.TAKEOFF mode after ARM.
+            # PX4 auto-disarms if no takeoff within ~10s ("Disarmed by auto preflight disarming").
+            # NAV_TAKEOFF (cmd 22) is a mission waypoint, not an immediate takeoff command.
+            # DO_SET_MODE to AUTO.TAKEOFF requires an active mission with takeoff waypoint.
             #
-            # Previous approach (NAV_TAKEOFF cmd 22) failed silently because PX4's
-            # commander may reject the mode transition from the current mode.
-            # The reliable approach is DO_SET_MODE (176) to directly switch to
-            # AUTO.TAKEOFF mode, same as MAVSDK and QGC.
+            # The correct approach for our DDS architecture: OFFBOARD mode takeoff.
+            # Sequence:
+            #   1. Start heartbeat (OffboardControlMode + TrajectorySetpoint) BEFORE arming
+            #   2. ARM the drone
+            #   3. Switch to OFFBOARD mode (DO_SET_MODE, param2=6)
+            #   4. Set TrajectorySetpoint z = -altitude (NED: negative = up)
+            #   5. PX4 will climb to the target altitude under OFFBOARD control
+            #
+            # This is the most direct and reliable method, fully controlled by our backend.
+            relative_alt = float(params.get('altitude', params.get('defaultAltitude', 5.0)))
+            target_z = -relative_alt  # NED frame: negative z = up
+            logger.info("[Command] ARM + OFFBOARD takeoff: relative=%.1fm, NED_z=%.1f for %s",
+                        relative_alt, target_z, uav_id)
+
+            # Step 1: Start heartbeat with target altitude BEFORE arming
+            # PX4 requires OffboardControlMode stream before accepting OFFBOARD mode switch
+            self.start_offboard_heartbeat(uav_id, target_z=target_z)
+            # Give PX4 time to receive a few heartbeat messages (~0.5s = 2 messages at 4Hz)
+            time.sleep(0.5)
+
+            # Step 2: ARM
             ok = self.publish_vehicle_command(uav_id, command=400, param1=1.0, param2=0.0)
             if ok:
-                relative_alt = float(params.get('altitude', params.get('defaultAltitude', 5.0)))
-                amsl_alt = self._get_takeoff_amsl(uav_id, relative_alt)
-                logger.info("[Command] ARM succeeded, scheduling auto-takeoff: relative=%.1fm, AMSL=%.1fm for %s",
-                            relative_alt, amsl_alt, uav_id)
-                # Run takeoff sequence in background thread to avoid blocking HTTP response
-                def _auto_takeoff():
-                    # Wait for PX4 to fully process ARM
-                    time.sleep(1.5)
-                    # Step 1: Send NAV_TAKEOFF (22) to set the target altitude in PX4
-                    self.publish_vehicle_command(uav_id, command=22, param7=amsl_alt)
-                    time.sleep(0.3)
-                    # Step 2: Switch to AUTO.TAKEOFF mode via DO_SET_MODE (176)
-                    # PX4 internal: param1=1(custom), param2=4(AUTO), param3=2(TAKEOFF)
+                # Step 3: Switch to OFFBOARD mode in background thread
+                def _offboard_takeoff():
+                    # Wait for PX4 to process ARM
+                    time.sleep(1.0)
+                    # Switch to OFFBOARD mode: param2=6 (PX4_CUSTOM_MAIN_MODE_OFFBOARD)
                     self.publish_vehicle_command(uav_id, command=176,
-                                                param1=1.0, param2=4.0, param3=2.0)
-                    logger.info("[Command] Auto-takeoff sequence completed for %s", uav_id)
-                t = threading.Thread(target=_auto_takeoff, daemon=True,
-                                     name=f"auto-takeoff-{uav_id}")
+                                                param1=1.0, param2=6.0)
+                    logger.info("[Command] OFFBOARD takeoff initiated for %s (target: %.1fm AGL)",
+                                uav_id, relative_alt)
+                t = threading.Thread(target=_offboard_takeoff, daemon=True,
+                                     name=f"offboard-takeoff-{uav_id}")
                 t.start()
         elif command_type == 'DISARM':
             # DISARM: param1=0.0 (disarm), param2=0 for normal disarm
+            self.stop_offboard_heartbeat(uav_id)
             ok = self.publish_vehicle_command(uav_id, command=400, param1=0.0, param2=0.0)
         elif command_type == 'TAKEOFF':
+            # TAKEOFF via OFFBOARD mode position setpoint
             relative_alt = float(params.get('altitude', 5.0))
-            amsl_alt = self._get_takeoff_amsl(uav_id, relative_alt)
-            logger.info("[Command] TAKEOFF: relative=%.1fm, AMSL=%.1fm for %s",
-                        relative_alt, amsl_alt, uav_id)
-            # Send NAV_TAKEOFF to set altitude, then DO_SET_MODE to trigger mode switch
-            self.publish_vehicle_command(uav_id, command=22, param7=amsl_alt)
-            time.sleep(0.3)
+            target_z = -relative_alt  # NED: negative = up
+            logger.info("[Command] TAKEOFF via OFFBOARD: relative=%.1fm, NED_z=%.1f for %s",
+                        relative_alt, target_z, uav_id)
+            # Start/update heartbeat with new target altitude
+            self.start_offboard_heartbeat(uav_id, target_z=target_z)
+            # Ensure OFFBOARD mode is active
             ok = self.publish_vehicle_command(uav_id, command=176,
-                                             param1=1.0, param2=4.0, param3=2.0)
+                                             param1=1.0, param2=6.0)
         elif command_type == 'LAND':
+            self.stop_offboard_heartbeat(uav_id)
             ok = self.publish_vehicle_command(uav_id, command=21)
         elif command_type == 'RTL':
+            self.stop_offboard_heartbeat(uav_id)
             ok = self.publish_vehicle_command(uav_id, command=20)
         elif command_type == 'HOLD':
             ok = self.publish_vehicle_command(uav_id, command=17)
         elif command_type == 'OFFBOARD':
-            # Switch to OFFBOARD mode: publish OffboardControlMode first, then mode switch
-            self.publish_offboard_control_mode(uav_id, position=True)
+            # Switch to OFFBOARD mode: start heartbeat first, then mode switch
+            self.start_offboard_heartbeat(uav_id)
+            time.sleep(0.3)
             ok = self.publish_vehicle_command(uav_id, command=176, param1=1.0, param2=6.0)
         elif command_type == 'GOTO':
             x = params.get('x', params.get('lat', 0.0))
@@ -932,26 +952,52 @@ class DDSGateway:
     # Offboard Heartbeat (>2Hz for OFFBOARD mode)
     # ============================================================
 
-    def start_offboard_heartbeat(self, uav_id: str, interval: float = 0.4):
-        """Start publishing OffboardControlMode at >2Hz for a drone.
+    def start_offboard_heartbeat(self, uav_id: str, interval: float = 0.25,
+                                    target_z: float = None):
+        """Start publishing OffboardControlMode + TrajectorySetpoint at 4Hz.
 
-        PX4 requires continuous OffboardControlMode messages to stay in OFFBOARD mode.
+        PX4 requires continuous OffboardControlMode at >2Hz to stay in OFFBOARD mode.
+        We publish at 4Hz (0.25s) for sufficient margin.
+
+        The heartbeat also publishes TrajectorySetpoint to maintain position hold
+        or climb to target altitude. In NED frame, z is negative-up:
+          target_z = -5.0 means 5m above home/takeoff point.
+
+        Args:
+            uav_id: Target drone ID
+            interval: Publish interval in seconds (default 0.25s = 4Hz)
+            target_z: NED z position target (negative = up). If None, holds current.
         """
         key = f"heartbeat_{uav_id}"
-        if hasattr(self, '_heartbeat_threads') and key in self._heartbeat_threads:
-            logger.info("[Heartbeat] Already running for %s", uav_id)
-            return
 
         if not hasattr(self, '_heartbeat_threads'):
             self._heartbeat_threads = {}
             self._heartbeat_active = {}
+            self._heartbeat_setpoints = {}
+
+        # Update target setpoint if heartbeat already running
+        if key in self._heartbeat_threads and self._heartbeat_threads[key].is_alive():
+            if target_z is not None:
+                self._heartbeat_setpoints[uav_id] = target_z
+                logger.info("[Heartbeat] Updated setpoint for %s: z=%.1f", uav_id, target_z)
+            return
 
         self._heartbeat_active[uav_id] = True
+        if target_z is not None:
+            self._heartbeat_setpoints[uav_id] = target_z
 
         def _heartbeat_loop():
             logger.info("[Heartbeat] Started for %s at %.1f Hz", uav_id, 1.0 / interval)
             while self._heartbeat_active.get(uav_id, False) and self.running:
-                self.publish_offboard_control_mode(uav_id, position=True)
+                try:
+                    self.publish_offboard_control_mode(uav_id, position=True)
+                    # Publish TrajectorySetpoint: NAN means "hold current"
+                    z = self._heartbeat_setpoints.get(uav_id, float('nan'))
+                    self.publish_trajectory_setpoint(
+                        uav_id, float('nan'), float('nan'), z, log=False
+                    )
+                except Exception as e:
+                    logger.error("[Heartbeat] Error for %s: %s", uav_id, e)
                 time.sleep(interval)
             logger.info("[Heartbeat] Stopped for %s", uav_id)
 
@@ -963,6 +1009,8 @@ class DDSGateway:
         """Stop the offboard heartbeat for a drone."""
         if hasattr(self, '_heartbeat_active'):
             self._heartbeat_active[uav_id] = False
+        if hasattr(self, '_heartbeat_setpoints') and uav_id in self._heartbeat_setpoints:
+            del self._heartbeat_setpoints[uav_id]
 
     # ============================================================
     # Command HTTP Server (receives commands from backend)
