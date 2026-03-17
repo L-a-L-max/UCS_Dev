@@ -102,6 +102,29 @@ public class ControlService {
                     || "DISARM".equalsIgnoreCase(commandType)) {
                 ddsCommandService.stopHeartbeat(uavId);
             }
+            
+            // Save home position for MARK_HOME and TAKEOFF
+            if ("MARK_HOME".equalsIgnoreCase(commandType) || "TAKEOFF".equalsIgnoreCase(commandType)) {
+                try {
+                    String params = request.getParams();
+                    if (params != null && !params.isEmpty()) {
+                        var json = new com.fasterxml.jackson.databind.ObjectMapper().readTree(params);
+                        double lat = json.has("lat") ? json.get("lat").asDouble() : 0;
+                        double lon = json.has("lon") ? json.get("lon").asDouble() : 0;
+                        double alt = json.has("alt") ? json.get("alt").asDouble() : 0;
+                        if (lat != 0 && lon != 0) {
+                            drone.setLastHomeLat(lat);
+                            drone.setLastHomeLon(lon);
+                            drone.setLastHomeAlt(alt);
+                            droneRepository.save(drone);
+                            redisService.setDroneHome(uavId, lat, lon, alt);
+                            log.info("Saved home for {}: lat={}, lon={}, alt={}", uavId, lat, lon, alt);
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to parse home coords for {}: {}", uavId, e.getMessage());
+                }
+            }
         } else {
             cmdLog.setStatus("GATEWAY_UNREACHABLE");
             commandLogRepository.save(cmdLog);
@@ -131,11 +154,12 @@ public class ControlService {
         return switch (commandType.toUpperCase()) {
             case "ARM" -> "解锁无人机 " + uavId;
             case "DISARM" -> "锁定无人机 " + uavId;
-            case "TAKEOFF" -> "起飞无人机 " + uavId;
+            case "TAKEOFF" -> "起飞(解锁+OFFBOARD)无人机 " + uavId;
             case "LAND" -> "降落无人机 " + uavId;
             case "RTL" -> "无人机 " + uavId + " 返航";
             case "HOLD" -> "无人机 " + uavId + " 悬停";
             case "GOTO" -> "无人机 " + uavId + " 飞向目标位置";
+            case "MARK_HOME" -> "设置无人机 " + uavId + " 的Home点";
             default -> "执行指令 " + commandType + " 于无人机 " + uavId;
         };
     }

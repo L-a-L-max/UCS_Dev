@@ -54,6 +54,19 @@ public class Drone {
     /**
      * Current online status based on DDS heartbeat.
      */
+    /**
+     * Last known home position (saved on ARM/TAKEOFF).
+     * Used for NED coordinate conversion and RTL reference.
+     */
+    @Column(name = "last_home_lat")
+    private Double lastHomeLat;
+    
+    @Column(name = "last_home_lon")
+    private Double lastHomeLon;
+    
+    @Column(name = "last_home_alt")
+    private Double lastHomeAlt;
+    
     @Column(name = "online_status")
     private Boolean onlineStatus = false;
     

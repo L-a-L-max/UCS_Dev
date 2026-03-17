@@ -10,19 +10,19 @@ import {
   ArrowUp,
   ArrowDown,
   RotateCcw,
-  Lock,
-  Unlock,
   Navigation,
   Pause,
   RefreshCw,
   LogOut,
-  AlertTriangle,
   Activity,
   Eye,
   EyeOff,
   CheckSquare,
   Square,
   ListChecks,
+  Home,
+  Crosshair,
+  Locate,
 } from 'lucide-react';
 import {
   sendControlCommand,
@@ -40,24 +40,21 @@ interface PilotViewProps {
   onLogout: () => void;
 }
 
-// PX4 command types
+// Control commands - ARM/DISARM removed, TAKEOFF handles ARM+OFFBOARD+climb
 const COMMANDS = [
-  { type: 'ARM', label: '解锁', icon: Unlock, color: 'bg-green-600 hover:bg-green-700', description: '解锁电机' },
-  { type: 'DISARM', label: '锁定', icon: Lock, color: 'bg-slate-600 hover:bg-slate-700', description: '锁定电机' },
-  { type: 'TAKEOFF', label: '起飞', icon: ArrowUp, color: 'bg-blue-600 hover:bg-blue-700', description: '自动起飞到指定高度' },
-  { type: 'LAND', label: '降落', icon: ArrowDown, color: 'bg-amber-600 hover:bg-amber-700', description: '原地降落' },
-  { type: 'RTL', label: '返航', icon: RotateCcw, color: 'bg-purple-600 hover:bg-purple-700', description: '返回起飞点' },
-  { type: 'HOLD', label: '悬停', icon: Pause, color: 'bg-orange-600 hover:bg-orange-700', description: '原地悬停' },
+  { type: 'TAKEOFF', label: '\u8d77\u98de', icon: ArrowUp, color: 'bg-blue-600 hover:bg-blue-700', description: '\u89e3\u9501+\u8d77\u98de\u5230\u6307\u5b9a\u9ad8\u5ea6' },
+  { type: 'LAND', label: '\u964d\u843d', icon: ArrowDown, color: 'bg-amber-600 hover:bg-amber-700', description: '\u505c\u6b62\u5fc3\u8df3+\u539f\u5730\u964d\u843d' },
+  { type: 'RTL', label: '\u8fd4\u822a', icon: RotateCcw, color: 'bg-purple-600 hover:bg-purple-700', description: '\u8fd4\u56deHome\u70b9' },
+  { type: 'HOLD', label: '\u60ac\u505c', icon: Pause, color: 'bg-orange-600 hover:bg-orange-700', description: '\u9501\u5b9a\u5f53\u524d\u4f4d\u7f6e\u60ac\u505c' },
+  { type: 'MARK_HOME', label: '\u6807\u8bb0Home', icon: Home, color: 'bg-teal-600 hover:bg-teal-700', description: '\u8bbe\u7f6e\u5f53\u524d\u4f4d\u7f6e\u4e3aHome' },
 ];
 
-// 无人机卡片上的快捷指令
+// Quick commands on drone cards
 const QUICK_COMMANDS = [
-  { type: 'ARM', label: '解锁' },
-  { type: 'DISARM', label: '锁定' },
-  { type: 'TAKEOFF', label: '起飞' },
-  { type: 'LAND', label: '降落' },
-  { type: 'RTL', label: '返航' },
-  { type: 'HOLD', label: '悬停' },
+  { type: 'TAKEOFF', label: '\u8d77\u98de' },
+  { type: 'LAND', label: '\u964d\u843d' },
+  { type: 'RTL', label: '\u8fd4\u822a' },
+  { type: 'HOLD', label: '\u60ac\u505c' },
 ];
 
 export default function PilotView({ token, username, partitions = [], onLogout }: PilotViewProps) {
@@ -65,16 +62,13 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   const [selectedDrone, setSelectedDrone] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [sendingCommand, setSendingCommand] = useState<string | null>(null);
-  // 快捷指令反馈
   const [quickFeedback, setQuickFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
-  // Two-stage command ack feedback from PX4 via WebSocket
   const [commandAckFeedback, setCommandAckFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
 
-  // 详细控制面板显示开关（默认隐藏，点击无人机后显示）
   const [showDetailPanel, setShowDetailPanel] = useState(false);
   const [detailPanelEnabled, setDetailPanelEnabled] = useState(true);
 
-  // 多选模式
+  // Multi-select mode
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [selectedDrones, setSelectedDrones] = useState<Set<string>>(new Set());
 
@@ -82,16 +76,26 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   const [gotoLat, setGotoLat] = useState('39.9042');
   const [gotoLon, setGotoLon] = useState('116.4074');
   const [gotoAlt, setGotoAlt] = useState('50');
+  const [gotoAddress, setGotoAddress] = useState('');
 
-  // TAKEOFF params - 默认5米
+  // TAKEOFF params
   const [takeoffAlt, setTakeoffAlt] = useState('5');
+
+  // RTL params
+  const [rtlLat, setRtlLat] = useState('');
+  const [rtlLon, setRtlLon] = useState('');
+
+  // Home position display
+  const [homePosition, setHomePosition] = useState<{ lat: number; lon: number; alt: number } | null>(null);
+
+  // Home marker for map (flashing dot)
+  const [homeMarker, setHomeMarker] = useState<{ lat: number; lng: number } | null>(null);
 
   // Real-time telemetry from WebSocket
   const [telemetryDrones, setTelemetryDrones] = useState<Map<string, MapDrone>>(new Map());
 
   const handlePartitionData = useCallback((data: PartitionTelemetryMessage) => {
     if (!data.drones || data.drones.length === 0) return;
-    console.log('[PilotView] handlePartitionData:', data.partition, data.drones.length, 'drones');
     setTelemetryDrones(prev => {
       const next = new Map(prev);
       data.drones.forEach(uav => {
@@ -102,7 +106,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
           altitude: uav.alt,
           battery: uav.batteryPercent != null && uav.batteryPercent >= 0 ? uav.batteryPercent : undefined,
           flightStatus: uav.armed ? 'FLYING' : 'IDLE',
-          onlineStatus: true, // Receiving telemetry = online
+          onlineStatus: true,
           armed: uav.armed ?? uav.isActive ?? false,
           heading: uav.heading,
         });
@@ -111,27 +115,23 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     });
   }, []);
 
-  // Handle drone removal notification from WebSocket (permission transfer)
   const handleDroneRemoved = useCallback((removedUavIds: string[]) => {
-    console.log('[PilotView] Drones removed from partition:', removedUavIds);
     setTelemetryDrones(prev => {
       const next = new Map(prev);
       removedUavIds.forEach(id => next.delete(id));
       return next;
     });
-    // Clear selection if the selected drone was removed (don't auto-jump)
     setSelectedDrone(prev => {
       if (prev && removedUavIds.includes(prev)) return null;
       return prev;
     });
   }, []);
 
-  // Two-stage feedback: Stage 2 - PX4 acknowledged the command
   const handleCommandAck = useCallback((ack: CommandAckMessage) => {
-    const success = ack.result === 0; // 0 = ACCEPTED
+    const success = ack.result === 0;
     const msg = success
-      ? `PX4 确认执行: ${ack.resultText}`
-      : `PX4 拒绝: ${ack.resultText}`;
+      ? `PX4 \u786e\u8ba4\u6267\u884c: ${ack.resultText}`
+      : `PX4 \u62d2\u7edd: ${ack.resultText}`;
     setCommandAckFeedback({ uavId: ack.uavId, message: msg, success });
     setTimeout(() => setCommandAckFeedback(null), 4000);
   }, []);
@@ -144,7 +144,6 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     onCommandAck: handleCommandAck,
   });
 
-  // Issue #8: Only show drones the pilot has permission to control
   const fetchDrones = useCallback(async () => {
     try {
       const res = await getPilotDrones(token);
@@ -177,49 +176,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     return () => clearInterval(interval);
   }, [fetchDrones]);
 
-  // 统一的指令发送方法，支持从卡片快捷发送或从详细面板发送
-  const handleCommand = async (commandType: string, uavId?: string) => {
-    const targetUav = uavId || selectedDrone;
-    if (!targetUav) return;
-    setSendingCommand(commandType);
-
-    let params = '{}';
-    if (commandType === 'ARM') {
-      // Pass takeoff altitude to gateway so ARM auto-takeoff uses correct height
-      params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
-    } else if (commandType === 'TAKEOFF') {
-      params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
-    } else if (commandType === 'GOTO') {
-      params = JSON.stringify({
-        lat: parseFloat(gotoLat) || 0,
-        lon: parseFloat(gotoLon) || 0,
-        alt: parseFloat(gotoAlt) || 50,
-      });
-    }
-
-    try {
-      const res = await sendControlCommand(token, {
-        uavId: targetUav,
-        commandType,
-        params,
-        confirmed: true,
-      });
-      if (res.code === 0 && res.data) {
-        setQuickFeedback({ uavId: targetUav, message: `${commandType} 指令已发送`, success: true });
-        setTimeout(() => setQuickFeedback(null), 3000);
-      } else {
-        setQuickFeedback({ uavId: targetUav, message: res.msg || '指令发送失败', success: false });
-        setTimeout(() => setQuickFeedback(null), 3000);
-      }
-    } catch {
-      setQuickFeedback({ uavId: targetUav, message: '网络错误，请检查后端服务', success: false });
-      setTimeout(() => setQuickFeedback(null), 3000);
-    } finally {
-      setSendingCommand(null);
-    }
-  };
-
-  // 将 DroneInfo 转换为 MapDrone 格式，合并 WebSocket 实时遥测
+  // Merge API drones with WebSocket telemetry
   const mapDrones: MapDrone[] = (() => {
     const droneMap = new Map<string, MapDrone>();
     drones.forEach(d => {
@@ -246,7 +203,74 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     return Array.from(droneMap.values());
   })();
 
-  // 多选聚合数据
+  // Unified command handler
+  const handleCommand = async (commandType: string, uavId?: string) => {
+    const targetUav = uavId || selectedDrone;
+    if (!targetUav) return;
+    setSendingCommand(commandType);
+
+    let params = '{}';
+    if (commandType === 'TAKEOFF') {
+      params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
+    } else if (commandType === 'GOTO') {
+      params = JSON.stringify({
+        lat: parseFloat(gotoLat) || 0,
+        lon: parseFloat(gotoLon) || 0,
+        alt: parseFloat(gotoAlt) || 50,
+        address: gotoAddress || undefined,
+      });
+    } else if (commandType === 'RTL') {
+      const lat = parseFloat(rtlLat);
+      const lon = parseFloat(rtlLon);
+      if (lat && lon) {
+        params = JSON.stringify({ lat, lon });
+      }
+    } else if (commandType === 'MARK_HOME') {
+      const droneInfo = mapDrones.find(d => d.uavId === targetUav);
+      if (droneInfo && droneInfo.lat && droneInfo.lng) {
+        params = JSON.stringify({
+          lat: droneInfo.lat,
+          lon: droneInfo.lng,
+          alt: droneInfo.altitude || 0,
+        });
+      }
+    }
+
+    try {
+      const res = await sendControlCommand(token, {
+        uavId: targetUav,
+        commandType,
+        params,
+        confirmed: true,
+      });
+      if (res.code === 0 && res.data) {
+        setQuickFeedback({ uavId: targetUav, message: `${commandType} \u6307\u4ee4\u5df2\u53d1\u9001`, success: true });
+        if (commandType === 'MARK_HOME' || commandType === 'TAKEOFF') {
+          const droneInfo = mapDrones.find(d => d.uavId === targetUav);
+          if (droneInfo && droneInfo.lat && droneInfo.lng) {
+            setHomePosition({ lat: droneInfo.lat, lon: droneInfo.lng, alt: droneInfo.altitude || 0 });
+          }
+        }
+      } else {
+        setQuickFeedback({ uavId: targetUav, message: res.msg || '\u6307\u4ee4\u53d1\u9001\u5931\u8d25', success: false });
+      }
+    } catch {
+      setQuickFeedback({ uavId: targetUav, message: '\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u540e\u7aef\u670d\u52a1', success: false });
+    } finally {
+      setSendingCommand(null);
+      setTimeout(() => setQuickFeedback(null), 3000);
+    }
+  };
+
+  // Locate home on map (flashing dot for 5s)
+  const locateHome = () => {
+    if (homePosition) {
+      setHomeMarker({ lat: homePosition.lat, lng: homePosition.lon });
+      setTimeout(() => setHomeMarker(null), 5000);
+    }
+  };
+
+  // Multi-select aggregate data
   const multiSelectedDronesList = mapDrones.filter(d => selectedDrones.has(d.uavId));
   const aggregateData = multiSelectedDronesList.length >= 2 ? {
     count: multiSelectedDronesList.length,
@@ -261,7 +285,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
 
   return (
     <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden relative">
-      {/* 浮动 Toast 反馈 - 固定定位，不影响布局 */}
+      {/* Floating Toast feedback */}
       {(quickFeedback || commandAckFeedback) && (
         <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-1.5 pointer-events-none" style={{ minWidth: 280, maxWidth: 420 }}>
           {quickFeedback && (
@@ -280,67 +304,55 @@ export default function PilotView({ token, username, partitions = [], onLogout }
           )}
         </div>
       )}
-      {/* 顶部栏 */}
-      <header className="flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
-        <h1 className="text-xl font-bold flex items-center gap-2">
-          <Plane className="w-6 h-6 text-blue-400" />
-          飞手控制面板
+
+      {/* Header */}
+      <header className="flex justify-between items-center px-4 py-1.5 bg-slate-800 border-b border-slate-700 shrink-0">
+        <h1 className="text-lg font-bold flex items-center gap-2">
+          <Plane className="w-5 h-5 text-blue-400" />
+          {'\u98de\u624b\u63a7\u5236\u9762\u677f'}
           <Badge variant="outline" className="ml-2 text-blue-300 border-blue-500">{username}</Badge>
         </h1>
-        <div className="flex items-center gap-2">
-          {/* 多选模式 */}
+        <div className="flex items-center gap-1.5">
           <Button variant="outline" size="sm"
             onClick={() => {
               if (!multiSelectMode) {
-                // 进入多选模式：清除之前的单选状态
                 setSelectedDrones(new Set());
                 setShowDetailPanel(false);
                 setSelectedDrone(null);
               } else {
-                // 退出多选模式：清除多选状态
                 setSelectedDrones(new Set());
               }
               setMultiSelectMode(!multiSelectMode);
             }}
-            className={`text-xs ${multiSelectMode ? 'bg-amber-600/30 border-amber-500 text-amber-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
-            title={multiSelectMode ? '退出多选' : '多选模式'}>
-            <ListChecks className="w-4 h-4 mr-1" />
-            多选
+            className={`text-xs h-7 ${multiSelectMode ? 'bg-amber-600/30 border-amber-500 text-amber-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}>
+            <ListChecks className="w-3.5 h-3.5 mr-1" />{'\u591a\u9009'}
           </Button>
-          {/* 显示/隐藏详细控制面板的勾选按钮 */}
           <Button variant="outline" size="sm"
             onClick={() => {
               const newEnabled = !detailPanelEnabled;
               setDetailPanelEnabled(newEnabled);
-              if (!newEnabled) {
-                // 关闭详情面板按钮 -> 隐藏面板
-                setShowDetailPanel(false);
-              } else {
-                // 开启详情面板按钮 -> 如果有选中无人机则立即显示
-                if (selectedDrone) setShowDetailPanel(true);
-              }
+              if (!newEnabled) setShowDetailPanel(false);
+              else if (selectedDrone) setShowDetailPanel(true);
             }}
-            className={`text-xs ${detailPanelEnabled ? 'bg-blue-600/30 border-blue-500 text-blue-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
-            title={detailPanelEnabled ? '禁用详情面板' : '启用详情面板'}>
-            {detailPanelEnabled ? <Eye className="w-4 h-4 mr-1" /> : <EyeOff className="w-4 h-4 mr-1" />}
-            详情面板
+            className={`text-xs h-7 ${detailPanelEnabled ? 'bg-blue-600/30 border-blue-500 text-blue-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}>
+            {detailPanelEnabled ? <Eye className="w-3.5 h-3.5 mr-1" /> : <EyeOff className="w-3.5 h-3.5 mr-1" />}{'\u8be6\u60c5'}
           </Button>
           <Button variant="outline" size="sm" onClick={fetchDrones} disabled={loading}
-            className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50">
-            <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />刷新
+            className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-7 text-xs">
+            <RefreshCw className={`w-3.5 h-3.5 mr-1 ${loading ? 'animate-spin' : ''}`} />{'\u5237\u65b0'}
           </Button>
           <Button variant="outline" size="sm" onClick={onLogout}
-            className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50">
-            <LogOut className="w-4 h-4 mr-1" />退出
+            className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-7 text-xs">
+            <LogOut className="w-3.5 h-3.5 mr-1" />{'\u9000\u51fa'}
           </Button>
         </div>
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* 左侧: 无人机列表（带快捷控制按钮） */}
-        <div className="w-72 bg-slate-800 border-r border-slate-700 overflow-y-auto p-2 space-y-1">
-          <h2 className="text-xs font-semibold text-slate-400 mb-1">我的无人机</h2>
-          {mapDrones.length === 0 && <p className="text-slate-500 text-xs text-center py-6">暂无可控制的无人机</p>}
+        {/* Left: Drone list with quick controls */}
+        <div className="w-60 bg-slate-800 border-r border-slate-700 overflow-y-auto p-1.5 space-y-1 shrink-0">
+          <h2 className="text-[10px] font-semibold text-slate-400 mb-0.5 px-1">{'\u6211\u7684\u65e0\u4eba\u673a'}</h2>
+          {mapDrones.length === 0 && <p className="text-slate-500 text-xs text-center py-6">{'\u6682\u65e0\u53ef\u63a7\u5236\u7684\u65e0\u4eba\u673a'}</p>}
           {[...mapDrones].sort((a, b) => {
             const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
             if (aO !== bO) return bO - aO;
@@ -348,7 +360,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
             return bA - aA;
           }).map(drone => (
             <div key={drone.uavId}
-              className={`p-2 rounded text-xs cursor-pointer transition-all ${
+              className={`p-1.5 rounded text-xs cursor-pointer transition-all ${
                 multiSelectMode && selectedDrones.has(drone.uavId) ? 'bg-amber-900/40 border border-amber-500' :
                 selectedDrone === drone.uavId
                   ? 'bg-blue-900/50 border border-blue-500'
@@ -356,24 +368,17 @@ export default function PilotView({ token, username, partitions = [], onLogout }
               }`}
               onClick={() => {
                 if (multiSelectMode) {
-                  // 多选模式：切换选中状态
                   const newSet = new Set(selectedDrones);
-                  if (newSet.has(drone.uavId)) {
-                    newSet.delete(drone.uavId);
-                  } else {
-                    newSet.add(drone.uavId);
-                  }
+                  if (newSet.has(drone.uavId)) newSet.delete(drone.uavId);
+                  else newSet.add(drone.uavId);
                   setSelectedDrones(newSet);
-                  // 多选模式下：选中1个显示详情面板，选中2+显示聚合面板（均受 detailPanelEnabled 控制）
                   if (newSet.size === 1) {
-                    const singleId = Array.from(newSet)[0];
-                    setSelectedDrone(singleId);
+                    setSelectedDrone(Array.from(newSet)[0]);
                     setShowDetailPanel(detailPanelEnabled);
                   } else if (newSet.size === 0) {
                     setSelectedDrone(null);
                     setShowDetailPanel(false);
                   } else {
-                    // 2+ 选中，由 aggregateData 面板接管（同样受 detailPanelEnabled 控制）
                     setShowDetailPanel(false);
                   }
                 } else if (selectedDrone === drone.uavId) {
@@ -381,32 +386,31 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                   setSelectedDrone(null);
                 } else {
                   setSelectedDrone(drone.uavId);
-                  // 详情面板显示条件：detailPanelEnabled && 有选中无人机
                   setShowDetailPanel(detailPanelEnabled);
                 }
               }}>
               <div className="flex items-center justify-between mb-0.5">
-                <span className="font-bold text-blue-300 flex items-center gap-1">
+                <span className="font-bold text-blue-300 flex items-center gap-1 text-[11px]">
                   {multiSelectMode && (selectedDrones.has(drone.uavId)
                     ? <CheckSquare className="w-3 h-3 text-amber-400" />
                     : <Square className="w-3 h-3 text-slate-500" />)}
                   {drone.uavId}
                 </span>
-                <Badge className={`text-[10px] px-1 py-0 ${
+                <Badge className={`text-[9px] px-1 py-0 ${
                   !drone.onlineStatus ? 'bg-slate-600' : drone.armed === true ? 'bg-green-600' : 'bg-blue-600'
                 }`}>
-                  {!drone.onlineStatus ? '离线' : drone.armed === true ? '已解锁' : '未解锁'}
+                  {!drone.onlineStatus ? '\u79bb\u7ebf' : drone.armed === true ? '\u5df2\u89e3\u9501' : '\u672a\u89e3\u9501'}
                 </Badge>
               </div>
-              <div className="flex items-center gap-2 text-slate-400 mb-1">
+              <div className="flex items-center gap-2 text-slate-400 text-[10px]">
                 <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}</span>
                 <span className="flex items-center gap-0.5"><MapPin className="w-2.5 h-2.5" />{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : 'N/A'}</span>
               </div>
-              {/* 快捷控制按钮 - 直接在卡片上控制 */}
+              {/* Quick control buttons */}
               <div className="flex flex-wrap gap-0.5 mt-1">
                 {QUICK_COMMANDS.map(cmd => (
                   <Button key={cmd.type} size="sm" variant="outline"
-                    className="text-[10px] h-5 px-1.5 bg-slate-600/50 border-slate-500 text-slate-300 hover:bg-slate-500"
+                    className="text-[9px] h-[18px] px-1.5 bg-slate-600/50 border-slate-500 text-slate-300 hover:bg-slate-500"
                     onClick={e => { e.stopPropagation(); handleCommand(cmd.type, drone.uavId); }}
                     disabled={sendingCommand !== null}>
                     {cmd.label}
@@ -417,66 +421,52 @@ export default function PilotView({ token, username, partitions = [], onLogout }
           ))}
         </div>
 
-        {/* 中间: 多选聚合数据面板（受 detailPanelEnabled 控制） */}
+        {/* Multi-select aggregate panel */}
         {multiSelectMode && aggregateData && detailPanelEnabled && (
-          <div className="w-[300px] min-w-[260px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-3">
+          <div className="w-[260px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-2 space-y-2 shrink-0">
             <Card className="bg-slate-800 border-slate-700">
-              <CardHeader className="pb-2 px-3 pt-3">
+              <CardHeader className="pb-1 px-2 pt-2">
                 <CardTitle className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-1">
-                    <ListChecks className="w-3 h-3 text-amber-400" />多机聚合信息
-                  </div>
-                  <Badge className="bg-amber-600 text-[10px]">{aggregateData.count} 架</Badge>
+                  <div className="flex items-center gap-1"><ListChecks className="w-3 h-3 text-amber-400" />{'\u591a\u673a\u805a\u5408'}</div>
+                  <Badge className="bg-amber-600 text-[10px]">{aggregateData.count} {'\u67b6'}</Badge>
                 </CardTitle>
               </CardHeader>
-              <CardContent className="px-3 pb-3">
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="bg-slate-700/50 rounded p-2 text-center">
-                    <div className="text-[10px] text-slate-400 mb-0.5">最高高度</div>
-                    <div className="text-sm font-bold text-blue-300">{aggregateData.maxAlt.toFixed(2)}m</div>
+              <CardContent className="px-2 pb-2">
+                <div className="grid grid-cols-2 gap-1.5">
+                  <div className="bg-slate-700/50 rounded p-1.5 text-center">
+                    <div className="text-[9px] text-slate-400">{'\u6700\u9ad8/\u6700\u4f4e\u9ad8\u5ea6'}</div>
+                    <div className="text-xs font-bold text-blue-300">{aggregateData.maxAlt.toFixed(1)}m / {aggregateData.minAlt.toFixed(1)}m</div>
                   </div>
-                  <div className="bg-slate-700/50 rounded p-2 text-center">
-                    <div className="text-[10px] text-slate-400 mb-0.5">最低高度</div>
-                    <div className="text-sm font-bold text-cyan-300">{aggregateData.minAlt.toFixed(2)}m</div>
-                  </div>
-                  <div className="bg-slate-700/50 rounded p-2 text-center">
-                    <div className="text-[10px] text-slate-400 mb-0.5">低电量</div>
-                    <div className="text-sm font-bold text-red-400">{aggregateData.lowBatteryCount} 架</div>
-                  </div>
-                  <div className="bg-slate-700/50 rounded p-2 text-center">
-                    <div className="text-[10px] text-slate-400 mb-0.5">在线</div>
-                    <div className="text-sm font-bold text-green-400">{aggregateData.onlineCount} 架</div>
-                  </div>
-                  <div className="bg-slate-700/50 rounded p-2 text-center col-span-2">
-                    <div className="text-[10px] text-slate-400 mb-0.5">飞行中</div>
-                    <div className="text-sm font-bold text-green-300">{aggregateData.flyingCount} 架</div>
+                  <div className="bg-slate-700/50 rounded p-1.5 text-center">
+                    <div className="text-[9px] text-slate-400">{'\u5728\u7ebf/\u98de\u884c\u4e2d'}</div>
+                    <div className="text-xs font-bold text-green-300">{aggregateData.onlineCount} / {aggregateData.flyingCount}</div>
                   </div>
                 </div>
-                {/* 多机批量控制 */}
-                <div className="mt-3">
-                  <div className="text-[10px] text-slate-400 mb-1">批量控制指令</div>
-                  <div className="grid grid-cols-4 gap-1">
+                {/* Batch control */}
+                <div className="mt-2">
+                  <div className="text-[9px] text-slate-400 mb-1">{'\u6279\u91cf\u63a7\u5236'}</div>
+                  <div className="grid grid-cols-3 gap-1">
                     {COMMANDS.map(cmd => {
                       const Icon = cmd.icon;
                       return (
                         <Button key={cmd.type}
-                          className={`h-auto py-1.5 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[10px]`}
+                          className={`h-auto py-1 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[9px]`}
                           onClick={() => { multiSelectedDronesList.forEach(d => handleCommand(cmd.type, d.uavId)); }}>
                           <Icon className="w-3 h-3" />
-                          <span className="font-bold text-[9px]">{cmd.label}</span>
+                          <span className="font-bold text-[8px]">{cmd.label}</span>
                         </Button>
                       );
                     })}
                   </div>
                 </div>
-                {/* 已选无人机列表 */}
-                <div className="mt-3">
-                  <div className="text-[10px] text-slate-400 mb-1">已选无人机</div>
-                  <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                {/* Selected drones list */}
+                <div className="mt-2">
+                  <div className="text-[9px] text-slate-400 mb-1">{'\u5df2\u9009'} ({multiSelectedDronesList.length})</div>
+                  <div className="space-y-0.5 max-h-24 overflow-y-auto">
                     {multiSelectedDronesList.map(d => (
-                      <div key={d.uavId} className="flex items-center justify-between text-[10px] bg-slate-700/50 rounded px-2 py-1">
+                      <div key={d.uavId} className="flex items-center justify-between text-[9px] bg-slate-700/50 rounded px-1.5 py-0.5">
                         <span className="text-blue-300">{d.uavId}</span>
-                        <span className="text-slate-400">{d.battery != null ? `${d.battery.toFixed(1)}%` : 'N/A'} | {d.altitude != null ? `${d.altitude.toFixed(2)}m` : 'N/A'}</span>
+                        <span className="text-slate-400">{d.battery != null ? `${d.battery.toFixed(0)}%` : '-'} | {d.altitude != null ? `${d.altitude.toFixed(1)}m` : '-'}</span>
                       </div>
                     ))}
                   </div>
@@ -486,79 +476,79 @@ export default function PilotView({ token, username, partitions = [], onLogout }
           </div>
         )}
 
-        {/* 中间: 详细控制面板（可通过顶部按钮隐藏/显示） */}
+        {/* Detail control panel */}
         {showDetailPanel && !aggregateData && (
-          <div className="w-[320px] min-w-[280px] overflow-y-auto p-3 border-r border-slate-700">
+          <div className="w-[300px] overflow-y-auto p-2 border-r border-slate-700 space-y-2 shrink-0">
             {!selectedDrone ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center text-slate-500">
-                  <Plane className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                  <p className="text-sm">请从左侧选择无人机</p>
-                  <p className="text-xs mt-1">选择后可进行详细控制操作</p>
+                  <Plane className="w-10 h-10 mx-auto mb-2 opacity-20" />
+                  <p className="text-xs">{'\u8bf7\u4ece\u5de6\u4fa7\u9009\u62e9\u65e0\u4eba\u673a'}</p>
                 </div>
               </div>
             ) : (
-            <div className="space-y-3">
-              {/* 无人机状态 */}
+            <div className="space-y-2">
+              {/* Drone status */}
               <Card className="bg-slate-800 border-slate-700">
-                <CardHeader className="pb-2 px-3 pt-3">
+                <CardHeader className="pb-1 px-2 pt-2">
                   <CardTitle className="flex items-center justify-between text-xs">
                     <div className="flex items-center gap-1">
-                      <Activity className="w-3 h-3 text-blue-400" />{selectedDrone} 状态
+                      <Activity className="w-3 h-3 text-blue-400" />{selectedDrone}
                     </div>
                     <Button size="sm" variant="outline" onClick={refreshDroneStatus}
-                      className="bg-slate-700 border-slate-600 hover:bg-slate-600 text-xs h-6 px-2">
-                      <RefreshCw className={`w-2.5 h-2.5 mr-0.5 ${loading ? 'animate-spin' : ''}`} />刷新
+                      className="bg-slate-700 border-slate-600 hover:bg-slate-600 text-[10px] h-5 px-1.5">
+                      <RefreshCw className={`w-2.5 h-2.5 mr-0.5 ${loading ? 'animate-spin' : ''}`} />{'\u5237\u65b0'}
                     </Button>
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="px-3 pb-3">
+                <CardContent className="px-2 pb-2">
                   {selectedDroneInfo && (
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="bg-slate-700/50 rounded p-2 text-center">
-                        <div className="text-[10px] text-slate-400 mb-0.5">飞行状态</div>
-                        <Badge className={`text-[10px] ${selectedDroneInfo.flightStatus === 'FLYING' ? 'bg-green-600' : 'bg-slate-600'}`}>
-                          {selectedDroneInfo.flightStatus === 'FLYING' ? '飞行中' : '待机'}
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <div className="bg-slate-700/50 rounded p-1.5 text-center">
+                        <div className="text-[9px] text-slate-400">{'\u72b6\u6001'}</div>
+                        <Badge className={`text-[9px] ${selectedDroneInfo.flightStatus === 'FLYING' ? 'bg-green-600' : 'bg-slate-600'}`}>
+                          {selectedDroneInfo.flightStatus === 'FLYING' ? '\u98de\u884c\u4e2d' : '\u5f85\u673a'}
                         </Badge>
                       </div>
-                      <div className="bg-slate-700/50 rounded p-2 text-center">
-                        <div className="text-[10px] text-slate-400 mb-0.5">电量</div>
-                        <div className="text-sm font-bold flex items-center justify-center gap-0.5">
-                          <Battery className={`w-3 h-3 ${(selectedDroneInfo.battery || 0) < 20 ? 'text-red-400' : 'text-green-400'}`} />
+                      <div className="bg-slate-700/50 rounded p-1.5 text-center">
+                        <div className="text-[9px] text-slate-400">{'\u7535\u91cf'}</div>
+                        <div className="text-xs font-bold flex items-center justify-center gap-0.5">
+                          <Battery className={`w-2.5 h-2.5 ${(selectedDroneInfo.battery || 0) < 20 ? 'text-red-400' : 'text-green-400'}`} />
                           {selectedDroneInfo.battery != null ? `${selectedDroneInfo.battery.toFixed(1)}%` : 'N/A'}
                         </div>
                       </div>
-                      <div className="bg-slate-700/50 rounded p-2 text-center">
-                        <div className="text-[10px] text-slate-400 mb-0.5">高度</div>
-                        <div className="text-sm font-bold">{selectedDroneInfo.altitude != null ? `${selectedDroneInfo.altitude.toFixed(2)}m` : 'N/A'}</div>
+                      <div className="bg-slate-700/50 rounded p-1.5 text-center">
+                        <div className="text-[9px] text-slate-400">{'\u9ad8\u5ea6'}</div>
+                        <div className="text-xs font-bold">{selectedDroneInfo.altitude != null ? `${selectedDroneInfo.altitude.toFixed(2)}m` : 'N/A'}</div>
                       </div>
-                      <div className="bg-slate-700/50 rounded p-2 text-center">
-                        <div className="text-[10px] text-slate-400 mb-0.5">位置</div>
-                        <div className="text-[10px] font-mono">{selectedDroneInfo.lat?.toFixed(4)}, {selectedDroneInfo.lng?.toFixed(4)}</div>
+                      <div className="bg-slate-700/50 rounded p-1.5 text-center">
+                        <div className="text-[9px] text-slate-400">{'\u4f4d\u7f6e'}</div>
+                        <div className="text-[9px] font-mono">{selectedDroneInfo.lat?.toFixed(4)}, {selectedDroneInfo.lng?.toFixed(4)}</div>
                       </div>
                     </div>
                   )}
                 </CardContent>
               </Card>
 
-              {/* 控制指令 */}
+              {/* Control commands */}
               <Card className="bg-slate-800 border-slate-700">
-                <CardHeader className="pb-2 px-3 pt-3">
+                <CardHeader className="pb-1 px-2 pt-2">
                   <CardTitle className="flex items-center gap-1 text-xs">
-                    <Navigation className="w-3 h-3 text-blue-400" />控制指令
+                    <Navigation className="w-3 h-3 text-blue-400" />{'\u63a7\u5236\u6307\u4ee4'}
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="px-3 pb-3">
+                <CardContent className="px-2 pb-2">
                   <div className="grid grid-cols-3 gap-1">
                     {COMMANDS.map(cmd => {
                       const Icon = cmd.icon;
                       return (
                         <Button key={cmd.type}
-                          className={`h-auto py-1.5 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[10px]`}
-                          onClick={() => handleCommand(cmd.type)} disabled={sendingCommand !== null}>
-                          <Icon className="w-3.5 h-3.5" />
-                          <span className="font-bold">{cmd.label}</span>
-                          {sendingCommand === cmd.type && <RefreshCw className="w-3 h-3 animate-spin" />}
+                          className={`h-auto py-1 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[9px]`}
+                          onClick={() => handleCommand(cmd.type)} disabled={sendingCommand !== null}
+                          title={cmd.description}>
+                          <Icon className="w-3 h-3" />
+                          <span className="font-bold text-[9px]">{cmd.label}</span>
+                          {sendingCommand === cmd.type && <RefreshCw className="w-2.5 h-2.5 animate-spin" />}
                         </Button>
                       );
                     })}
@@ -566,65 +556,100 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                 </CardContent>
               </Card>
 
-              {/* 参数设置 - 起飞高度 + 前往目标（纵向排列，空间充足） */}
-              <div className="space-y-1.5">
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardContent className="px-3 py-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-slate-400 whitespace-nowrap flex items-center gap-0.5"><ArrowUp className="w-2.5 h-2.5 text-blue-400" />起飞高度</span>
-                      <Input type="number" value={takeoffAlt} onChange={e => setTakeoffAlt(e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder="20" />
-                      <span className="text-[10px] text-slate-400">米</span>
+              {/* Takeoff altitude */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardContent className="px-2 py-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] text-slate-400 whitespace-nowrap flex items-center gap-0.5"><ArrowUp className="w-2.5 h-2.5 text-blue-400" />{'\u8d77\u98de\u9ad8\u5ea6'}</span>
+                    <Input type="number" value={takeoffAlt} onChange={e => setTakeoffAlt(e.target.value)}
+                      className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder="5" />
+                    <span className="text-[9px] text-slate-400">{'\u7c73'}</span>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* GOTO target */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardContent className="px-2 py-1.5 space-y-1">
+                  <div className="flex items-center gap-1 text-[9px] text-slate-400"><Crosshair className="w-2.5 h-2.5 text-cyan-400" />{'\u524d\u5f80\u76ee\u6807'}</div>
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1">
+                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u5730\u5740'}</label>
+                      <Input value={gotoAddress} onChange={e => setGotoAddress(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u5730\u5740/\u5730\u540d(\u53ef\u9009)'} />
                     </div>
-                  </CardContent>
-                </Card>
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardContent className="px-3 py-2 space-y-1.5">
-                    <div className="flex items-center gap-1 text-[10px] text-slate-400"><Navigation className="w-2.5 h-2.5 text-cyan-400" />前往目标</div>
-                    <div className="space-y-1">
-                      <div>
-                        <label className="text-[10px] text-slate-400">纬度</label>
-                        <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-slate-400">经度</label>
-                        <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-slate-400">高度 (米)</label>
-                        <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
-                      </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
                     </div>
-                    <Button className="w-full text-xs h-7 bg-cyan-600 hover:bg-cyan-700 text-white"
-                      onClick={() => handleCommand('GOTO')} disabled={sendingCommand !== null}>
-                      <Navigation className="w-3 h-3 mr-1" />前往
-                    </Button>
-                  </CardContent>
-                </Card>
-              </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u9ad8\u5ea6'}</label>
+                      <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
+                      <span className="text-[9px] text-slate-400">{'\u7c73'}</span>
+                    </div>
+                  </div>
+                  <Button className="w-full text-xs h-6 bg-cyan-600 hover:bg-cyan-700 text-white"
+                    onClick={() => handleCommand('GOTO')} disabled={sendingCommand !== null}>
+                    <Navigation className="w-3 h-3 mr-1" />{'\u524d\u5f80'}
+                  </Button>
+                </CardContent>
+              </Card>
+
+              {/* RTL with optional custom location */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardContent className="px-2 py-1.5 space-y-1">
+                  <div className="flex items-center gap-1 text-[9px] text-slate-400"><RotateCcw className="w-2.5 h-2.5 text-purple-400" />{'\u8fd4\u822a\u8bbe\u7f6e'}</div>
+                  {homePosition && (
+                    <div className="flex items-center gap-1 text-[9px]">
+                      <Home className="w-2.5 h-2.5 text-teal-400" />
+                      <span className="text-teal-300">Home: {homePosition.lat.toFixed(6)}, {homePosition.lon.toFixed(6)}</span>
+                      <Button size="sm" variant="outline" onClick={locateHome}
+                        className="h-4 px-1 text-[8px] bg-teal-700/50 border-teal-600 text-teal-300 ml-auto">
+                        <Locate className="w-2 h-2 mr-0.5" />{'\u5b9a\u4f4d'}
+                      </Button>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-1">
+                    <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
+                    <Input type="number" step="0.0001" value={rtlLat} onChange={e => setRtlLat(e.target.value)}
+                      className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u7559\u7a7a\u8fd4\u56deHome'} />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
+                    <Input type="number" step="0.0001" value={rtlLon} onChange={e => setRtlLon(e.target.value)}
+                      className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u7559\u7a7a\u8fd4\u56deHome'} />
+                  </div>
+                  <Button className="w-full text-xs h-6 bg-purple-600 hover:bg-purple-700 text-white"
+                    onClick={() => handleCommand('RTL')} disabled={sendingCommand !== null}>
+                    <RotateCcw className="w-3 h-3 mr-1" />{'\u8fd4\u822a'}
+                  </Button>
+                </CardContent>
+              </Card>
 
             </div>
           )}
           </div>
         )}
 
-        {/* 右侧: 地图视图 */}
+        {/* Right: Map view */}
         <div className="flex-1 h-full">
           <MapPanel drones={mapDrones} selectedDroneId={selectedDrone}
             selectedDroneIds={multiSelectMode ? selectedDrones : undefined}
+            homeMarker={homeMarker}
             onDroneClick={(id) => {
               if (multiSelectMode) {
-                // 多选模式下地图点击也切换选中状态
                 const newSet = new Set(selectedDrones);
                 if (newSet.has(id)) { newSet.delete(id); } else { newSet.add(id); }
                 setSelectedDrones(newSet);
                 if (newSet.size === 1) {
-                  const singleId = Array.from(newSet)[0];
-                  setSelectedDrone(singleId);
-                  // 详情面板显示条件：detailPanelEnabled && 有选中无人机
+                  setSelectedDrone(Array.from(newSet)[0]);
                   setShowDetailPanel(detailPanelEnabled);
                 } else if (newSet.size === 0) {
                   setSelectedDrone(null);
@@ -633,13 +658,11 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                   setShowDetailPanel(false);
                 }
               } else {
-                // 单选模式：点击同时高亮 + 显示详情
                 if (selectedDrone === id) {
                   setShowDetailPanel(false);
                   setSelectedDrone(null);
                 } else {
                   setSelectedDrone(id);
-                  // 详情面板显示条件：detailPanelEnabled && 有选中无人机
                   setShowDetailPanel(detailPanelEnabled);
                 }
               }

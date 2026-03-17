@@ -93,6 +93,8 @@ interface MapPanelProps {
   selectedDroneId?: string | null;
   /** 多选模式下选中的无人机 ID 集合（所有选中的都高亮闪烁） */
   selectedDroneIds?: Set<string>;
+  /** Home marker position for flashing dot display (5s duration) */
+  homeMarker?: { lat: number; lng: number } | null;
   /** 点击无人机标记时的回调 */
   onDroneClick?: (uavId: string) => void;
   /** 额外的 CSS 类名 */
@@ -109,6 +111,7 @@ export default function MapPanel({
   drones,
   selectedDroneId,
   selectedDroneIds,
+  homeMarker,
   onDroneClick,
   className = '',
   showDroneList = true,
@@ -127,6 +130,7 @@ export default function MapPanel({
   useEffect(() => { onDroneClickRef.current = onDroneClick; }, [onDroneClick]);
   useEffect(() => { selectedDroneIdsRef.current = selectedDroneIds; }, [selectedDroneIds]);
   useEffect(() => { selectedDroneIdRef.current = selectedDroneId; }, [selectedDroneId]);
+  const homeMarkerRef = useRef<maplibregl.Marker | null>(null);
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
@@ -500,6 +504,60 @@ export default function MapPanel({
       setTimeout(() => map.current?.resize(), 600);
     }
   }, [droneListCollapsed, showDroneList]);
+
+  // Home marker with flashing dot effect
+  useEffect(() => {
+    if (!map.current) return;
+    // Remove existing home marker
+    if (homeMarkerRef.current) {
+      homeMarkerRef.current.remove();
+      homeMarkerRef.current = null;
+    }
+    if (!homeMarker) return;
+    // Create flashing home marker element
+    const el = document.createElement('div');
+    el.className = 'home-marker-flash';
+    el.innerHTML = `
+      <div style="
+        width: 24px; height: 24px;
+        background: #14b8a6;
+        border: 3px solid #f0fdfa;
+        border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 0 12px rgba(20, 184, 166, 0.8);
+        animation: homeFlash 0.8s ease-in-out infinite;
+      ">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="white">
+          <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+        </svg>
+      </div>
+      <div style="text-align: center; font-size: 9px; font-weight: bold; color: #14b8a6; text-shadow: 0 1px 3px rgba(0,0,0,0.8); margin-top: 2px;">Home</div>
+    `;
+    // Add keyframe animation via style tag if not already present
+    if (!document.getElementById('home-flash-style')) {
+      const style = document.createElement('style');
+      style.id = 'home-flash-style';
+      style.textContent = `
+        @keyframes homeFlash {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.4; transform: scale(1.3); }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    const marker = new maplibregl.Marker({ element: el })
+      .setLngLat([homeMarker.lng, homeMarker.lat])
+      .addTo(map.current);
+    homeMarkerRef.current = marker;
+    // Fly to home marker
+    map.current.flyTo({ center: [homeMarker.lng, homeMarker.lat], zoom: 10, duration: 1000 });
+    return () => {
+      if (homeMarkerRef.current) {
+        homeMarkerRef.current.remove();
+        homeMarkerRef.current = null;
+      }
+    };
+  }, [homeMarker]);
 
   // ResizeObserver 确保地图容器尺寸变化时自动resize
   useEffect(() => {

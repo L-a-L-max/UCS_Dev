@@ -140,6 +140,49 @@ public class RedisService {
         stringRedisTemplate.delete(key);
     }
     
+    // ========== Drone Home Position Cache ==========
+    
+    private static final String DRONE_HOME_PREFIX = "drone:%s:home";
+    
+    /**
+     * Cache drone home position in Redis.
+     * Stored as "lat,lon,alt" string for fast retrieval.
+     */
+    public void setDroneHome(String uavId, double lat, double lon, double alt) {
+        String key = String.format(DRONE_HOME_PREFIX, uavId);
+        String value = String.format("%.8f,%.8f,%.4f", lat, lon, alt);
+        stringRedisTemplate.opsForValue().set(key, value);
+        log.debug("Cached home for drone {}: {}", uavId, value);
+    }
+    
+    /**
+     * Get cached drone home position from Redis.
+     * @return double array [lat, lon, alt] or null if not cached
+     */
+    public double[] getDroneHome(String uavId) {
+        String key = String.format(DRONE_HOME_PREFIX, uavId);
+        String value = stringRedisTemplate.opsForValue().get(key);
+        if (value != null) {
+            String[] parts = value.split(",");
+            if (parts.length == 3) {
+                return new double[] {
+                    Double.parseDouble(parts[0]),
+                    Double.parseDouble(parts[1]),
+                    Double.parseDouble(parts[2])
+                };
+            }
+        }
+        return null;
+    }
+    
+    /**
+     * Remove cached home position for a drone.
+     */
+    public void removeDroneHome(String uavId) {
+        String key = String.format(DRONE_HOME_PREFIX, uavId);
+        stringRedisTemplate.delete(key);
+    }
+    
     // ========== Distributed Lock ==========
     
     /**

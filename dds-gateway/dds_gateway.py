@@ -90,6 +90,26 @@ class DroneState:
     battery_percent: float = -1.0
     last_update: float = 0.0
     msg_count: int = 0
+    # Home position (set on ARM, used for coordinate conversion)
+    home_lat: float = 0.0
+    home_lon: float = 0.0
+    home_alt: float = 0.0
+
+
+def _latlon_to_ned(lat: float, lon: float, alt: float,
+                   home_lat: float, home_lon: float, home_alt: float):
+    """Convert WGS84 lat/lon/alt to NED coordinates relative to home.
+
+    Uses simplified flat-earth approximation, accurate within ~10km of home.
+    Returns (north, east, down) in meters.
+    """
+    EARTH_RADIUS = 6371000.0  # meters
+    dlat = math.radians(lat - home_lat)
+    dlon = math.radians(lon - home_lon)
+    north = dlat * EARTH_RADIUS
+    east = dlon * EARTH_RADIUS * math.cos(math.radians(home_lat))
+    down = -(alt - home_alt)  # NED: down is positive
+    return north, east, down
 
 
 class DDSGateway:
@@ -853,6 +873,28 @@ class DDSGateway:
                        uav_id, relative_alt)
         return relative_alt
 
+    def _save_home_position(self, uav_id: str):
+        """Save the drone's current position as home (for NED coordinate conversion)."""
+        with self._lock:
+            state = self.drone_states.get(uav_id)
+            if state and state.lat != 0.0:
+                state.home_lat = state.lat
+                state.home_lon = state.lon
+                state.home_alt = state.alt
+                logger.info("[Home] Saved home for %s: lat=%.6f lon=%.6f alt=%.2f",
+                            uav_id, state.home_lat, state.home_lon, state.home_alt)
+                return True
+        logger.warning("[Home] Cannot save home for %s: no position data", uav_id)
+        return False
+
+    def _get_home_position(self, uav_id: str):
+        """Get the home position for a drone. Returns (lat, lon, alt) or None."""
+        with self._lock:
+            state = self.drone_states.get(uav_id)
+            if state and state.home_lat != 0.0:
+                return state.home_lat, state.home_lon, state.home_alt
+        return None
+
     def handle_command(self, uav_id: str, command_type: str, params: dict) -> dict:
         """Handle a command request from the backend.
 
@@ -864,82 +906,160 @@ class DDSGateway:
         command_type = command_type.upper()
         logger.info("[Command] Handling %s for %s params=%s", command_type, uav_id, params)
 
-        if command_type == 'ARM':
-            # ARM + auto-takeoff via OFFBOARD mode
+        if command_type == 'TAKEOFF':
+            # TAKEOFF: ARM + OFFBOARD mode auto-takeoff (replaces old ARM button)
             #
-            # PX4 auto-disarms if no takeoff within ~10s ("Disarmed by auto preflight disarming").
-            # NAV_TAKEOFF (cmd 22) is a mission waypoint, not an immediate takeoff command.
-            # DO_SET_MODE to AUTO.TAKEOFF requires an active mission with takeoff waypoint.
+            # PX4 auto-disarms if no takeoff within ~10s. NAV_TAKEOFF is a mission
+            # waypoint command. OFFBOARD mode with TrajectorySetpoint is the correct
+            # approach for our DDS architecture.
             #
-            # The correct approach for our DDS architecture: OFFBOARD mode takeoff.
             # Sequence:
-            #   1. Start heartbeat (OffboardControlMode + TrajectorySetpoint) BEFORE arming
-            #   2. ARM the drone
-            #   3. Switch to OFFBOARD mode (DO_SET_MODE, param2=6)
-            #   4. Set TrajectorySetpoint z = -altitude (NED: negative = up)
-            #   5. PX4 will climb to the target altitude under OFFBOARD control
-            #
-            # This is the most direct and reliable method, fully controlled by our backend.
+            #   1. Save current position as home
+            #   2. Start heartbeat (OffboardControlMode + TrajectorySetpoint) BEFORE arming
+            #   3. ARM the drone
+            #   4. Switch to OFFBOARD mode (DO_SET_MODE, param2=6)
+            #   5. PX4 will climb to target altitude under OFFBOARD control
             relative_alt = float(params.get('altitude', params.get('defaultAltitude', 5.0)))
             target_z = -relative_alt  # NED frame: negative z = up
-            logger.info("[Command] ARM + OFFBOARD takeoff: relative=%.1fm, NED_z=%.1f for %s",
+            logger.info("[Command] TAKEOFF (ARM+OFFBOARD): relative=%.1fm, NED_z=%.1f for %s",
                         relative_alt, target_z, uav_id)
 
+            # Step 0: Save home position + set home on flight controller (cmd 179)
+            self._save_home_position(uav_id)
+            self.publish_vehicle_command(uav_id, command=179, param1=1.0)  # use current pos
+
             # Step 1: Start heartbeat with target altitude BEFORE arming
-            # PX4 requires OffboardControlMode stream before accepting OFFBOARD mode switch
             self.start_offboard_heartbeat(uav_id, target_z=target_z)
-            # Give PX4 time to receive a few heartbeat messages (~0.5s = 2 messages at 4Hz)
-            time.sleep(0.5)
+            time.sleep(0.5)  # ~2 heartbeat messages at 4Hz
 
             # Step 2: ARM
             ok = self.publish_vehicle_command(uav_id, command=400, param1=1.0, param2=0.0)
             if ok:
                 # Step 3: Switch to OFFBOARD mode in background thread
                 def _offboard_takeoff():
-                    # Wait for PX4 to process ARM
                     time.sleep(1.0)
-                    # Switch to OFFBOARD mode: param2=6 (PX4_CUSTOM_MAIN_MODE_OFFBOARD)
                     self.publish_vehicle_command(uav_id, command=176,
                                                 param1=1.0, param2=6.0)
-                    logger.info("[Command] OFFBOARD takeoff initiated for %s (target: %.1fm AGL)",
+                    logger.info("[Command] OFFBOARD takeoff initiated for %s (%.1fm AGL)",
                                 uav_id, relative_alt)
                 t = threading.Thread(target=_offboard_takeoff, daemon=True,
                                      name=f"offboard-takeoff-{uav_id}")
                 t.start()
+
+        elif command_type == 'LAND':
+            # NAV_LAND (cmd 21): stop heartbeat and land
+            self.stop_offboard_heartbeat(uav_id)
+            lat = float(params.get('lat', 0))
+            lon = float(params.get('lon', 0))
+            alt = float(params.get('alt', 0))
+            if lat != 0 and lon != 0:
+                # Land at specified coordinates
+                ok = self.publish_vehicle_command(
+                    uav_id, command=21, param5=lat, param6=lon, param7=alt)
+            else:
+                ok = self.publish_vehicle_command(uav_id, command=21)
+
+        elif command_type == 'RTL':
+            # Return to launch: stop heartbeat and RTL
+            self.stop_offboard_heartbeat(uav_id)
+            lat = float(params.get('lat', 0))
+            lon = float(params.get('lon', 0))
+            if lat != 0 and lon != 0:
+                # Set custom home before RTL so it returns to specified location
+                alt = float(params.get('alt', 0))
+                self.publish_vehicle_command(
+                    uav_id, command=179, param1=0.0,
+                    param5=lat, param6=lon, param7=alt)
+                time.sleep(0.3)
+            ok = self.publish_vehicle_command(uav_id, command=20)
+
+        elif command_type == 'HOLD':
+            # HOLD: continuously send current position to maintain hover
+            with self._lock:
+                state = self.drone_states.get(uav_id)
+            if state:
+                # Use current NED local position as setpoint
+                target_z = state.ned_z if state.ned_z != 0.0 else -5.0
+                logger.info("[Command] HOLD: freezing at NED [%.1f, %.1f, %.1f] for %s",
+                            state.ned_x, state.ned_y, target_z, uav_id)
+                self.start_offboard_heartbeat(
+                    uav_id, target_z=target_z,
+                    target_x=state.ned_x, target_y=state.ned_y)
+                ok = self.publish_vehicle_command(
+                    uav_id, command=176, param1=1.0, param2=6.0)
+            else:
+                ok = self.publish_vehicle_command(uav_id, command=17)
+
+        elif command_type == 'GOTO':
+            # Fly to target position: convert lat/lon to NED relative to home
+            lat = float(params.get('lat', 0))
+            lon = float(params.get('lon', 0))
+            alt = float(params.get('alt', 5.0))  # relative altitude in meters
+
+            home = self._get_home_position(uav_id)
+            if home:
+                home_lat, home_lon, home_alt = home
+                north, east, down = _latlon_to_ned(
+                    lat, lon, home_alt + alt,
+                    home_lat, home_lon, home_alt)
+                target_z = -alt  # NED: negative = up from home
+                logger.info(
+                    "[Command] GOTO: lat=%.6f lon=%.6f alt=%.1f -> NED [%.1f, %.1f, %.1f] for %s",
+                    lat, lon, alt, north, east, target_z, uav_id)
+                # Update heartbeat setpoint with new target
+                self.start_offboard_heartbeat(
+                    uav_id, target_z=target_z,
+                    target_x=north, target_y=east)
+                # Ensure OFFBOARD mode
+                ok = self.publish_vehicle_command(
+                    uav_id, command=176, param1=1.0, param2=6.0)
+            else:
+                logger.warning("[Command] GOTO: no home position for %s, using raw coords", uav_id)
+                target_z = -alt
+                self.start_offboard_heartbeat(uav_id, target_z=target_z)
+                ok = self.publish_vehicle_command(
+                    uav_id, command=176, param1=1.0, param2=6.0)
+
+        elif command_type == 'MARK_HOME':
+            # Set home position: cmd 179 (DO_SET_HOME)
+            lat = float(params.get('lat', 0))
+            lon = float(params.get('lon', 0))
+            alt = float(params.get('alt', 0))
+            if lat != 0 and lon != 0:
+                # Use specified coordinates
+                ok = self.publish_vehicle_command(
+                    uav_id, command=179, param1=0.0,
+                    param5=lat, param6=lon, param7=alt)
+                if ok:
+                    with self._lock:
+                        state = self.drone_states.get(uav_id)
+                        if state:
+                            state.home_lat = lat
+                            state.home_lon = lon
+                            state.home_alt = alt
+            else:
+                # Use current position
+                ok = self.publish_vehicle_command(uav_id, command=179, param1=1.0)
+                if ok:
+                    self._save_home_position(uav_id)
+
         elif command_type == 'DISARM':
-            # DISARM: param1=0.0 (disarm), param2=0 for normal disarm
             self.stop_offboard_heartbeat(uav_id)
             ok = self.publish_vehicle_command(uav_id, command=400, param1=0.0, param2=0.0)
-        elif command_type == 'TAKEOFF':
-            # TAKEOFF via OFFBOARD mode position setpoint
-            relative_alt = float(params.get('altitude', 5.0))
-            target_z = -relative_alt  # NED: negative = up
-            logger.info("[Command] TAKEOFF via OFFBOARD: relative=%.1fm, NED_z=%.1f for %s",
-                        relative_alt, target_z, uav_id)
-            # Start/update heartbeat with new target altitude
-            self.start_offboard_heartbeat(uav_id, target_z=target_z)
-            # Ensure OFFBOARD mode is active
-            ok = self.publish_vehicle_command(uav_id, command=176,
-                                             param1=1.0, param2=6.0)
-        elif command_type == 'LAND':
-            self.stop_offboard_heartbeat(uav_id)
-            ok = self.publish_vehicle_command(uav_id, command=21)
-        elif command_type == 'RTL':
-            self.stop_offboard_heartbeat(uav_id)
-            ok = self.publish_vehicle_command(uav_id, command=20)
-        elif command_type == 'HOLD':
-            ok = self.publish_vehicle_command(uav_id, command=17)
+
         elif command_type == 'OFFBOARD':
-            # Switch to OFFBOARD mode: start heartbeat first, then mode switch
             self.start_offboard_heartbeat(uav_id)
             time.sleep(0.3)
             ok = self.publish_vehicle_command(uav_id, command=176, param1=1.0, param2=6.0)
-        elif command_type == 'GOTO':
-            x = params.get('x', params.get('lat', 0.0))
-            y = params.get('y', params.get('lon', 0.0))
-            z = params.get('z', -(params.get('alt', 5.0)))  # NED: z is negative altitude
-            self.publish_offboard_control_mode(uav_id, position=True)
-            ok = self.publish_trajectory_setpoint(uav_id, float(x), float(y), float(z))
+
+        elif command_type == 'GET_HOME':
+            # Return current home position (for frontend display)
+            home = self._get_home_position(uav_id)
+            if home:
+                return {'success': True, 'message': 'Home position retrieved',
+                        'home': {'lat': home[0], 'lon': home[1], 'alt': home[2]}}
+            return {'success': False, 'message': f'No home position for {uav_id}'}
+
         else:
             return {'success': False, 'message': f'Unknown command type: {command_type}'}
 
@@ -953,20 +1073,26 @@ class DDSGateway:
     # ============================================================
 
     def start_offboard_heartbeat(self, uav_id: str, interval: float = 0.25,
-                                    target_z: float = None):
+                                    target_z: float = None,
+                                    target_x: float = None,
+                                    target_y: float = None):
         """Start publishing OffboardControlMode + TrajectorySetpoint at 4Hz.
 
         PX4 requires continuous OffboardControlMode at >2Hz to stay in OFFBOARD mode.
         We publish at 4Hz (0.25s) for sufficient margin.
 
         The heartbeat also publishes TrajectorySetpoint to maintain position hold
-        or climb to target altitude. In NED frame, z is negative-up:
+        or fly to target. In NED frame, z is negative-up:
           target_z = -5.0 means 5m above home/takeoff point.
+          target_x = north offset in meters (NaN = hold current)
+          target_y = east offset in meters (NaN = hold current)
 
         Args:
             uav_id: Target drone ID
             interval: Publish interval in seconds (default 0.25s = 4Hz)
             target_z: NED z position target (negative = up). If None, holds current.
+            target_x: NED x (north) position target. If None, NaN (hold current).
+            target_y: NED y (east) position target. If None, NaN (hold current).
         """
         key = f"heartbeat_{uav_id}"
 
@@ -975,27 +1101,39 @@ class DDSGateway:
             self._heartbeat_active = {}
             self._heartbeat_setpoints = {}
 
+        sp = self._heartbeat_setpoints.get(uav_id, {})
+        if not isinstance(sp, dict):
+            sp = {'x': float('nan'), 'y': float('nan'), 'z': sp}
+        if target_z is not None:
+            sp['z'] = target_z
+        if target_x is not None:
+            sp['x'] = target_x
+        if target_y is not None:
+            sp['y'] = target_y
+        self._heartbeat_setpoints[uav_id] = sp
+
         # Update target setpoint if heartbeat already running
         if key in self._heartbeat_threads and self._heartbeat_threads[key].is_alive():
-            if target_z is not None:
-                self._heartbeat_setpoints[uav_id] = target_z
-                logger.info("[Heartbeat] Updated setpoint for %s: z=%.1f", uav_id, target_z)
+            logger.info("[Heartbeat] Updated setpoint for %s: x=%.1f y=%.1f z=%.1f",
+                        uav_id, sp.get('x', float('nan')),
+                        sp.get('y', float('nan')), sp.get('z', float('nan')))
             return
 
         self._heartbeat_active[uav_id] = True
-        if target_z is not None:
-            self._heartbeat_setpoints[uav_id] = target_z
 
         def _heartbeat_loop():
             logger.info("[Heartbeat] Started for %s at %.1f Hz", uav_id, 1.0 / interval)
             while self._heartbeat_active.get(uav_id, False) and self.running:
                 try:
                     self.publish_offboard_control_mode(uav_id, position=True)
-                    # Publish TrajectorySetpoint: NAN means "hold current"
-                    z = self._heartbeat_setpoints.get(uav_id, float('nan'))
-                    self.publish_trajectory_setpoint(
-                        uav_id, float('nan'), float('nan'), z, log=False
-                    )
+                    current_sp = self._heartbeat_setpoints.get(uav_id, {})
+                    if isinstance(current_sp, dict):
+                        x = current_sp.get('x', float('nan'))
+                        y = current_sp.get('y', float('nan'))
+                        z = current_sp.get('z', float('nan'))
+                    else:
+                        x, y, z = float('nan'), float('nan'), current_sp
+                    self.publish_trajectory_setpoint(uav_id, x, y, z, log=False)
                 except Exception as e:
                     logger.error("[Heartbeat] Error for %s: %s", uav_id, e)
                 time.sleep(interval)
@@ -1036,12 +1174,6 @@ class DDSGateway:
                             params = json.loads(params) if params else {}
 
                         result = gateway.handle_command(uav_id, command_type, params)
-
-                        # Start/stop heartbeat for OFFBOARD mode
-                        if command_type.upper() == 'OFFBOARD' and result['success']:
-                            gateway.start_offboard_heartbeat(uav_id)
-                        elif command_type.upper() in ('LAND', 'RTL', 'DISARM'):
-                            gateway.stop_offboard_heartbeat(uav_id)
 
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')
