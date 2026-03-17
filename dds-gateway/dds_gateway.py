@@ -731,13 +731,17 @@ class DDSGateway:
         return self._command_publishers[topic]
 
     def publish_vehicle_command(self, uav_id: str, command: int, param1: float = 0.0,
-                                 param2: float = 0.0, param7: float = 0.0) -> bool:
+                                 param2: float = 0.0, param3: float = 0.0,
+                                 param7: float = 0.0) -> bool:
         """Publish a VehicleCommand to /{uav_id}/fmu/in/vehicle_command.
 
         Args:
             uav_id: Target drone ID (e.g., 'px4_1')
             command: PX4 command code (e.g., 400=ARM, 176=DO_SET_MODE, 22=TAKEOFF)
             param1-param7: Command-specific parameters
+                For DO_SET_MODE (176): param1=base_mode, param2=main_mode, param3=sub_mode
+                For ARM (400): param1=1(arm)/0(disarm), param2=0(normal)/21196(force)
+                For NAV_TAKEOFF (22): param7=altitude(AMSL)
 
         Notes:
             - target_system is derived from uav_id (px4_N -> N) to ensure
@@ -760,6 +764,7 @@ class DDSGateway:
             msg.command = command
             msg.param1 = param1
             msg.param2 = param2
+            msg.param3 = param3
             msg.param7 = param7
             msg.target_system = target_sys
             msg.target_component = 1
@@ -769,8 +774,8 @@ class DDSGateway:
             msg.timestamp = int(time.time() * 1e6)
 
             pub.publish(msg)
-            logger.info("[Command] Published VehicleCommand cmd=%d p1=%.1f p2=%.1f p7=%.1f -> %s (target_sys=%d)",
-                        command, param1, param2, param7, topic, target_sys)
+            logger.info("[Command] Published VehicleCommand cmd=%d p1=%.1f p2=%.1f p3=%.1f p7=%.1f -> %s (target_sys=%d)",
+                        command, param1, param2, param3, param7, topic, target_sys)
             return True
         except Exception as e:
             logger.error("[Command] Failed to publish VehicleCommand: %s", e)
@@ -859,18 +864,33 @@ class DDSGateway:
             #
             # After ARM, PX4 will auto-disarm if no takeoff command is received
             # within ~10 seconds ("Disarmed by auto preflight disarming").
-            # To prevent this, we automatically send a TAKEOFF command after ARM.
+            # To prevent this, we automatically trigger AUTO.TAKEOFF mode after ARM.
+            #
+            # Previous approach (NAV_TAKEOFF cmd 22) failed silently because PX4's
+            # commander may reject the mode transition from the current mode.
+            # The reliable approach is DO_SET_MODE (176) to directly switch to
+            # AUTO.TAKEOFF mode, same as MAVSDK and QGC.
             ok = self.publish_vehicle_command(uav_id, command=400, param1=1.0, param2=0.0)
             if ok:
                 relative_alt = float(params.get('altitude', params.get('defaultAltitude', 5.0)))
-                # PX4 VehicleCommand param7 for TAKEOFF (cmd 22) expects AMSL altitude,
-                # not relative altitude. We must add the drone's current AMSL alt.
                 amsl_alt = self._get_takeoff_amsl(uav_id, relative_alt)
-                logger.info("[Command] ARM succeeded, auto-sending TAKEOFF: relative=%.1fm, AMSL=%.1fm for %s",
+                logger.info("[Command] ARM succeeded, scheduling auto-takeoff: relative=%.1fm, AMSL=%.1fm for %s",
                             relative_alt, amsl_alt, uav_id)
-                # Small delay to let PX4 process ARM before TAKEOFF
-                time.sleep(0.5)
-                self.publish_vehicle_command(uav_id, command=22, param7=amsl_alt)
+                # Run takeoff sequence in background thread to avoid blocking HTTP response
+                def _auto_takeoff():
+                    # Wait for PX4 to fully process ARM
+                    time.sleep(1.5)
+                    # Step 1: Send NAV_TAKEOFF (22) to set the target altitude in PX4
+                    self.publish_vehicle_command(uav_id, command=22, param7=amsl_alt)
+                    time.sleep(0.3)
+                    # Step 2: Switch to AUTO.TAKEOFF mode via DO_SET_MODE (176)
+                    # PX4 internal: param1=1(custom), param2=4(AUTO), param3=2(TAKEOFF)
+                    self.publish_vehicle_command(uav_id, command=176,
+                                                param1=1.0, param2=4.0, param3=2.0)
+                    logger.info("[Command] Auto-takeoff sequence completed for %s", uav_id)
+                t = threading.Thread(target=_auto_takeoff, daemon=True,
+                                     name=f"auto-takeoff-{uav_id}")
+                t.start()
         elif command_type == 'DISARM':
             # DISARM: param1=0.0 (disarm), param2=0 for normal disarm
             ok = self.publish_vehicle_command(uav_id, command=400, param1=0.0, param2=0.0)
@@ -879,7 +899,11 @@ class DDSGateway:
             amsl_alt = self._get_takeoff_amsl(uav_id, relative_alt)
             logger.info("[Command] TAKEOFF: relative=%.1fm, AMSL=%.1fm for %s",
                         relative_alt, amsl_alt, uav_id)
-            ok = self.publish_vehicle_command(uav_id, command=22, param7=amsl_alt)
+            # Send NAV_TAKEOFF to set altitude, then DO_SET_MODE to trigger mode switch
+            self.publish_vehicle_command(uav_id, command=22, param7=amsl_alt)
+            time.sleep(0.3)
+            ok = self.publish_vehicle_command(uav_id, command=176,
+                                             param1=1.0, param2=4.0, param3=2.0)
         elif command_type == 'LAND':
             ok = self.publish_vehicle_command(uav_id, command=21)
         elif command_type == 'RTL':
