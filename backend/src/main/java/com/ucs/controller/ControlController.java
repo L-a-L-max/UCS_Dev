@@ -176,4 +176,30 @@ public class ControlController {
                 "controllerId", controllerId != null ? controllerId : -1
         ));
     }
+    
+    /**
+     * Get cached Home position for a drone from Redis.
+     * Returns the lat/lon/alt that was last set via MARK_HOME or TAKEOFF.
+     * Used to sync Home position across PilotView and LeaderView.
+     */
+    @GetMapping("/home/{uavId}")
+    @Operation(summary = "Get drone Home position from Redis cache")
+    public ApiResponse<Map<String, Object>> getDroneHome(
+            @PathVariable String uavId) {
+        double[] home = redisService.getDroneHome(uavId);
+        if (home != null && home.length == 3) {
+            return ApiResponse.success(Map.of(
+                    "uavId", uavId,
+                    "lat", home[0],
+                    "lon", home[1],
+                    "alt", home[2]
+            ));
+        }
+        return ApiResponse.success(Map.of(
+                "uavId", uavId,
+                "lat", 0.0,
+                "lon", 0.0,
+                "alt", 0.0
+        ));
+    }
 }

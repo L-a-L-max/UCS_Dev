@@ -49,6 +49,7 @@ import {
   sendControlCommand,
   sendBatchControlCommand,
   getEnabledRallyPoints,
+  getDroneHomePosition,
   type DroneInfo,
   type OperationLog,
   type RallyPoint,
@@ -283,6 +284,21 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     return () => clearInterval(interval);
   }, [fetchDrones, fetchTeamInfo, fetchLogs, fetchRallyPoints]);
 
+  // Fetch Home position from Redis when a drone is selected (cross-view sync)
+  useEffect(() => {
+    if (!selectedMapDrone) return;
+    (async () => {
+      try {
+        const res = await getDroneHomePosition(token, selectedMapDrone);
+        if (res.code === 0 && res.data && res.data.lat !== 0 && res.data.lon !== 0) {
+          setHomePosition({ lat: res.data.lat, lon: res.data.lon, alt: res.data.alt });
+        }
+      } catch {
+        // Silently ignore - Home may not be set yet
+      }
+    })();
+  }, [selectedMapDrone, token]);
+
   const handleTeamTransfer = async () => {
     if (!transferUavId || !transferToUserId) return;
     setTransferLoading(true);
@@ -393,6 +409,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
         existing.armed = td.armed;
         if (td.battery != null) existing.battery = td.battery;
         if (td.flightStatus) existing.flightStatus = td.flightStatus;
+        if (td.heading != null) existing.heading = td.heading;
       } else {
         droneMap.set(uavId, td);
       }

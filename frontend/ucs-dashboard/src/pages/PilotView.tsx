@@ -30,6 +30,7 @@ import {
   getDroneStatus,
   getPilotDrones,
   getEnabledRallyPoints,
+  getDroneHomePosition,
   type DroneInfo,
   type RallyPoint,
 } from '@/services/api';
@@ -210,6 +211,21 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     return () => clearInterval(interval);
   }, [fetchDrones, fetchRallyPoints]);
 
+  // Fetch Home position from Redis when a drone is selected (cross-view sync)
+  useEffect(() => {
+    if (!selectedDrone) return;
+    (async () => {
+      try {
+        const res = await getDroneHomePosition(token, selectedDrone);
+        if (res.code === 0 && res.data && res.data.lat !== 0 && res.data.lon !== 0) {
+          setHomePosition({ lat: res.data.lat, lon: res.data.lon, alt: res.data.alt });
+        }
+      } catch {
+        // Silently ignore - Home may not be set yet
+      }
+    })();
+  }, [selectedDrone, token]);
+
   // Merge API drones with WebSocket telemetry
   const mapDrones: MapDrone[] = (() => {
     const droneMap = new Map<string, MapDrone>();
@@ -230,6 +246,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
         existing.armed = td.armed;
         if (td.battery != null) existing.battery = td.battery;
         if (td.flightStatus) existing.flightStatus = td.flightStatus;
+        if (td.heading != null) existing.heading = td.heading;
       } else {
         droneMap.set(uavId, td);
       }

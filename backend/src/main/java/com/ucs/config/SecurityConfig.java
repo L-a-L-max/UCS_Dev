@@ -51,6 +51,9 @@ public class SecurityConfig {
                 // Zenoh control endpoints - pilots/operators and above can send commands
                 .requestMatchers("/api/v1/control/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
                 // Rally point management - leaders and commanders
+                // Both base path and sub-paths must be listed explicitly;
+                // in Spring Security 6.x /** may not match the base path without trailing slash
+                .requestMatchers("/api/v1/rally-points").hasAnyRole("LEADER", "COMMANDER")
                 .requestMatchers("/api/v1/rally-points/**").hasAnyRole("LEADER", "COMMANDER")
                 // Commander-only endpoints - permission transfer, global management
                 .requestMatchers("/api/v1/commander/**").hasRole("COMMANDER")

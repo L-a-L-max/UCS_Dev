@@ -506,6 +506,22 @@ export async function deleteRallyPoint(token: string, id: number): Promise<ApiRe
   return response.json();
 }
 
+// ==================== Drone Home Position API ====================
+
+/**
+ * Get cached Home position for a drone from Redis.
+ * Used to sync Home position across PilotView and LeaderView.
+ */
+export async function getDroneHomePosition(
+  token: string,
+  uavId: string
+): Promise<ApiResponse<{ uavId: string; lat: number; lon: number; alt: number }>> {
+  const response = await fetch(`${API_BASE}/api/v1/control/home/${uavId}`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
 // ==================== Geocoding API ====================
 
 /**
