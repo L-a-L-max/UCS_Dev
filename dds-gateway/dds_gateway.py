@@ -758,6 +758,7 @@ class DDSGateway:
 
     def publish_vehicle_command(self, uav_id: str, command: int, param1: float = 0.0,
                                  param2: float = 0.0, param3: float = 0.0,
+                                 param5: float = 0.0, param6: float = 0.0,
                                  param7: float = 0.0) -> bool:
         """Publish a VehicleCommand to /{uav_id}/fmu/in/vehicle_command.
 
@@ -768,6 +769,7 @@ class DDSGateway:
                 For DO_SET_MODE (176): param1=base_mode, param2=main_mode, param3=sub_mode
                 For ARM (400): param1=1(arm)/0(disarm), param2=0(normal)/21196(force)
                 For NAV_TAKEOFF (22): param7=altitude(AMSL)
+                For DO_SET_HOME (179): param1=use_current, param5=lat, param6=lon, param7=alt
 
         Notes:
             - target_system is derived from uav_id (px4_N -> N) to ensure
@@ -791,6 +793,8 @@ class DDSGateway:
             msg.param1 = param1
             msg.param2 = param2
             msg.param3 = param3
+            msg.param5 = param5
+            msg.param6 = param6
             msg.param7 = param7
             msg.target_system = target_sys
             msg.target_component = 1
@@ -800,8 +804,8 @@ class DDSGateway:
             msg.timestamp = int(time.time() * 1e6)
 
             pub.publish(msg)
-            logger.info("[Command] Published VehicleCommand cmd=%d p1=%.1f p2=%.1f p3=%.1f p7=%.1f -> %s (target_sys=%d)",
-                        command, param1, param2, param3, param7, topic, target_sys)
+            logger.info("[Command] Published VehicleCommand cmd=%d p1=%.1f p2=%.1f p3=%.1f p5=%.6f p6=%.6f p7=%.1f -> %s (target_sys=%d)",
+                        command, param1, param2, param3, param5, param6, param7, topic, target_sys)
             return True
         except Exception as e:
             logger.error("[Command] Failed to publish VehicleCommand: %s", e)
@@ -831,11 +835,16 @@ class DDSGateway:
             return False
 
     def publish_trajectory_setpoint(self, uav_id: str, x: float, y: float, z: float,
+                                      yaw: float = float('nan'),
                                       log: bool = True) -> bool:
         """Publish TrajectorySetpoint for position control (NED frame).
 
         NaN values mean "hold current" for that axis. For takeoff from ground:
           x=NaN, y=NaN (hold position), z=-5.0 (climb to 5m above home)
+
+        Args:
+            yaw: Target yaw angle in radians (NED frame, 0=North, pi/2=East).
+                 NaN means don't control yaw (drone keeps current heading).
         """
         if not self._rclpy_available or not self._px4_msgs_available or not self._node:
             return False
@@ -846,13 +855,13 @@ class DDSGateway:
 
             msg = px4.TrajectorySetpoint()
             msg.position = [x, y, z]
-            msg.yaw = float('nan')  # Don't control yaw
+            msg.yaw = yaw
             msg.timestamp = int(time.time() * 1e6)
 
             pub.publish(msg)
             if log:
-                logger.info("[Command] Published TrajectorySetpoint [%.2f, %.2f, %.2f] -> %s",
-                            x, y, z, topic)
+                logger.info("[Command] Published TrajectorySetpoint [%.2f, %.2f, %.2f] yaw=%.2f -> %s",
+                            x, y, z, yaw, topic)
             return True
         except Exception as e:
             logger.error("[Command] Failed to publish TrajectorySetpoint: %s", e)
@@ -1028,13 +1037,17 @@ class DDSGateway:
                     lat, lon, home_alt + alt,
                     home_lat, home_lon, home_alt)
                 target_z = -alt  # NED: negative = up from home
+                # Calculate yaw: bearing from current position to target (NED frame)
+                # atan2(east, north) gives heading in radians, 0=North, pi/2=East
+                target_yaw = math.atan2(east, north) if (not math.isnan(east) and not math.isnan(north) and (abs(east) > 0.1 or abs(north) > 0.1)) else float('nan')
                 logger.info(
-                    "[Command] GOTO: lat=%.6f lon=%.6f alt=%.1f -> NED [%.1f, %.1f, %.1f] for %s",
-                    lat, lon, alt, north, east, target_z, uav_id)
-                # Update heartbeat setpoint with new target
+                    "[Command] GOTO: lat=%.6f lon=%.6f alt=%.1f -> NED [%.1f, %.1f, %.1f] yaw=%.2frad for %s",
+                    lat, lon, alt, north, east, target_z, target_yaw, uav_id)
+                # Update heartbeat setpoint with new target + yaw
                 self.start_offboard_heartbeat(
                     uav_id, target_z=target_z,
-                    target_x=north, target_y=east)
+                    target_x=north, target_y=east,
+                    target_yaw=target_yaw)
                 # Ensure OFFBOARD mode
                 ok = self.publish_vehicle_command(
                     uav_id, command=176, param1=1.0, param2=6.0)
@@ -1100,7 +1113,8 @@ class DDSGateway:
     def start_offboard_heartbeat(self, uav_id: str, interval: float = 0.25,
                                     target_z: float = None,
                                     target_x: float = None,
-                                    target_y: float = None):
+                                    target_y: float = None,
+                                    target_yaw: float = None):
         """Start publishing OffboardControlMode + TrajectorySetpoint at 4Hz.
 
         PX4 requires continuous OffboardControlMode at >2Hz to stay in OFFBOARD mode.
@@ -1111,6 +1125,7 @@ class DDSGateway:
           target_z = -5.0 means 5m above home/takeoff point.
           target_x = north offset in meters (NaN = hold current)
           target_y = east offset in meters (NaN = hold current)
+          target_yaw = yaw in radians (0=North, pi/2=East, NaN = hold current)
 
         Args:
             uav_id: Target drone ID
@@ -1118,6 +1133,7 @@ class DDSGateway:
             target_z: NED z position target (negative = up). If None, holds current.
             target_x: NED x (north) position target. If None, NaN (hold current).
             target_y: NED y (east) position target. If None, NaN (hold current).
+            target_yaw: Yaw angle in radians. If None, NaN (hold current heading).
         """
         key = f"heartbeat_{uav_id}"
 
@@ -1128,20 +1144,23 @@ class DDSGateway:
 
         sp = self._heartbeat_setpoints.get(uav_id, {})
         if not isinstance(sp, dict):
-            sp = {'x': float('nan'), 'y': float('nan'), 'z': sp}
+            sp = {'x': float('nan'), 'y': float('nan'), 'z': sp, 'yaw': float('nan')}
         if target_z is not None:
             sp['z'] = target_z
         if target_x is not None:
             sp['x'] = target_x
         if target_y is not None:
             sp['y'] = target_y
+        if target_yaw is not None:
+            sp['yaw'] = target_yaw
         self._heartbeat_setpoints[uav_id] = sp
 
         # Update target setpoint if heartbeat already running
         if key in self._heartbeat_threads and self._heartbeat_threads[key].is_alive():
-            logger.info("[Heartbeat] Updated setpoint for %s: x=%.1f y=%.1f z=%.1f",
+            logger.info("[Heartbeat] Updated setpoint for %s: x=%.1f y=%.1f z=%.1f yaw=%.2f",
                         uav_id, sp.get('x', float('nan')),
-                        sp.get('y', float('nan')), sp.get('z', float('nan')))
+                        sp.get('y', float('nan')), sp.get('z', float('nan')),
+                        sp.get('yaw', float('nan')))
             return
 
         self._heartbeat_active[uav_id] = True
@@ -1156,9 +1175,10 @@ class DDSGateway:
                         x = current_sp.get('x', float('nan'))
                         y = current_sp.get('y', float('nan'))
                         z = current_sp.get('z', float('nan'))
+                        yaw = current_sp.get('yaw', float('nan'))
                     else:
-                        x, y, z = float('nan'), float('nan'), current_sp
-                    self.publish_trajectory_setpoint(uav_id, x, y, z, log=False)
+                        x, y, z, yaw = float('nan'), float('nan'), current_sp, float('nan')
+                    self.publish_trajectory_setpoint(uav_id, x, y, z, yaw=yaw, log=False)
                 except Exception as e:
                     logger.error("[Heartbeat] Error for %s: %s", uav_id, e)
                 time.sleep(interval)

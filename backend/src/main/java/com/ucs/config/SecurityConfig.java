@@ -50,6 +50,8 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/leader/**").hasAnyRole("LEADER", "COMMANDER")
                 // Zenoh control endpoints - pilots/operators and above can send commands
                 .requestMatchers("/api/v1/control/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
+                // Rally point management - leaders and commanders
+                .requestMatchers("/api/v1/rally-points/**").hasAnyRole("LEADER", "COMMANDER")
                 // Commander-only endpoints - permission transfer, global management
                 .requestMatchers("/api/v1/commander/**").hasRole("COMMANDER")
                 // Operation logs - all authenticated users can view
