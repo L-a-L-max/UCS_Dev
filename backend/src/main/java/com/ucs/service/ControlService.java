@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -140,6 +141,25 @@ public class ControlService {
         return ControlCommandResponse.success("CMD_" + cmdLog.getId(), uavId);
     }
     
+    /**
+     * Log a batch control operation as a single aggregate entry.
+     * This creates one log entry summarizing the batch command,
+     * visible in leader/commander operation logs.
+     */
+    public void logBatchOperation(Long userId, String username,
+                                   String commandType, List<String> allUavIds,
+                                   List<String> successIds, List<String> failedIds,
+                                   String detail) {
+        String result = failedIds.isEmpty() ? "SUCCESS" : (successIds.isEmpty() ? "FAILED" : "PARTIAL");
+        String errorMsg = failedIds.isEmpty() ? null : "Failed drones: " + String.join(",", failedIds);
+        operationLogService.recordOperation(
+                userId, username, "BATCH_CONTROL",
+                null, String.join(",", allUavIds),
+                null, detail, result, errorMsg, null);
+        log.info("Batch {} logged: {} total, {} success, {} failed",
+                commandType, allUavIds.size(), successIds.size(), failedIds.size());
+    }
+
     /**
      * Get drone by uavId.
      */

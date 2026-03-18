@@ -87,6 +87,18 @@ export interface MapDrone {
   heading?: number;
 }
 
+/** Rally point data for map display */
+export interface MapRallyPoint {
+  id: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  capacity: number;
+  currentOccupancy: number;
+  status: number; // 0=disabled, 1=enabled, 2=maintenance
+  serviceType: number; // 0=parking, 1=charging, 2=maintenance, 3=supply
+}
+
 interface MapPanelProps {
   drones: MapDrone[];
   /** 选中的无人机 ID（高亮显示） */
@@ -95,6 +107,8 @@ interface MapPanelProps {
   selectedDroneIds?: Set<string>;
   /** Home marker position for flashing dot display (5s duration) */
   homeMarker?: { lat: number; lng: number } | null;
+  /** Rally points to display on map */
+  rallyPoints?: MapRallyPoint[];
   /** 点击无人机标记时的回调 */
   onDroneClick?: (uavId: string) => void;
   /** 额外的 CSS 类名 */
@@ -112,6 +126,7 @@ export default function MapPanel({
   selectedDroneId,
   selectedDroneIds,
   homeMarker,
+  rallyPoints = [],
   onDroneClick,
   className = '',
   showDroneList = true,
@@ -122,6 +137,7 @@ export default function MapPanel({
   const map = useRef<maplibregl.Map | null>(null);
   const droneMarkersRef = useRef<Map<string, { marker: maplibregl.Marker; popup: maplibregl.Popup; element: HTMLDivElement }>>(new Map());
   const popupTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const rallyMarkersRef = useRef<Map<number, maplibregl.Marker>>(new Map());
 
   // 使用 ref 保存最新的回调和状态，避免 marker click listener 中的闭包过期问题
   const onDroneClickRef = useRef(onDroneClick);
@@ -558,6 +574,76 @@ export default function MapPanel({
       }
     };
   }, [homeMarker]);
+
+  // Rally point markers
+  useEffect(() => {
+    if (!map.current) return;
+    const currentIds = new Set(rallyPoints.map(rp => rp.id));
+    // Remove markers for rally points no longer present
+    rallyMarkersRef.current.forEach((marker, id) => {
+      if (!currentIds.has(id)) {
+        marker.remove();
+        rallyMarkersRef.current.delete(id);
+      }
+    });
+    // Add/update rally point markers
+    const SERVICE_COLORS: Record<number, string> = { 0: '#f59e0b', 1: '#22c55e', 2: '#f97316', 3: '#8b5cf6' };
+    const SERVICE_LABELS: Record<number, string> = { 0: '\u505c\u673a', 1: '\u5145\u7535', 2: '\u7ef4\u4fee', 3: '\u8865\u7ed9' };
+    rallyPoints.forEach(rp => {
+      if (rp.latitude == null || rp.longitude == null) return;
+      const color = SERVICE_COLORS[rp.serviceType] || '#f59e0b';
+      const serviceLabel = SERVICE_LABELS[rp.serviceType] || '';
+      const existing = rallyMarkersRef.current.get(rp.id);
+      if (existing) {
+        existing.setLngLat([rp.longitude, rp.latitude]);
+        const el = existing.getElement();
+        if (el) el.innerHTML = createRallyMarkerHTML(rp.name, color, serviceLabel, rp.currentOccupancy, rp.capacity);
+      } else {
+        const el = document.createElement('div');
+        el.className = 'rally-point-marker';
+        el.innerHTML = createRallyMarkerHTML(rp.name, color, serviceLabel, rp.currentOccupancy, rp.capacity);
+        const popup = new maplibregl.Popup({ offset: 25, closeButton: true, closeOnClick: true, maxWidth: '220px' })
+          .setHTML(`<div style="background:#1e293b;padding:10px;border-radius:6px;color:white;font-size:12px;">
+            <div style="font-weight:bold;margin-bottom:4px;">${rp.name}</div>
+            <div>\u7c7b\u578b: ${serviceLabel}</div>
+            <div>\u5bb9\u91cf: ${rp.currentOccupancy}/${rp.capacity}</div>
+            <div>\u72b6\u6001: ${rp.status === 1 ? '\u542f\u7528' : rp.status === 2 ? '\u7ef4\u62a4\u4e2d' : '\u7981\u7528'}</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:4px;">${rp.latitude.toFixed(6)}, ${rp.longitude.toFixed(6)}</div>
+          </div>`);
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([rp.longitude, rp.latitude])
+          .setPopup(popup)
+          .addTo(map.current!);
+        rallyMarkersRef.current.set(rp.id, marker);
+      }
+    });
+    // Add rally marker styles if not present
+    if (!document.getElementById('rally-marker-style')) {
+      const style = document.createElement('style');
+      style.id = 'rally-marker-style';
+      style.textContent = `
+        .rally-point-marker { cursor: pointer; }
+        .rally-point-marker:hover { transform: scale(1.1); }
+      `;
+      document.head.appendChild(style);
+    }
+    return () => {
+      rallyMarkersRef.current.forEach(m => m.remove());
+      rallyMarkersRef.current.clear();
+    };
+  }, [rallyPoints]);
+
+  function createRallyMarkerHTML(name: string, color: string, serviceLabel: string, occupancy: number, capacity: number): string {
+    return `
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div style="width:28px;height:28px;background:${color};border:2px solid white;border-radius:6px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.4);">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M14 6V4h-4v2H2v16h20V6h-8zM6 18H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V8h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V8h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V8h2v2z"/></svg>
+        </div>
+        <div style="text-align:center;font-size:9px;font-weight:bold;color:${color};text-shadow:0 1px 3px rgba(0,0,0,0.8);margin-top:1px;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</div>
+        <div style="font-size:8px;color:#94a3b8;text-shadow:0 1px 2px rgba(0,0,0,0.8);">${serviceLabel} ${occupancy}/${capacity}</div>
+      </div>
+    `;
+  }
 
   // ResizeObserver 确保地图容器尺寸变化时自动resize
   useEffect(() => {

@@ -87,6 +87,17 @@ public class ControlController {
                 }
             }
             
+            // Log batch operation as a single aggregate entry visible in leader/commander logs
+            String batchDetail = String.format("批量%s: 共%d架, 成功%d架[%s], 失败%d架%s",
+                    request.getCommandType(),
+                    request.getUavIds().size(),
+                    successList.size(), String.join(",", successList),
+                    failedList.size(), failedList.isEmpty() ? "" : "[" + String.join(",", failedList) + "]");
+            controlService.logBatchOperation(
+                    principal.getUserId(), principal.getUsername(),
+                    request.getCommandType(), request.getUavIds(),
+                    successList, failedList, batchDetail);
+            
             return ApiResponse.success(Map.of(
                     "success", successList,
                     "failed", failedList,

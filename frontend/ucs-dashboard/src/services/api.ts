@@ -429,6 +429,83 @@ export async function getCommanderUsers(
   return response.json();
 }
 
+// ==================== Rally Point API ====================
+
+export interface RallyPoint {
+  id: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  altitude: number | null;
+  city: string | null;
+  address: string | null;
+  capacity: number;
+  currentOccupancy: number;
+  status: number; // 0=disabled, 1=enabled, 2=maintenance
+  scope: number; // 0=global, 1=team-specific
+  teamId: string | null;
+  radius: number;
+  serviceType: number; // 0=parking, 1=charging, 2=maintenance, 3=supply
+  description: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getRallyPoints(token: string): Promise<ApiResponse<RallyPoint[]>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+export async function getEnabledRallyPoints(token: string): Promise<ApiResponse<RallyPoint[]>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points/enabled`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+export async function getAvailableRallyPoints(token: string): Promise<ApiResponse<RallyPoint[]>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points/available`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+export async function searchRallyPoints(token: string, keyword: string): Promise<ApiResponse<RallyPoint[]>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points/search?keyword=${encodeURIComponent(keyword)}`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+export async function createRallyPoint(token: string, data: Partial<RallyPoint>): Promise<ApiResponse<RallyPoint>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(data),
+  });
+  return response.json();
+}
+
+export async function updateRallyPoint(token: string, id: number, data: Partial<RallyPoint>): Promise<ApiResponse<RallyPoint>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points/${id}`, {
+    method: 'PUT',
+    headers: authHeaders(token),
+    body: JSON.stringify(data),
+  });
+  return response.json();
+}
+
+export async function deleteRallyPoint(token: string, id: number): Promise<ApiResponse<{ id: number; deleted: boolean }>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
 // ==================== Pilot API ====================
 
 /**

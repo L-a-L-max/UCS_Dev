@@ -131,6 +131,18 @@ class DDSGateway:
         self._stats = defaultdict(int)
         self._last_stats_time = time.time()
 
+        # Persistent HTTP session for ack forwarding (reuses TCP connections)
+        self._ack_session = requests.Session()
+        self._ack_session.headers.update({
+            'X-Gateway-Key': api_key,
+            'Content-Type': 'application/json',
+        })
+        # Thread pool for ack forwarding (avoids per-ack thread creation overhead)
+        from concurrent.futures import ThreadPoolExecutor
+        self._ack_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='ack-fwd')
+        # Ack deduplication cache
+        self._recent_acks: Dict[str, float] = {}
+
         try:
             import rclpy
             self._rclpy_available = True
@@ -429,8 +441,13 @@ class DDSGateway:
         3=UNSUPPORTED, 4=FAILED, 5=IN_PROGRESS, 6=CANCELLED
 
         Includes deduplication to prevent rejection loops: if the same
-        (uavId, command, result) was forwarded within the last 5 seconds,
+        (uavId, command, result) was forwarded within the last 2 seconds,
         the duplicate ack is suppressed.
+
+        Latency optimization:
+        - Uses persistent HTTP session (avoids TCP handshake per ack)
+        - Uses ThreadPoolExecutor (avoids thread creation overhead per ack)
+        - Dedup window reduced from 5s to 2s for faster feedback
         """
         command = getattr(msg, 'command', 0)
         result = getattr(msg, 'result', -1)
@@ -438,28 +455,21 @@ class DDSGateway:
         self._stats[f'{uav_id}/command_ack'] += 1
         self._stats['total_messages'] += 1
 
-        # Deduplicate acks to prevent rejection loops
-        if not hasattr(self, '_recent_acks'):
-            self._recent_acks = {}
+        # Deduplicate acks to prevent rejection loops (2s window)
         ack_key = f"{uav_id}:{command}:{result}"
         now = time.time()
         last_forwarded = self._recent_acks.get(ack_key, 0)
-        if now - last_forwarded < 5.0:
+        if now - last_forwarded < 2.0:
             logger.debug("[CommandAck] Suppressing duplicate ack %s (%.1fs ago)", ack_key, now - last_forwarded)
             return
         self._recent_acks[ack_key] = now
 
         # Clean up old entries periodically
         if len(self._recent_acks) > 100:
-            cutoff = now - 10.0
+            cutoff = now - 5.0
             self._recent_acks = {k: v for k, v in self._recent_acks.items() if v > cutoff}
 
-        # If OFFBOARD-related command is rejected, stop heartbeat to prevent loop
-        if result != 0 and command in (176, 192):  # DO_SET_MODE, VEHICLE_CMD_DO_SET_ACT
-            logger.warning("[CommandAck] OFFBOARD command rejected for %s, stopping heartbeat", uav_id)
-            self.stop_offboard_heartbeat(uav_id)
-
-        # Forward ack to backend asynchronously
+        # Forward ack to backend via thread pool (low-latency)
         try:
             ack_payload = {
                 'uavId': uav_id,
@@ -467,30 +477,26 @@ class DDSGateway:
                 'result': int(result),
                 'timestamp': now,
             }
-            threading.Thread(
-                target=self._forward_command_ack,
-                args=(ack_payload,),
-                daemon=True
-            ).start()
+            self._ack_executor.submit(self._forward_command_ack, ack_payload)
         except Exception as e:
             logger.error("[CommandAck] Failed to forward ack: %s", e)
 
     def _forward_command_ack(self, ack_payload: dict):
-        """Forward a command ack to the backend REST API."""
+        """Forward a command ack to the backend REST API.
+
+        Uses persistent HTTP session for low-latency forwarding.
+        Timeout reduced to 3s since ack delivery is time-sensitive.
+        """
         try:
-            resp = requests.post(
+            resp = self._ack_session.post(
                 f"{self.backend_url}/api/v1/dds-gateway/command-ack",
                 json=ack_payload,
-                headers={
-                    "X-Gateway-Key": self.api_key,
-                    "Content-Type": "application/json"
-                },
-                timeout=5
+                timeout=3,
             )
             if resp.status_code == 200:
                 logger.info("[CommandAck] Forwarded ack to backend: %s", ack_payload)
             else:
-                logger.warn("[CommandAck] Backend returned %d: %s", resp.status_code, resp.text[:200])
+                logger.warning("[CommandAck] Backend returned %d: %s", resp.status_code, resp.text[:200])
         except Exception as e:
             logger.error("[CommandAck] Forward failed: %s", e)
 
@@ -974,17 +980,36 @@ class DDSGateway:
             ok = self.publish_vehicle_command(uav_id, command=20)
 
         elif command_type == 'HOLD':
-            # HOLD: continuously send current position to maintain hover
+            # HOLD: capture real-time position and continuously send it as setpoint.
+            #
+            # Previous bug: used cached NED position which could be stale if
+            # the drone had moved since last VehicleLocalPosition update.
+            # Fix: spin the ROS2 node briefly to process any pending messages,
+            # then read the freshest position data.
+            try:
+                import rclpy
+                # Process pending DDS messages to get the freshest position
+                for _ in range(5):
+                    rclpy.spin_once(self._node, timeout_sec=0.02)
+            except Exception:
+                pass  # Best effort - position may still be slightly stale
+
             with self._lock:
                 state = self.drone_states.get(uav_id)
             if state:
-                # Use current NED local position as setpoint
-                target_z = state.ned_z if state.ned_z != 0.0 else -5.0
-                logger.info("[Command] HOLD: freezing at NED [%.1f, %.1f, %.1f] for %s",
-                            state.ned_x, state.ned_y, target_z, uav_id)
+                # Use the freshest NED local position as hold setpoint
+                hold_x = state.ned_x
+                hold_y = state.ned_y
+                hold_z = state.ned_z if state.ned_z != 0.0 else -5.0
+                pos_age = time.time() - state.last_update
+                logger.info("[Command] HOLD: freezing at NED [%.2f, %.2f, %.2f] for %s (pos age: %.2fs)",
+                            hold_x, hold_y, hold_z, uav_id, pos_age)
+                if pos_age > 2.0:
+                    logger.warning("[Command] HOLD: position data is %.1fs old for %s, may be inaccurate",
+                                   pos_age, uav_id)
                 self.start_offboard_heartbeat(
-                    uav_id, target_z=target_z,
-                    target_x=state.ned_x, target_y=state.ned_y)
+                    uav_id, target_z=hold_z,
+                    target_x=hold_x, target_y=hold_y)
                 ok = self.publish_vehicle_command(
                     uav_id, command=176, param1=1.0, param2=6.0)
             else:

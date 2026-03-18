@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -26,9 +26,12 @@ import {
 } from 'lucide-react';
 import {
   sendControlCommand,
+  sendBatchControlCommand,
   getDroneStatus,
   getPilotDrones,
+  getEnabledRallyPoints,
   type DroneInfo,
+  type RallyPoint,
 } from '@/services/api';
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
 import { useTelemetryWebSocket, type PartitionTelemetryMessage, type CommandAckMessage } from '@/hooks/useTelemetryWebSocket';
@@ -91,6 +94,15 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   // Home marker for map (flashing dot)
   const [homeMarker, setHomeMarker] = useState<{ lat: number; lng: number } | null>(null);
 
+  // Multi-select MARK_HOME coordinate input
+  const [batchHomeLat, setBatchHomeLat] = useState('');
+  const [batchHomeLon, setBatchHomeLon] = useState('');
+  // Multi-select RTL mode: 'home' or 'rally'
+  const [batchRtlMode, setBatchRtlMode] = useState<'home' | 'rally'>('home');
+  const [rallyPoints, setRallyPoints] = useState<RallyPoint[]>([]);
+  const [selectedRallyPointId, setSelectedRallyPointId] = useState<number | null>(null);
+  const [rallySearchKeyword, setRallySearchKeyword] = useState('');
+
   // Real-time telemetry from WebSocket
   const [telemetryDrones, setTelemetryDrones] = useState<Map<string, MapDrone>>(new Map());
 
@@ -127,7 +139,17 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     });
   }, []);
 
+  // Dedup ack feedback to prevent repeated toasts (especially for HOLD continuous updates)
+  const lastAckKeyRef = useRef<string>('');
+  const lastAckTimeRef = useRef<number>(0);
   const handleCommandAck = useCallback((ack: CommandAckMessage) => {
+    const ackKey = `${ack.uavId}:${ack.command}:${ack.result}`;
+    const now = Date.now();
+    if (ackKey === lastAckKeyRef.current && now - lastAckTimeRef.current < 3000) {
+      return; // Suppress duplicate ack toast within 3s
+    }
+    lastAckKeyRef.current = ackKey;
+    lastAckTimeRef.current = now;
     const success = ack.result === 0;
     const msg = success
       ? `PX4 \u786e\u8ba4\u6267\u884c: ${ack.resultText}`
@@ -170,11 +192,23 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     }
   }, [token, selectedDrone]);
 
+  const fetchRallyPoints = useCallback(async () => {
+    try {
+      const res = await getEnabledRallyPoints(token);
+      if (res.code === 0 && res.data) {
+        setRallyPoints(Array.isArray(res.data) ? res.data : []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch rally points:', err);
+    }
+  }, [token]);
+
   useEffect(() => {
     fetchDrones();
+    fetchRallyPoints();
     const interval = setInterval(fetchDrones, 5000);
     return () => clearInterval(interval);
-  }, [fetchDrones]);
+  }, [fetchDrones, fetchRallyPoints]);
 
   // Merge API drones with WebSocket telemetry
   const mapDrones: MapDrone[] = (() => {
@@ -399,7 +433,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                 <Badge className={`text-[9px] px-1 py-0 ${
                   !drone.onlineStatus ? 'bg-slate-600' : drone.armed === true ? 'bg-green-600' : 'bg-blue-600'
                 }`}>
-                  {!drone.onlineStatus ? '\u79bb\u7ebf' : drone.armed === true ? '\u5df2\u89e3\u9501' : '\u672a\u89e3\u9501'}
+                  {!drone.onlineStatus ? '\u79bb\u7ebf' : drone.armed === true ? '\u98de\u884c\u4e2d' : '\u672a\u89e3\u9501'}
                 </Badge>
               </div>
               <div className="flex items-center gap-2 text-slate-400 text-[10px]">
@@ -421,51 +455,146 @@ export default function PilotView({ token, username, partitions = [], onLogout }
           ))}
         </div>
 
-        {/* Multi-select aggregate panel */}
+        {/* Multi-select aggregate panel - enlarged layout */}
         {multiSelectMode && aggregateData && detailPanelEnabled && (
-          <div className="w-[260px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-2 space-y-2 shrink-0">
+          <div className="w-[320px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-2.5 shrink-0">
             <Card className="bg-slate-800 border-slate-700">
-              <CardHeader className="pb-1 px-2 pt-2">
-                <CardTitle className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-1"><ListChecks className="w-3 h-3 text-amber-400" />{'\u591a\u673a\u805a\u5408'}</div>
-                  <Badge className="bg-amber-600 text-[10px]">{aggregateData.count} {'\u67b6'}</Badge>
+              <CardHeader className="pb-1.5 px-3 pt-2.5">
+                <CardTitle className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-1.5"><ListChecks className="w-4 h-4 text-amber-400" />{'\u591a\u673a\u805a\u5408'}</div>
+                  <Badge className="bg-amber-600 text-xs px-2">{aggregateData.count} {'\u67b6'}</Badge>
                 </CardTitle>
               </CardHeader>
-              <CardContent className="px-2 pb-2">
-                <div className="grid grid-cols-2 gap-1.5">
-                  <div className="bg-slate-700/50 rounded p-1.5 text-center">
-                    <div className="text-[9px] text-slate-400">{'\u6700\u9ad8/\u6700\u4f4e\u9ad8\u5ea6'}</div>
-                    <div className="text-xs font-bold text-blue-300">{aggregateData.maxAlt.toFixed(1)}m / {aggregateData.minAlt.toFixed(1)}m</div>
+              <CardContent className="px-3 pb-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-slate-700/50 rounded p-2 text-center">
+                    <div className="text-[10px] text-slate-400">{'\u6700\u9ad8/\u6700\u4f4e\u9ad8\u5ea6'}</div>
+                    <div className="text-sm font-bold text-blue-300">{aggregateData.maxAlt.toFixed(1)}m / {aggregateData.minAlt.toFixed(1)}m</div>
                   </div>
-                  <div className="bg-slate-700/50 rounded p-1.5 text-center">
-                    <div className="text-[9px] text-slate-400">{'\u5728\u7ebf/\u98de\u884c\u4e2d'}</div>
-                    <div className="text-xs font-bold text-green-300">{aggregateData.onlineCount} / {aggregateData.flyingCount}</div>
+                  <div className="bg-slate-700/50 rounded p-2 text-center">
+                    <div className="text-[10px] text-slate-400">{'\u5728\u7ebf/\u98de\u884c\u4e2d'}</div>
+                    <div className="text-sm font-bold text-green-300">{aggregateData.onlineCount} / {aggregateData.flyingCount}</div>
                   </div>
                 </div>
-                {/* Batch control */}
-                <div className="mt-2">
-                  <div className="text-[9px] text-slate-400 mb-1">{'\u6279\u91cf\u63a7\u5236'}</div>
-                  <div className="grid grid-cols-3 gap-1">
+                {/* Batch control - larger buttons */}
+                <div className="mt-3">
+                  <div className="text-xs text-slate-400 mb-1.5 font-medium">{'\u6279\u91cf\u63a7\u5236'}</div>
+                  <div className="grid grid-cols-3 gap-1.5">
                     {COMMANDS.map(cmd => {
                       const Icon = cmd.icon;
                       return (
                         <Button key={cmd.type}
-                          className={`h-auto py-1 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[9px]`}
-                          onClick={() => { multiSelectedDronesList.forEach(d => handleCommand(cmd.type, d.uavId)); }}>
-                          <Icon className="w-3 h-3" />
-                          <span className="font-bold text-[8px]">{cmd.label}</span>
+                          className={`h-auto py-1.5 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-xs`}
+                          onClick={() => {
+                            const uavIds = multiSelectedDronesList.map(d => d.uavId);
+                            const params: Record<string, unknown> = {};
+                            if (cmd.type === 'TAKEOFF') params.altitude = parseFloat(takeoffAlt) || 5;
+                            sendBatchControlCommand(token, { uavIds, commandType: cmd.type, params: JSON.stringify(params), confirmed: true })
+                              .then(res => { if (res.code === 0) setQuickFeedback({ uavId: uavIds.join(','), message: `${cmd.label} \u6307\u4ee4\u5df2\u53d1\u9001`, success: true }); })
+                              .catch(() => {});
+                            setTimeout(() => setQuickFeedback(null), 3000);
+                          }}>
+                          <Icon className="w-4 h-4" />
+                          <span className="font-bold text-[10px]">{cmd.label}</span>
                         </Button>
                       );
                     })}
                   </div>
                 </div>
+                {/* Multi-select MARK_HOME with optional unified coordinates */}
+                <div className="mt-3 border-t border-slate-700 pt-2">
+                  <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1.5">
+                    <Home className="w-3.5 h-3.5 text-teal-400" />{'\u6279\u91cf\u6807\u8bb0Home'}
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1">
+                      <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={batchHomeLat} onChange={e => setBatchHomeLat(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder={'\u7559\u7a7a=\u5404\u81ea\u5f53\u524d\u4f4d\u7f6e'} />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={batchHomeLon} onChange={e => setBatchHomeLon(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder={'\u7559\u7a7a=\u5404\u81ea\u5f53\u524d\u4f4d\u7f6e'} />
+                    </div>
+                  </div>
+                  <Button className="w-full text-xs h-7 bg-teal-600 hover:bg-teal-700 text-white mt-1.5"
+                    onClick={() => {
+                      const lat = parseFloat(batchHomeLat);
+                      const lon = parseFloat(batchHomeLon);
+                      multiSelectedDronesList.forEach(d => {
+                        const homeLat = lat && lon ? lat : d.lat;
+                        const homeLon = lat && lon ? lon : d.lng;
+                        const params = JSON.stringify({ lat: homeLat, lon: homeLon, alt: d.altitude || 0 });
+                        sendControlCommand(token, { uavId: d.uavId, commandType: 'MARK_HOME', params, confirmed: true });
+                      });
+                      setQuickFeedback({ uavId: `${multiSelectedDronesList.length}\u67b6`, message: '\u6279\u91cfMARK_HOME\u6307\u4ee4\u5df2\u53d1\u9001', success: true });
+                      setTimeout(() => setQuickFeedback(null), 3000);
+                    }}>
+                    <Home className="w-3.5 h-3.5 mr-1" />{'\u6279\u91cf\u6807\u8bb0Home'}
+                  </Button>
+                </div>
+                {/* Multi-select RTL with Home/Rally mode */}
+                <div className="mt-3 border-t border-slate-700 pt-2">
+                  <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1.5">
+                    <RotateCcw className="w-3.5 h-3.5 text-purple-400" />{'\u6279\u91cf\u8fd4\u822a'}
+                  </div>
+                  <div className="flex gap-1 mb-1.5">
+                    <button onClick={() => setBatchRtlMode('home')}
+                      className={`text-[10px] px-2 py-0.5 rounded ${batchRtlMode === 'home' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                      {'\u8fd4\u56deHome'}
+                    </button>
+                    <button onClick={() => setBatchRtlMode('rally')}
+                      className={`text-[10px] px-2 py-0.5 rounded ${batchRtlMode === 'rally' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                      {'\u8fd4\u56de\u96c6\u7ed3\u70b9'}
+                    </button>
+                  </div>
+                  {batchRtlMode === 'rally' && (
+                    <div className="space-y-1 mb-1.5">
+                      <Input value={rallySearchKeyword} onChange={e => setRallySearchKeyword(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7" placeholder={'\u641c\u7d22\u96c6\u7ed3\u70b9...'} />
+                      <div className="max-h-20 overflow-y-auto space-y-0.5">
+                        {rallyPoints.filter(rp => !rallySearchKeyword || rp.name.toLowerCase().includes(rallySearchKeyword.toLowerCase()) || (rp.address || '').toLowerCase().includes(rallySearchKeyword.toLowerCase()))
+                          .map(rp => (
+                          <div key={rp.id}
+                            className={`flex items-center justify-between text-[10px] rounded px-2 py-1 cursor-pointer ${selectedRallyPointId === rp.id ? 'bg-purple-700/50 border border-purple-500' : 'bg-slate-700/50 hover:bg-slate-600/50'}`}
+                            onClick={() => setSelectedRallyPointId(rp.id)}>
+                            <span className="text-purple-300 truncate">{rp.name}</span>
+                            <span className="text-slate-400 text-[9px] shrink-0 ml-1">{rp.currentOccupancy}/{rp.capacity}</span>
+                          </div>
+                        ))}
+                        {rallyPoints.length === 0 && <div className="text-[9px] text-slate-500 text-center py-1">{'\u6682\u65e0\u96c6\u7ed3\u70b9'}</div>}
+                      </div>
+                    </div>
+                  )}
+                  <Button className="w-full text-xs h-7 bg-purple-600 hover:bg-purple-700 text-white"
+                    onClick={() => {
+                      if (batchRtlMode === 'rally' && selectedRallyPointId) {
+                        const rp = rallyPoints.find(r => r.id === selectedRallyPointId);
+                        if (rp) {
+                          multiSelectedDronesList.forEach(d => {
+                            const params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude });
+                            sendControlCommand(token, { uavId: d.uavId, commandType: 'RTL', params, confirmed: true });
+                          });
+                        }
+                      } else {
+                        multiSelectedDronesList.forEach(d => {
+                          sendControlCommand(token, { uavId: d.uavId, commandType: 'RTL', params: '{}', confirmed: true });
+                        });
+                      }
+                      setQuickFeedback({ uavId: `${multiSelectedDronesList.length}\u67b6`, message: '\u6279\u91cf\u8fd4\u822a\u6307\u4ee4\u5df2\u53d1\u9001', success: true });
+                      setTimeout(() => setQuickFeedback(null), 3000);
+                    }}>
+                    <RotateCcw className="w-3.5 h-3.5 mr-1" />{'\u6279\u91cf\u8fd4\u822a'}
+                  </Button>
+                </div>
                 {/* Selected drones list */}
-                <div className="mt-2">
-                  <div className="text-[9px] text-slate-400 mb-1">{'\u5df2\u9009'} ({multiSelectedDronesList.length})</div>
-                  <div className="space-y-0.5 max-h-24 overflow-y-auto">
+                <div className="mt-3 border-t border-slate-700 pt-2">
+                  <div className="text-xs text-slate-400 mb-1">{'\u5df2\u9009'} ({multiSelectedDronesList.length})</div>
+                  <div className="space-y-0.5 max-h-28 overflow-y-auto">
                     {multiSelectedDronesList.map(d => (
-                      <div key={d.uavId} className="flex items-center justify-between text-[9px] bg-slate-700/50 rounded px-1.5 py-0.5">
-                        <span className="text-blue-300">{d.uavId}</span>
+                      <div key={d.uavId} className="flex items-center justify-between text-[10px] bg-slate-700/50 rounded px-2 py-1">
+                        <span className="text-blue-300 font-medium">{d.uavId}</span>
                         <span className="text-slate-400">{d.battery != null ? `${d.battery.toFixed(0)}%` : '-'} | {d.altitude != null ? `${d.altitude.toFixed(1)}m` : '-'}</span>
                       </div>
                     ))}
@@ -643,6 +772,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
           <MapPanel drones={mapDrones} selectedDroneId={selectedDrone}
             selectedDroneIds={multiSelectMode ? selectedDrones : undefined}
             homeMarker={homeMarker}
+            rallyPoints={rallyPoints.map(rp => ({ id: rp.id, name: rp.name, latitude: rp.latitude, longitude: rp.longitude, capacity: rp.capacity, currentOccupancy: rp.currentOccupancy, status: rp.status, serviceType: rp.serviceType }))}
             onDroneClick={(id) => {
               if (multiSelectMode) {
                 const newSet = new Set(selectedDrones);
