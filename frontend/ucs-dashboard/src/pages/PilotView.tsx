@@ -361,6 +361,24 @@ export default function PilotView({ token, username, partitions = [], onLogout }
             className={`text-xs h-7 ${multiSelectMode ? 'bg-amber-600/30 border-amber-500 text-amber-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}>
             <ListChecks className="w-3.5 h-3.5 mr-1" />{'\u591a\u9009'}
           </Button>
+          {multiSelectMode && (
+            <Button variant="outline" size="sm"
+              onClick={() => {
+                const allIds = new Set(mapDrones.map(d => d.uavId));
+                if (selectedDrones.size === mapDrones.length) {
+                  setSelectedDrones(new Set());
+                  setShowDetailPanel(false);
+                  setSelectedDrone(null);
+                } else {
+                  setSelectedDrones(allIds);
+                  setShowDetailPanel(false);
+                }
+              }}
+              className={`text-xs h-7 ${selectedDrones.size === mapDrones.length ? 'bg-green-600/30 border-green-500 text-green-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}>
+              {selectedDrones.size === mapDrones.length ? <CheckSquare className="w-3.5 h-3.5 mr-1" /> : <Square className="w-3.5 h-3.5 mr-1" />}
+              {'\u5168\u9009'}
+            </Button>
+          )}
           <Button variant="outline" size="sm"
             onClick={() => {
               const newEnabled = !detailPanelEnabled;
@@ -478,9 +496,11 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                 </div>
                 {/* Batch control - larger buttons */}
                 <div className="mt-3">
-                  <div className="text-xs text-slate-400 mb-1.5 font-medium">{'\u6279\u91cf\u63a7\u5236'}</div>
+                  <div className="text-xs text-slate-400 mb-1.5 font-medium">{'\u63a7\u5236'}</div>
                   <div className="grid grid-cols-3 gap-1.5">
-                    {COMMANDS.map(cmd => {
+                    {[{ type: 'TAKEOFF', label: '\u8d77\u98de', icon: ArrowUp, color: 'bg-blue-600 hover:bg-blue-700' },
+                      { type: 'LAND', label: '\u964d\u843d', icon: ArrowDown, color: 'bg-amber-600 hover:bg-amber-700' },
+                      { type: 'HOLD', label: '\u60ac\u505c', icon: Pause, color: 'bg-orange-600 hover:bg-orange-700' }].map(cmd => {
                       const Icon = cmd.icon;
                       return (
                         <Button key={cmd.type}
@@ -490,7 +510,21 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                             const params: Record<string, unknown> = {};
                             if (cmd.type === 'TAKEOFF') params.altitude = parseFloat(takeoffAlt) || 5;
                             sendBatchControlCommand(token, { uavIds, commandType: cmd.type, params: JSON.stringify(params), confirmed: true })
-                              .then(res => { if (res.code === 0) setQuickFeedback({ uavId: uavIds.join(','), message: `${cmd.label} \u6307\u4ee4\u5df2\u53d1\u9001`, success: true }); })
+                              .then(res => {
+                                if (res.code === 0) {
+                                  setQuickFeedback({ uavId: `${uavIds.length}\u67b6`, message: `${cmd.label}\u6307\u4ee4\u5df2\u53d1\u9001`, success: true });
+                                  if (cmd.type === 'TAKEOFF') {
+                                    setTelemetryDrones(prev => {
+                                      const next = new Map(prev);
+                                      uavIds.forEach(id => {
+                                        const existing = next.get(id);
+                                        if (existing) { next.set(id, { ...existing, armed: true, flightStatus: 'FLYING' }); }
+                                      });
+                                      return next;
+                                    });
+                                  }
+                                }
+                              })
                               .catch(() => {});
                             setTimeout(() => setQuickFeedback(null), 3000);
                           }}>
@@ -501,10 +535,52 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                     })}
                   </div>
                 </div>
+                {/* Multi-select GOTO with coordinates */}
+                <div className="mt-3 border-t border-slate-700 pt-2">
+                  <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1.5">
+                    <Crosshair className="w-3.5 h-3.5 text-cyan-400" />{'\u524d\u5f80\u76ee\u6807'}
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1">
+                      <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u9ad8\u5ea6'}</label>
+                      <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" />
+                      <span className="text-[10px] text-slate-400">{'\u7c73'}</span>
+                    </div>
+                  </div>
+                  <Button className="w-full text-xs h-7 bg-cyan-600 hover:bg-cyan-700 text-white mt-1.5"
+                    onClick={() => {
+                      const uavIds = multiSelectedDronesList.map(d => d.uavId);
+                      const params = JSON.stringify({
+                        lat: parseFloat(gotoLat) || 0,
+                        lon: parseFloat(gotoLon) || 0,
+                        alt: parseFloat(gotoAlt) || 50,
+                        formation: true,
+                        droneCount: uavIds.length,
+                        droneArea: 6.25,
+                      });
+                      sendBatchControlCommand(token, { uavIds, commandType: 'GOTO', params, confirmed: true })
+                        .then(res => { if (res.code === 0) setQuickFeedback({ uavId: `${uavIds.length}\u67b6`, message: '\u524d\u5f80\u6307\u4ee4\u5df2\u53d1\u9001', success: true }); })
+                        .catch(() => {});
+                      setTimeout(() => setQuickFeedback(null), 3000);
+                    }}>
+                    <Navigation className="w-3.5 h-3.5 mr-1" />{'\u524d\u5f80'}
+                  </Button>
+                </div>
                 {/* Multi-select MARK_HOME with optional unified coordinates */}
                 <div className="mt-3 border-t border-slate-700 pt-2">
                   <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1.5">
-                    <Home className="w-3.5 h-3.5 text-teal-400" />{'\u6279\u91cf\u6807\u8bb0Home'}
+                    <Home className="w-3.5 h-3.5 text-teal-400" />{'\u6807\u8bb0Home'}
                   </div>
                   <div className="space-y-1">
                     <div className="flex items-center gap-1">
@@ -531,13 +607,13 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                       setQuickFeedback({ uavId: `${multiSelectedDronesList.length}\u67b6`, message: '\u6279\u91cfMARK_HOME\u6307\u4ee4\u5df2\u53d1\u9001', success: true });
                       setTimeout(() => setQuickFeedback(null), 3000);
                     }}>
-                    <Home className="w-3.5 h-3.5 mr-1" />{'\u6279\u91cf\u6807\u8bb0Home'}
+                    <Home className="w-3.5 h-3.5 mr-1" />{'\u6807\u8bb0Home'}
                   </Button>
                 </div>
                 {/* Multi-select RTL with Home/Rally mode */}
                 <div className="mt-3 border-t border-slate-700 pt-2">
                   <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1.5">
-                    <RotateCcw className="w-3.5 h-3.5 text-purple-400" />{'\u6279\u91cf\u8fd4\u822a'}
+                    <RotateCcw className="w-3.5 h-3.5 text-purple-400" />{'\u8fd4\u822a'}
                   </div>
                   <div className="flex gap-1 mb-1.5">
                     <button onClick={() => setBatchRtlMode('home')}
@@ -582,10 +658,10 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                           sendControlCommand(token, { uavId: d.uavId, commandType: 'RTL', params: '{}', confirmed: true });
                         });
                       }
-                      setQuickFeedback({ uavId: `${multiSelectedDronesList.length}\u67b6`, message: '\u6279\u91cf\u8fd4\u822a\u6307\u4ee4\u5df2\u53d1\u9001', success: true });
+                      setQuickFeedback({ uavId: `${multiSelectedDronesList.length}\u67b6`, message: '\u8fd4\u822a\u6307\u4ee4\u5df2\u53d1\u9001', success: true });
                       setTimeout(() => setQuickFeedback(null), 3000);
                     }}>
-                    <RotateCcw className="w-3.5 h-3.5 mr-1" />{'\u6279\u91cf\u8fd4\u822a'}
+                    <RotateCcw className="w-3.5 h-3.5 mr-1" />{'\u8fd4\u822a'}
                   </Button>
                 </div>
                 {/* Selected drones list */}
@@ -735,16 +811,18 @@ export default function PilotView({ token, username, partitions = [], onLogout }
               <Card className="bg-slate-800 border-slate-700">
                 <CardContent className="px-2 py-1.5 space-y-1">
                   <div className="flex items-center gap-1 text-[9px] text-slate-400"><RotateCcw className="w-2.5 h-2.5 text-purple-400" />{'\u8fd4\u822a\u8bbe\u7f6e'}</div>
-                  {homePosition && (
-                    <div className="flex items-center gap-1 text-[9px]">
-                      <Home className="w-2.5 h-2.5 text-teal-400" />
+                  <div className="flex items-center gap-1 text-[9px]">
+                    <Home className="w-2.5 h-2.5 text-teal-400" />
+                    {homePosition ? (
                       <span className="text-teal-300">Home: {homePosition.lat.toFixed(6)}, {homePosition.lon.toFixed(6)}</span>
-                      <Button size="sm" variant="outline" onClick={locateHome}
-                        className="h-4 px-1 text-[8px] bg-teal-700/50 border-teal-600 text-teal-300 ml-auto">
-                        <Locate className="w-2 h-2 mr-0.5" />{'\u5b9a\u4f4d'}
-                      </Button>
-                    </div>
-                  )}
+                    ) : (
+                      <span className="text-slate-500">{'\u672a\u8bbe\u7f6eHome'}</span>
+                    )}
+                    <Button size="sm" variant="outline" onClick={locateHome}
+                      className="h-4 px-1 text-[8px] bg-teal-700/50 border-teal-600 text-teal-300 ml-auto">
+                      <Locate className="w-2 h-2 mr-0.5" />{'\u5b9a\u4f4d'}
+                    </Button>
+                  </div>
                   <div className="flex items-center gap-1">
                     <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
                     <Input type="number" step="0.0001" value={rtlLat} onChange={e => setRtlLat(e.target.value)}

@@ -506,6 +506,32 @@ export async function deleteRallyPoint(token: string, id: number): Promise<ApiRe
   return response.json();
 }
 
+// ==================== Geocoding API ====================
+
+/**
+ * Geocode an address string to lat/lon coordinates.
+ * Uses Nominatim (OpenStreetMap) as free geocoding service.
+ */
+export async function geocodeAddress(address: string): Promise<{ lat: number; lon: number; displayName: string } | null> {
+  try {
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`,
+      { headers: { 'User-Agent': 'UCS-Dashboard/1.0' } }
+    );
+    const results = await response.json();
+    if (results && results.length > 0) {
+      return {
+        lat: parseFloat(results[0].lat),
+        lon: parseFloat(results[0].lon),
+        displayName: results[0].display_name,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ==================== Pilot API ====================
 
 /**

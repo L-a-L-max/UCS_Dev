@@ -46,6 +46,7 @@ import {
   createRallyPoint,
   updateRallyPoint,
   deleteRallyPoint,
+  geocodeAddress,
   type DroneInfo,
   type OperationLog,
   type RallyPoint,
@@ -96,6 +97,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
   const [rpEditData, setRpEditData] = useState<Partial<RallyPoint>>({});
   const [rpEditId, setRpEditId] = useState<number | null>(null);
   const [rpLoading, setRpLoading] = useState(false);
+  const [rpGeocoding, setRpGeocoding] = useState(false);
 
   // Teams state
   const [teams, setTeams] = useState<Array<{ teamId: string; teamName: string; leader: string; memberCount: number; droneCount?: number; description?: string }>>([]);
@@ -654,7 +656,21 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                       </div>
                     </div>
                   )}
-                  {/* 无人机列表（在线优先排序）- 独立滚动区域 */}
+                  {/* 一键全选 + 无人机列表 */}
+                  <div className="flex items-center justify-between mb-1 flex-shrink-0">
+                    <span className="text-[10px] text-slate-400">{mapDrones.length} 架无人机</span>
+                    <Button size="sm" variant="outline"
+                      onClick={() => {
+                        if (selectedUavIds.length === drones.length && drones.length > 0) {
+                          setSelectedUavIds([]);
+                        } else {
+                          setSelectedUavIds(drones.map(d => d.uavId));
+                        }
+                      }}
+                      className={`text-[9px] h-5 px-2 ${selectedUavIds.length === drones.length && drones.length > 0 ? 'bg-green-600/30 border-green-500 text-green-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}>
+                      全选
+                    </Button>
+                  </div>
                   <div className="flex-1 overflow-y-auto space-y-1 scrollbar-thin" style={{ scrollbarWidth: 'thin', scrollbarColor: '#475569 #1e293b' }}>
                     {[...mapDrones].sort((a, b) => {
                       const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
@@ -937,9 +953,23 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                             </div>
                           )}
                           <div>
-                            <label className="text-[10px] text-slate-400 block mb-0.5">地址</label>
-                            <Input value={rpEditData.address || ''} onChange={e => setRpEditData(p => ({ ...p, address: e.target.value }))}
-                              className="bg-slate-700 border-slate-600 text-white text-xs h-7" placeholder="详细地址" />
+                            <label className="text-[10px] text-slate-400 block mb-0.5">地址 (填写后可自动填充坐标)</label>
+                            <div className="flex gap-1">
+                              <Input value={rpEditData.address || ''} onChange={e => setRpEditData(p => ({ ...p, address: e.target.value }))}
+                                className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder="输入地址自动获取坐标" />
+                              <Button size="sm" className="h-7 px-2 text-[10px] bg-teal-600 hover:bg-teal-700" disabled={rpGeocoding || !rpEditData.address}
+                                onClick={async () => {
+                                  if (!rpEditData.address) return;
+                                  setRpGeocoding(true);
+                                  const result = await geocodeAddress(rpEditData.address);
+                                  if (result) {
+                                    setRpEditData(p => ({ ...p, latitude: result.lat, longitude: result.lon }));
+                                  }
+                                  setRpGeocoding(false);
+                                }}>
+                                {rpGeocoding ? <RefreshCw className="w-3 h-3 animate-spin" /> : <MapPin className="w-3 h-3" />}
+                              </Button>
+                            </div>
                           </div>
                           <div>
                             <label className="text-[10px] text-slate-400 block mb-0.5">描述</label>

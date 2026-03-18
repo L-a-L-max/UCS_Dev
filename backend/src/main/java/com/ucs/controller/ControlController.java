@@ -70,12 +70,64 @@ public class ControlController {
             List<String> successList = new ArrayList<>();
             List<String> failedList = new ArrayList<>();
             
-            for (String uavId : request.getUavIds()) {
+            // Parse params for formation GOTO
+            String paramsStr = request.getParams();
+            boolean isFormationGoto = false;
+            double baseLat = 0, baseLon = 0, baseAlt = 50;
+            double droneArea = 6.25; // 2.5m x 2.5m per drone
+            if ("GOTO".equalsIgnoreCase(request.getCommandType()) && paramsStr != null) {
+                try {
+                    var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                    var json = mapper.readTree(paramsStr);
+                    if (json.has("formation") && json.get("formation").asBoolean()) {
+                        isFormationGoto = true;
+                        baseLat = json.has("lat") ? json.get("lat").asDouble() : 0;
+                        baseLon = json.has("lon") ? json.get("lon").asDouble() : 0;
+                        baseAlt = json.has("alt") ? json.get("alt").asDouble() : 50;
+                        droneArea = json.has("droneArea") ? json.get("droneArea").asDouble() : 6.25;
+                    }
+                } catch (Exception e) {
+                    // Fall through to non-formation handling
+                }
+            }
+            
+            // Calculate formation grid if needed
+            double[][] offsets = null;
+            if (isFormationGoto) {
+                int n = request.getUavIds().size();
+                double spacing = Math.sqrt(droneArea); // 2.5m for 6.25m²
+                int cols = (int) Math.ceil(Math.sqrt(n));
+                int rows = (int) Math.ceil((double) n / cols);
+                offsets = new double[n][2]; // [lat_offset, lon_offset] in degrees
+                double cosLat = Math.cos(Math.toRadians(baseLat));
+                for (int i = 0; i < n; i++) {
+                    int row = i / cols;
+                    int col = i % cols;
+                    double rowOffset = (row - (rows - 1) / 2.0) * spacing; // meters north
+                    double colOffset = (col - (cols - 1) / 2.0) * spacing; // meters east
+                    offsets[i][0] = rowOffset / 111320.0; // delta lat in degrees
+                    offsets[i][1] = colOffset / (111320.0 * cosLat); // delta lon in degrees
+                }
+            }
+            
+            for (int i = 0; i < request.getUavIds().size(); i++) {
+                String uavId = request.getUavIds().get(i);
                 ControlCommandRequest singleRequest = new ControlCommandRequest();
                 singleRequest.setUavId(uavId);
                 singleRequest.setCommandType(request.getCommandType());
-                singleRequest.setParams(request.getParams());
                 singleRequest.setConfirmed(request.getConfirmed());
+                
+                // For formation GOTO, calculate individual drone coordinates
+                if (isFormationGoto && offsets != null) {
+                    double droneLat = baseLat + offsets[i][0];
+                    double droneLon = baseLon + offsets[i][1];
+                    String droneParams = String.format(
+                        "{\"lat\":%.8f,\"lon\":%.8f,\"alt\":%.1f}",
+                        droneLat, droneLon, baseAlt);
+                    singleRequest.setParams(droneParams);
+                } else {
+                    singleRequest.setParams(request.getParams());
+                }
                 
                 ControlCommandResponse response = controlService.sendControlCommand(
                         singleRequest, principal.getUserId(), principal.getUsername());
