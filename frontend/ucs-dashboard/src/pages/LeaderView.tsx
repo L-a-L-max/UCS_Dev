@@ -387,15 +387,15 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
           }
         }
         // Home mode: no extra params, drone returns to its Home point
-        } else if (commandType === 'ORBIT') {
-          // Include current drone altitude to prevent altitude loss during orbit
-          const droneAlt = mapDrones.find(d => d.uavId === uavId)?.altitude || 0;
-          params = JSON.stringify({
-            lat: parseFloat(orbitLat) || 0,
-            lon: parseFloat(orbitLon) || 0,
-            radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
-            alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
-          });
+      } else if (commandType === 'ORBIT') {
+        // Include current drone altitude to prevent altitude loss during orbit
+        const droneAlt = mapDrones.find(d => d.uavId === uavId)?.altitude || 0;
+        params = JSON.stringify({
+          lat: parseFloat(orbitLat) || 0,
+          lon: parseFloat(orbitLon) || 0,
+          radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
+          alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
+        });
       } else if (commandType === 'MARK_HOME') {
         const droneInfo = mapDrones.find(d => d.uavId === uavId);
         if (droneInfo && droneInfo.lat && droneInfo.lng) {
