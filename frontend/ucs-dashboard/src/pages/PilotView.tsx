@@ -526,14 +526,20 @@ export default function PilotView({ token, username, partitions = [], onLogout }
               </div>
               {/* Quick control buttons */}
               <div className="flex flex-wrap gap-0.5 mt-1">
-                {QUICK_COMMANDS.map(cmd => (
-                  <Button key={cmd.type} size="sm" variant="outline"
-                    className="text-[9px] h-[18px] px-1.5 bg-slate-600/50 border-slate-500 text-slate-300 hover:bg-slate-500"
-                    onClick={e => { e.stopPropagation(); handleCommand(cmd.type, drone.uavId); }}
-                    disabled={sendingCommand !== null}>
-                    {cmd.label}
-                  </Button>
-                ))}
+                {QUICK_COMMANDS.map(cmd => {
+                  const isOffline = drone.onlineStatus !== true;
+                  const isDisarmed = drone.armed !== true;
+                  const shouldDisable = cmd.type !== 'TAKEOFF' && (isOffline || isDisarmed);
+                  return (
+                    <Button key={cmd.type} size="sm" variant="outline"
+                      className={`text-[9px] h-[18px] px-1.5 ${shouldDisable ? 'bg-slate-800 border-slate-700 text-slate-600 cursor-not-allowed' : 'bg-slate-600/50 border-slate-500 text-slate-300 hover:bg-slate-500'}`}
+                      onClick={e => { e.stopPropagation(); if (!shouldDisable) handleCommand(cmd.type, drone.uavId); }}
+                      disabled={shouldDisable || sendingCommand !== null}
+                      title={shouldDisable ? (isOffline ? '\u65e0\u4eba\u673a\u79bb\u7ebf' : '\u65e0\u4eba\u673a\u672a\u89e3\u9501') : cmd.type}>
+                      {cmd.label}
+                    </Button>
+                  );
+                })}
               </div>
             </div>
           ))}
@@ -812,11 +818,15 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                   <div className="grid grid-cols-3 gap-1">
                     {COMMANDS.map(cmd => {
                       const Icon = cmd.icon;
+                      const isOffline = selectedDroneInfo?.onlineStatus !== true;
+                      const isDisarmed = selectedDroneInfo?.armed !== true;
+                      const shouldDisable = cmd.type !== 'TAKEOFF' && (isOffline || isDisarmed);
                       return (
                         <Button key={cmd.type}
-                          className={`h-auto py-1 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[9px]`}
-                          onClick={() => handleCommand(cmd.type)} disabled={sendingCommand !== null}
-                          title={cmd.description}>
+                          className={`h-auto py-1 flex flex-col items-center gap-0.5 ${shouldDisable ? 'bg-slate-700 text-slate-500 cursor-not-allowed' : cmd.color} text-white text-[9px]`}
+                          onClick={() => { if (!shouldDisable) handleCommand(cmd.type); }}
+                          disabled={shouldDisable || sendingCommand !== null}
+                          title={shouldDisable ? (isOffline ? '\u65e0\u4eba\u673a\u79bb\u7ebf' : '\u65e0\u4eba\u673a\u672a\u89e3\u9501') : cmd.description}>
                           <Icon className="w-3 h-3" />
                           <span className="font-bold text-[9px]">{cmd.label}</span>
                           {sendingCommand === cmd.type && <RefreshCw className="w-2.5 h-2.5 animate-spin" />}
@@ -988,6 +998,21 @@ export default function PilotView({ token, username, partitions = [], onLogout }
             homeMarker={homeMarker}
             hasDroneSelected={!!selectedDrone || selectedDrones.size > 0}
             onMapClick={(lat, lon) => setMapClickCoords({ lat, lon })}
+            onMapClickCommand={(command, lat, lon) => {
+              const targetUavId = selectedDrone || (selectedDrones.size === 1 ? Array.from(selectedDrones)[0] : null);
+              if (!targetUavId) return;
+              if (command === 'GOTO') {
+                setGotoLat(lat.toFixed(6));
+                setGotoLon(lon.toFixed(6));
+                handleCommand('GOTO', targetUavId);
+              } else if (command === 'ORBIT') {
+                setOrbitLat(lat.toFixed(6));
+                setOrbitLon(lon.toFixed(6));
+                handleCommand('ORBIT', targetUavId);
+              } else if (command === 'MARK_HOME') {
+                handleCommand('MARK_HOME', targetUavId);
+              }
+            }}
             rallyPoints={rallyPoints.map(rp => ({ id: rp.id, name: rp.name, latitude: rp.latitude, longitude: rp.longitude, capacity: rp.capacity, currentOccupancy: rp.currentOccupancy, status: rp.status, serviceType: rp.serviceType }))}
             onDroneClick={(id) => {
               if (multiSelectMode) {

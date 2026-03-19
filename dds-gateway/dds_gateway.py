@@ -989,6 +989,8 @@ class DDSGateway:
             ok = self.publish_vehicle_command(uav_id, command=20)
 
         elif command_type == 'HOLD':
+            # Stop any running orbit before holding position
+            self.stop_orbit_heartbeat(uav_id)
             # HOLD: capture real-time position and continuously send it as setpoint.
             #
             # Previous bug: used cached NED position which could be stale if
@@ -1025,6 +1027,8 @@ class DDSGateway:
                 ok = self.publish_vehicle_command(uav_id, command=17)
 
         elif command_type == 'GOTO':
+            # Stop any running orbit before going to target
+            self.stop_orbit_heartbeat(uav_id)
             # Fly to target position: convert lat/lon to NED relative to home
             lat = float(params.get('lat', 0))
             lon = float(params.get('lon', 0))
@@ -1091,34 +1095,42 @@ class DDSGateway:
             ok = self.publish_vehicle_command(uav_id, command=176, param1=1.0, param2=6.0)
 
         elif command_type == 'ORBIT':
-            # DO_ORBIT (cmd 34): orbit around a point at specified radius
-            # param1 = radius (meters, min 2.5m hardcoded)
-            # param2 = velocity (m/s, NaN = default)
-            # param3 = yaw behavior (0=heading towards center)
-            # param5 = center lat, param6 = center lon, param7 = center alt
+            # OFFBOARD circular orbit: continuously update TrajectorySetpoint
+            # positions around a circle. DO_ORBIT (cmd 34) is unreliable in
+            # PX4 SITL, so we use OFFBOARD mode with position setpoints.
             lat = float(params.get('lat', 0))
             lon = float(params.get('lon', 0))
             radius = max(2.5, float(params.get('radius', 5.0)))
-            alt = float(params.get('alt', 0))
+            velocity = float(params.get('velocity', 2.0))  # m/s tangential
+
+            with self._lock:
+                state = self.drone_states.get(uav_id)
+                if not state:
+                    return {'success': False, 'message': f'No state for {uav_id}'}
+                home_lat = state.home_lat or state.lat
+                home_lon = state.home_lon or state.lon
+                home_alt = state.home_alt or state.alt
+                current_alt_ned = -(state.alt - home_alt) if home_alt else -5.0
 
             if lat != 0 and lon != 0:
-                logger.info("[Command] ORBIT: center=%.6f,%.6f radius=%.1fm for %s",
-                            lat, lon, radius, uav_id)
-                ok = self.publish_vehicle_command(
-                    uav_id, command=34,
-                    param1=radius,
-                    param2=float('nan'),  # default velocity
-                    param3=0.0,  # heading towards center
-                    param5=lat, param6=lon, param7=alt)
+                center_n, center_e, _ = _latlon_to_ned(
+                    lat, lon, home_alt, home_lat, home_lon, home_alt)
             else:
                 # Orbit around current position
-                logger.info("[Command] ORBIT: current position, radius=%.1fm for %s",
-                            radius, uav_id)
-                ok = self.publish_vehicle_command(
-                    uav_id, command=34,
-                    param1=radius,
-                    param2=float('nan'),
-                    param3=0.0)
+                center_n, center_e, _ = _latlon_to_ned(
+                    state.lat, state.lon, home_alt, home_lat, home_lon, home_alt)
+
+            logger.info("[Command] ORBIT (OFFBOARD): center NED=(%.1f,%.1f) radius=%.1fm vel=%.1fm/s for %s",
+                        center_n, center_e, radius, velocity, uav_id)
+
+            # Start OFFBOARD orbit heartbeat
+            self.start_orbit_heartbeat(
+                uav_id, center_n, center_e, current_alt_ned, radius, velocity)
+
+            # Ensure OFFBOARD mode is active
+            time.sleep(0.3)
+            self.publish_vehicle_command(uav_id, command=176, param1=1.0, param2=6.0)
+            ok = True
 
         elif command_type == 'SET_ROI':
             # DO_SET_ROI_LOCATION (cmd 195): set region of interest
@@ -1268,6 +1280,74 @@ class DDSGateway:
             self._heartbeat_active[uav_id] = False
         if hasattr(self, '_heartbeat_setpoints') and uav_id in self._heartbeat_setpoints:
             del self._heartbeat_setpoints[uav_id]
+        # Also stop orbit heartbeat if running
+        self.stop_orbit_heartbeat(uav_id)
+
+    def start_orbit_heartbeat(self, uav_id: str, center_n: float, center_e: float,
+                                alt_ned: float, radius: float, velocity: float,
+                                interval: float = 0.1):
+        """Start OFFBOARD circular orbit by continuously updating TrajectorySetpoint.
+
+        Traces a circle around (center_n, center_e) in NED frame at the given
+        altitude, radius, and tangential velocity. The yaw is always pointed
+        towards the center of the orbit.
+
+        Args:
+            center_n: NED north position of orbit center (meters)
+            center_e: NED east position of orbit center (meters)
+            alt_ned: NED altitude (negative = up, e.g. -5.0 = 5m above home)
+            radius: Orbit radius in meters (min 2.5m)
+            velocity: Tangential velocity in m/s
+            interval: Update interval in seconds (default 0.1s = 10Hz)
+        """
+        orbit_key = f"orbit_{uav_id}"
+
+        if not hasattr(self, '_orbit_threads'):
+            self._orbit_threads = {}
+            self._orbit_active = {}
+
+        # Stop any existing orbit for this drone
+        self.stop_orbit_heartbeat(uav_id)
+
+        self._orbit_active[uav_id] = True
+
+        # Angular velocity: omega = v / r (rad/s)
+        omega = velocity / radius
+
+        def _orbit_loop():
+            logger.info("[Orbit] Started for %s: center=(%.1f,%.1f) r=%.1fm v=%.1fm/s",
+                        uav_id, center_n, center_e, radius, velocity)
+            t0 = time.time()
+            while self._orbit_active.get(uav_id, False) and self.running:
+                try:
+                    elapsed = time.time() - t0
+                    angle = omega * elapsed  # current angle in radians
+
+                    # Position on circle (NED frame)
+                    target_n = center_n + radius * math.cos(angle)
+                    target_e = center_e + radius * math.sin(angle)
+
+                    # Yaw towards center: atan2(east_to_center, north_to_center)
+                    dn = center_n - target_n
+                    de = center_e - target_e
+                    yaw = math.atan2(de, dn)  # 0=North, pi/2=East
+
+                    self.publish_offboard_control_mode(uav_id, position=True)
+                    self.publish_trajectory_setpoint(
+                        uav_id, target_n, target_e, alt_ned, yaw=yaw, log=False)
+                except Exception as e:
+                    logger.error("[Orbit] Error for %s: %s", uav_id, e)
+                time.sleep(interval)
+            logger.info("[Orbit] Stopped for %s", uav_id)
+
+        t = threading.Thread(target=_orbit_loop, daemon=True, name=f"orbit-{uav_id}")
+        t.start()
+        self._orbit_threads[orbit_key] = t
+
+    def stop_orbit_heartbeat(self, uav_id: str):
+        """Stop the orbit heartbeat for a drone."""
+        if hasattr(self, '_orbit_active'):
+            self._orbit_active[uav_id] = False
 
     # ============================================================
     # Command HTTP Server (receives commands from backend)

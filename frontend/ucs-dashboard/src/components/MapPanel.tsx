@@ -115,6 +115,8 @@ interface MapPanelProps {
   onDroneClick?: (uavId: string) => void;
   /** 点击地图空白区域时的回调（经纬度），仅在有选中无人机时触发 */
   onMapClick?: (lat: number, lon: number) => void;
+  /** 地图点击快捷指令回调 (QGC风格) */
+  onMapClickCommand?: (command: string, lat: number, lon: number) => void;
   /** 是否有选中的无人机（控制地图点击菜单是否显示） */
   hasDroneSelected?: boolean;
   /** 额外的 CSS 类名 */
@@ -135,6 +137,7 @@ export default function MapPanel({
   rallyPoints = [],
   onDroneClick,
   onMapClick,
+  onMapClickCommand,
   hasDroneSelected = false,
   className = '',
   showDroneList = true,
@@ -152,11 +155,13 @@ export default function MapPanel({
   const selectedDroneIdsRef = useRef(selectedDroneIds);
   const selectedDroneIdRef = useRef(selectedDroneId);
   const onMapClickRef = useRef(onMapClick);
+  const onMapClickCommandRef = useRef(onMapClickCommand);
   const hasDroneSelectedRef = useRef(hasDroneSelected);
   useEffect(() => { onDroneClickRef.current = onDroneClick; }, [onDroneClick]);
   useEffect(() => { selectedDroneIdsRef.current = selectedDroneIds; }, [selectedDroneIds]);
   useEffect(() => { selectedDroneIdRef.current = selectedDroneId; }, [selectedDroneId]);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
+  useEffect(() => { onMapClickCommandRef.current = onMapClickCommand; }, [onMapClickCommand]);
   useEffect(() => { hasDroneSelectedRef.current = hasDroneSelected; }, [hasDroneSelected]);
   const homeMarkerRef = useRef<maplibregl.Marker | null>(null);
   const mapClickPopupRef = useRef<maplibregl.Popup | null>(null);
@@ -301,13 +306,44 @@ export default function MapPanel({
       const { lat, lng } = e.lngLat;
       // Notify parent of click coordinates
       onMapClickRef.current?.(lat, lng);
-      // Show coordinate display popup at click location
-      const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '180px' })
+      // Show QGC-style popup with coordinates and quick command buttons
+      const popupContainer = document.createElement('div');
+      popupContainer.innerHTML = `
+        <div style="background:#1e293b;padding:10px;border-radius:8px;color:white;font-size:11px;min-width:180px;">
+          <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-align:center;">\u70b9\u51fb\u4f4d\u7f6e</div>
+          <div style="font-weight:bold;text-align:center;margin-bottom:8px;">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;">
+            <button data-cmd="GOTO" style="background:#0891b2;border:none;color:white;padding:5px 0;border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">\u524d\u5f80</button>
+            <button data-cmd="ORBIT" style="background:#6366f1;border:none;color:white;padding:5px 0;border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">\u76d8\u65cb</button>
+            <button data-cmd="MARK_HOME" style="background:#0d9488;border:none;color:white;padding:5px 0;border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">\u8bbe\u4e3aHome</button>
+          </div>
+        </div>
+      `;
+      // Bind click handlers to command buttons
+      popupContainer.querySelectorAll('button[data-cmd]').forEach(btn => {
+        btn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const cmd = (ev.currentTarget as HTMLElement).getAttribute('data-cmd');
+          if (cmd) {
+            onMapClickCommandRef.current?.(cmd, lat, lng);
+          }
+          // Close popup after command
+          if (mapClickPopupRef.current) {
+            mapClickPopupRef.current.remove();
+            mapClickPopupRef.current = null;
+          }
+        });
+        // Hover effect
+        (btn as HTMLElement).addEventListener('mouseenter', () => {
+          (btn as HTMLElement).style.opacity = '0.8';
+        });
+        (btn as HTMLElement).addEventListener('mouseleave', () => {
+          (btn as HTMLElement).style.opacity = '1';
+        });
+      });
+      const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '220px' })
         .setLngLat([lng, lat])
-        .setHTML(`<div style="background:#1e293b;padding:8px;border-radius:6px;color:white;font-size:11px;text-align:center;">
-          <div style="font-size:10px;color:#94a3b8;margin-bottom:2px;">\u70b9\u51fb\u4f4d\u7f6e</div>
-          <div style="font-weight:bold;">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
-        </div>`)
+        .setDOMContent(popupContainer)
         .addTo(map.current!);
       mapClickPopupRef.current = popup;
     });
