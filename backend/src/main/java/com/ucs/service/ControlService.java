@@ -40,6 +40,7 @@ public class ControlService {
     private final RedisService redisService;
     private final OperationLogService operationLogService;
     private final DdsCommandService ddsCommandService;
+    private final DDSSimulatorService ddsSimulatorService;
     
     /**
      * Send a control command to a drone.
@@ -102,6 +103,13 @@ public class ControlService {
                     || "RTL".equalsIgnoreCase(commandType)
                     || "DISARM".equalsIgnoreCase(commandType)) {
                 ddsCommandService.stopHeartbeat(uavId);
+            }
+            
+            // Update simulator armed state so telemetry reflects the change
+            if ("ARM".equalsIgnoreCase(commandType) || "TAKEOFF".equalsIgnoreCase(commandType)) {
+                ddsSimulatorService.setDroneArmed(uavId, true);
+            } else if ("DISARM".equalsIgnoreCase(commandType) || "LAND".equalsIgnoreCase(commandType)) {
+                ddsSimulatorService.setDroneArmed(uavId, false);
             }
             
             // Save home position for MARK_HOME and TAKEOFF

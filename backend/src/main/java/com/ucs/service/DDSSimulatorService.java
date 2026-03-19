@@ -190,13 +190,26 @@ public class DDSSimulatorService {
         msg.put("vz", 0.0);
         msg.put("dataAge", 0);
         msg.put("msgCount", 1);
-        msg.put("isActive", true);
+        msg.put("armed", state.armed);
+        msg.put("isActive", state.armed);
+        msg.put("flightMode", state.armed ? "OFFBOARD" : "MANUAL");
         return msg;
     }
 
     /**
      * Internal state tracking for simulated drones.
      */
+    /**
+     * Set armed state for a simulated drone (called when ARM/DISARM command is sent).
+     */
+    public void setDroneArmed(String uavId, boolean armed) {
+        DroneSimState state = droneStates.get(uavId);
+        if (state != null) {
+            state.armed = armed;
+            log.info("DDS Simulator: drone {} armed={}", uavId, armed);
+        }
+    }
+
     private static class DroneSimState {
         String uavId;
         double lat;
@@ -204,5 +217,6 @@ public class DDSSimulatorService {
         double alt;
         double heading;
         double groundSpeed;
+        boolean armed = false;
     }
 }

@@ -356,7 +356,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     // Command protection (Issue 5): check drone online/armed status
     const droneStatus = mapDrones.find(d => d.uavId === uavId);
     if (droneStatus) {
-      if (droneStatus.onlineStatus === 'OFFLINE') {
+      if (!droneStatus.onlineStatus) {
         setCommandFeedback({ uavId, message: '无人机离线，无法执行命令', success: false });
         setTimeout(() => setCommandFeedback(null), 3000);
         return;
@@ -445,58 +445,6 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     setOrbitLat(mapClickCoords.lat.toFixed(6));
     setOrbitLon(mapClickCoords.lon.toFixed(6));
   }, [mapClickCoords]);
-
-  // QGC-style map command handler (Issue 3)
-  const handleMapCommand = async (lat: number, lon: number, commandType: string) => {
-    const uavId = selectedMapDrone;
-    if (!uavId) return;
-    // Check drone status for command protection (Issue 5)
-    const droneInfo = mapDrones.find(d => d.uavId === uavId);
-    if (droneInfo) {
-      if (droneInfo.onlineStatus === 'OFFLINE') {
-        setCommandFeedback({ uavId, message: '无人机离线，无法执行命令', success: false });
-        setTimeout(() => setCommandFeedback(null), 3000);
-        return;
-      }
-      if (!droneInfo.armed && !['ARM', 'TAKEOFF'].includes(commandType)) {
-        setCommandFeedback({ uavId, message: '无人机未解锁，请先ARM', success: false });
-        setTimeout(() => setCommandFeedback(null), 3000);
-        return;
-      }
-    }
-    const droneAlt = droneInfo?.altitude || 0;
-    let params = '{}';
-    if (commandType === 'GOTO') {
-      params = JSON.stringify({ lat, lon, alt: droneAlt > 0 ? droneAlt : 50 });
-    } else if (commandType === 'ORBIT') {
-      params = JSON.stringify({ lat, lon, radius: 5, alt: droneAlt > 0 ? droneAlt : 50 });
-    } else if (commandType === 'SET_ROI') {
-      params = JSON.stringify({ lat, lon, alt: droneAlt > 0 ? droneAlt : 50 });
-    } else if (commandType === 'SET_YAW') {
-      // Calculate yaw angle from drone position to clicked point
-      if (droneInfo && droneInfo.lat && droneInfo.lng) {
-        const dLon = lon - droneInfo.lng;
-        const y = Math.sin(dLon * Math.PI / 180) * Math.cos(lat * Math.PI / 180);
-        const x = Math.cos(droneInfo.lat * Math.PI / 180) * Math.sin(lat * Math.PI / 180) -
-                  Math.sin(droneInfo.lat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) * Math.cos(dLon * Math.PI / 180);
-        const bearing = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
-        params = JSON.stringify({ yaw: bearing });
-      }
-    } else if (commandType === 'SET_GPS_ORIGIN') {
-      params = JSON.stringify({ lat, lon, alt: 0 });
-    }
-    try {
-      const res = await sendControlCommand(token, { uavId, commandType, params, confirmed: true });
-      if (res.code === 0) {
-        setCommandFeedback({ uavId, message: `${commandType} 指令已发送`, success: true });
-      } else {
-        setCommandFeedback({ uavId, message: res.msg || '指令发送失败', success: false });
-      }
-    } catch {
-      setCommandFeedback({ uavId, message: '网络错误', success: false });
-    }
-    setTimeout(() => setCommandFeedback(null), 3000);
-  };
 
   const formatTime = (ts: string) => {
     if (!ts) return '-';

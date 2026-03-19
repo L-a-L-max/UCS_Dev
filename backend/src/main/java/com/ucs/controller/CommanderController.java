@@ -38,6 +38,7 @@ public class CommanderController {
     private final TeamMemberRepository teamMemberRepository;
     private final UserRepository userRepository;
     private final UserRoleMapRepository userRoleMapRepository;
+    private final TeamRoleRepository teamRoleRepository;
     private final TeamServiceImpl teamService;
     
     public CommanderController(PermissionService permissionService,
@@ -49,6 +50,7 @@ public class CommanderController {
                                 TeamMemberRepository teamMemberRepository,
                                 UserRepository userRepository,
                                 UserRoleMapRepository userRoleMapRepository,
+                                TeamRoleRepository teamRoleRepository,
                                 TeamServiceImpl teamService) {
         this.permissionService = permissionService;
         this.redisService = redisService;
@@ -59,6 +61,7 @@ public class CommanderController {
         this.teamMemberRepository = teamMemberRepository;
         this.userRepository = userRepository;
         this.userRoleMapRepository = userRoleMapRepository;
+        this.teamRoleRepository = teamRoleRepository;
         this.teamService = teamService;
     }
     
@@ -132,17 +135,23 @@ public class CommanderController {
         }
         
         // Build team leader mapping: teamId -> leader realName
+        // Use teamRoleRepository.findById instead of lazy tm.getTeamRole() to avoid
+        // LazyInitializationException (findByTeamIdWithUser only fetches user, not teamRole)
         Map<Long, String> teamLeaderMap = new HashMap<>();
         for (Team team : allTeams) {
-            teamMemberRepository.findByTeamIdWithUser(team.getId()).stream()
-                    .filter(tm -> tm.getTeamRole() != null && "Leader".equalsIgnoreCase(tm.getTeamRole().getRoleName()))
-                    .findFirst()
-                    .ifPresent(leaderMember -> {
-                        User leaderUser = leaderMember.getUser();
-                        if (leaderUser != null) {
-                            teamLeaderMap.put(team.getId(), leaderUser.getRealName() != null ? leaderUser.getRealName() : leaderUser.getUsername());
+            List<TeamMember> members = teamMemberRepository.findByTeamIdWithUser(team.getId());
+            for (TeamMember tm : members) {
+                if (tm.getTeamRoleId() != null) {
+                    teamRoleRepository.findById(tm.getTeamRoleId()).ifPresent(teamRole -> {
+                        if ("Leader".equalsIgnoreCase(teamRole.getRoleName())) {
+                            User leaderUser = tm.getUser();
+                            if (leaderUser != null) {
+                                teamLeaderMap.put(team.getId(), leaderUser.getRealName() != null ? leaderUser.getRealName() : leaderUser.getUsername());
+                            }
                         }
                     });
+                }
+            }
         }
         
         List<Map<String, Object>> droneList = allDrones.stream()

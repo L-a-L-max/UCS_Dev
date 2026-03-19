@@ -325,13 +325,18 @@ public class DataInitService {
         });
         
         // Add team leader's partition
+        // Use teamRoleRepository.findById instead of lazy tm.getTeamRole() to avoid
+        // LazyInitializationException when @PostConstruct + @Transactional don't cooperate
         List<TeamMember> teamMembers = teamMemberRepository.findByTeamId(teamId);
         for (TeamMember tm : teamMembers) {
-            TeamRole teamRole = tm.getTeamRole();
-            if (teamRole != null && "Leader".equalsIgnoreCase(teamRole.getRoleName())) {
-                userRepository.findById(tm.getUserId()).ifPresent(leader -> {
-                    if (leader.getPartitionName() != null) {
-                        partitions.add(leader.getPartitionName());
+            if (tm.getTeamRoleId() != null) {
+                teamRoleRepository.findById(tm.getTeamRoleId()).ifPresent(teamRole -> {
+                    if ("Leader".equalsIgnoreCase(teamRole.getRoleName())) {
+                        userRepository.findById(tm.getUserId()).ifPresent(leader -> {
+                            if (leader.getPartitionName() != null) {
+                                partitions.add(leader.getPartitionName());
+                            }
+                        });
                     }
                 });
             }
