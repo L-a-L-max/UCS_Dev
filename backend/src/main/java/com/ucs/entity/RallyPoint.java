@@ -11,11 +11,11 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
-@Table(name = "rally_point", indexes = {
-    @Index(name = "idx_rally_point_status", columnList = "status"),
-    @Index(name = "idx_rally_point_scope", columnList = "scope"),
-    @Index(name = "idx_rally_point_team", columnList = "team_id"),
-    @Index(name = "idx_rally_point_name", columnList = "name")
+@Table(name = "rally_points", indexes = {
+    @Index(name = "idx_rally_points_lng_lat", columnList = "longitude, latitude"),
+    @Index(name = "idx_rally_points_city", columnList = "city"),
+    @Index(name = "idx_rally_points_scope_team", columnList = "scope, team_id"),
+    @Index(name = "idx_rally_points_deleted_at", columnList = "deleted_at")
 })
 public class RallyPoint {
     @Id
@@ -72,19 +72,19 @@ public class RallyPoint {
     /**
      * Service type: 0=parking, 1=charging, 2=maintenance, 3=supply
      */
-    @Column(name = "service_type", nullable = false)
-    private Integer serviceType = 0;
+    @Column(name = "service_type")
+    private Integer serviceType;
 
-    @Column(length = 500)
+    @Column(columnDefinition = "TEXT")
     private String description;
 
-    @Column(name = "created_by", length = 50)
+    @Column(name = "created_by", nullable = false, length = 50)
     private String createdBy;
 
-    @Column(name = "created_at")
+    @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
-    @Column(name = "updated_at")
+    @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
     @Column(name = "deleted_at")

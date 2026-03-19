@@ -269,7 +269,55 @@ CREATE TABLE IF NOT EXISTS weather_snapshot (
     created_at TIMESTAMP
 );
 
--- 22. UAV Telemetry (time-series history)
+-- 22. Rally Points (集结点信息表)
+CREATE TABLE IF NOT EXISTS rally_points (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    latitude DOUBLE PRECISION NOT NULL,
+    longitude DOUBLE PRECISION NOT NULL,
+    altitude REAL,
+    city VARCHAR(100),
+    address VARCHAR(200),
+    capacity INTEGER NOT NULL,
+    current_occupancy INTEGER NOT NULL DEFAULT 0,
+    status SMALLINT NOT NULL DEFAULT 1,
+    scope SMALLINT NOT NULL DEFAULT 0,
+    team_id VARCHAR(50),
+    radius REAL NOT NULL DEFAULT 5.0,
+    service_type SMALLINT,
+    description TEXT,
+    created_by VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_rally_points_lng_lat ON rally_points (longitude, latitude);
+CREATE INDEX IF NOT EXISTS idx_rally_points_city ON rally_points (city);
+CREATE INDEX IF NOT EXISTS idx_rally_points_scope_team ON rally_points (scope, team_id);
+CREATE INDEX IF NOT EXISTS idx_rally_points_deleted_at ON rally_points (deleted_at);
+
+-- Create trigger function for auto-updating updated_at
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger for rally_points
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trigger_update_rally_points') THEN
+        CREATE TRIGGER trigger_update_rally_points
+        BEFORE UPDATE ON rally_points
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+END;
+$$;
+
+-- 23. UAV Telemetry (time-series history)
 CREATE TABLE IF NOT EXISTS uav_telemetry (
     id BIGSERIAL PRIMARY KEY,
     uav_id VARCHAR(50) NOT NULL,
