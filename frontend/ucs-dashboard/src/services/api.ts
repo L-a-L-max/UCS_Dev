@@ -538,29 +538,41 @@ export async function geocodeAddress(address: string): Promise<{ lat: number; lo
     );
     const data = await response.json();
     if (data.status === '1' && data.geocodes && data.geocodes.length > 0) {
-      const location = data.geocodes[0].location.split(',');
-      return {
-        lat: parseFloat(location[1]),
-        lon: parseFloat(location[0]),
-        displayName: data.geocodes[0].formatted_address || address,
-      };
+      const loc = data.geocodes[0].location;
+      if (loc && loc.includes(',')) {
+        const parts = loc.split(',');
+        const lon = parseFloat(parts[0]);
+        const lat = parseFloat(parts[1]);
+        if (!isNaN(lat) && !isNaN(lon) && lat !== 0 && lon !== 0) {
+          return {
+            lat,
+            lon,
+            displayName: data.geocodes[0].formatted_address || address,
+          };
+        }
+      }
     }
   } catch {
     // Fall through to Nominatim
   }
-  // Fallback: Nominatim (OpenStreetMap)
+  // Fallback: Nominatim (OpenStreetMap) - works better for international addresses
   try {
     const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`,
-      { headers: { 'User-Agent': 'UCS-Dashboard/1.0' } }
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1&accept-language=zh-CN`,
+      { headers: { 'User-Agent': 'UCS-Dashboard/1.0 (drone-management)' } }
     );
+    if (!response.ok) throw new Error(`Nominatim HTTP ${response.status}`);
     const results = await response.json();
     if (results && results.length > 0) {
-      return {
-        lat: parseFloat(results[0].lat),
-        lon: parseFloat(results[0].lon),
-        displayName: results[0].display_name,
-      };
+      const lat = parseFloat(results[0].lat);
+      const lon = parseFloat(results[0].lon);
+      if (!isNaN(lat) && !isNaN(lon)) {
+        return {
+          lat,
+          lon,
+          displayName: results[0].display_name,
+        };
+      }
     }
     return null;
   } catch {

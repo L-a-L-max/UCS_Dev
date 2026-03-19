@@ -964,6 +964,8 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                                   const result = await geocodeAddress(rpEditData.address);
                                   if (result) {
                                     setRpEditData(p => ({ ...p, latitude: result.lat, longitude: result.lon }));
+                                  } else {
+                                    alert('地址解析失败，请尝试更具体的地址或手动输入坐标');
                                   }
                                   setRpGeocoding(false);
                                 }}>

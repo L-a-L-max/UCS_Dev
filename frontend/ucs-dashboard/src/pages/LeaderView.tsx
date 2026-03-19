@@ -353,6 +353,20 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   // Unified command handler with full param support
   const handleQuickCommand = async (uavId: string, commandType: string) => {
     setCommandFeedback(null);
+    // Command protection (Issue 5): check drone online/armed status
+    const droneStatus = mapDrones.find(d => d.uavId === uavId);
+    if (droneStatus) {
+      if (droneStatus.onlineStatus === 'OFFLINE') {
+        setCommandFeedback({ uavId, message: '无人机离线，无法执行命令', success: false });
+        setTimeout(() => setCommandFeedback(null), 3000);
+        return;
+      }
+      if (!droneStatus.armed && !['ARM', 'TAKEOFF', 'MARK_HOME'].includes(commandType)) {
+        setCommandFeedback({ uavId, message: '无人机未解锁，请先ARM', success: false });
+        setTimeout(() => setCommandFeedback(null), 3000);
+        return;
+      }
+    }
     try {
       let params = '{}';
       if (commandType === 'TAKEOFF') {
@@ -373,12 +387,15 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
           }
         }
         // Home mode: no extra params, drone returns to its Home point
-      } else if (commandType === 'ORBIT') {
-        params = JSON.stringify({
-          lat: parseFloat(orbitLat) || 0,
-          lon: parseFloat(orbitLon) || 0,
-          radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
-        });
+        } else if (commandType === 'ORBIT') {
+          // Include current drone altitude to prevent altitude loss during orbit
+          const droneAlt = mapDrones.find(d => d.uavId === uavId)?.altitude || 0;
+          params = JSON.stringify({
+            lat: parseFloat(orbitLat) || 0,
+            lon: parseFloat(orbitLon) || 0,
+            radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
+            alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
+          });
       } else if (commandType === 'MARK_HOME') {
         const droneInfo = mapDrones.find(d => d.uavId === uavId);
         if (droneInfo && droneInfo.lat && droneInfo.lng) {
@@ -428,6 +445,58 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     setOrbitLat(mapClickCoords.lat.toFixed(6));
     setOrbitLon(mapClickCoords.lon.toFixed(6));
   }, [mapClickCoords]);
+
+  // QGC-style map command handler (Issue 3)
+  const handleMapCommand = async (lat: number, lon: number, commandType: string) => {
+    const uavId = selectedMapDrone;
+    if (!uavId) return;
+    // Check drone status for command protection (Issue 5)
+    const droneInfo = mapDrones.find(d => d.uavId === uavId);
+    if (droneInfo) {
+      if (droneInfo.onlineStatus === 'OFFLINE') {
+        setCommandFeedback({ uavId, message: '无人机离线，无法执行命令', success: false });
+        setTimeout(() => setCommandFeedback(null), 3000);
+        return;
+      }
+      if (!droneInfo.armed && !['ARM', 'TAKEOFF'].includes(commandType)) {
+        setCommandFeedback({ uavId, message: '无人机未解锁，请先ARM', success: false });
+        setTimeout(() => setCommandFeedback(null), 3000);
+        return;
+      }
+    }
+    const droneAlt = droneInfo?.altitude || 0;
+    let params = '{}';
+    if (commandType === 'GOTO') {
+      params = JSON.stringify({ lat, lon, alt: droneAlt > 0 ? droneAlt : 50 });
+    } else if (commandType === 'ORBIT') {
+      params = JSON.stringify({ lat, lon, radius: 5, alt: droneAlt > 0 ? droneAlt : 50 });
+    } else if (commandType === 'SET_ROI') {
+      params = JSON.stringify({ lat, lon, alt: droneAlt > 0 ? droneAlt : 50 });
+    } else if (commandType === 'SET_YAW') {
+      // Calculate yaw angle from drone position to clicked point
+      if (droneInfo && droneInfo.lat && droneInfo.lng) {
+        const dLon = lon - droneInfo.lng;
+        const y = Math.sin(dLon * Math.PI / 180) * Math.cos(lat * Math.PI / 180);
+        const x = Math.cos(droneInfo.lat * Math.PI / 180) * Math.sin(lat * Math.PI / 180) -
+                  Math.sin(droneInfo.lat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) * Math.cos(dLon * Math.PI / 180);
+        const bearing = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+        params = JSON.stringify({ yaw: bearing });
+      }
+    } else if (commandType === 'SET_GPS_ORIGIN') {
+      params = JSON.stringify({ lat, lon, alt: 0 });
+    }
+    try {
+      const res = await sendControlCommand(token, { uavId, commandType, params, confirmed: true });
+      if (res.code === 0) {
+        setCommandFeedback({ uavId, message: `${commandType} 指令已发送`, success: true });
+      } else {
+        setCommandFeedback({ uavId, message: res.msg || '指令发送失败', success: false });
+      }
+    } catch {
+      setCommandFeedback({ uavId, message: '网络错误', success: false });
+    }
+    setTimeout(() => setCommandFeedback(null), 3000);
+  };
 
   const formatTime = (ts: string) => {
     if (!ts) return '-';
@@ -1220,6 +1289,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
             homeMarker={homeMarker}
             hasDroneSelected={!!selectedMapDrone || selectedDrones.size > 0}
             onMapClick={(lat, lon) => setMapClickCoords({ lat, lon })}
+            onMapCommand={handleMapCommand}
             rallyPoints={rallyPoints.map(rp => ({ id: rp.id, name: rp.name, latitude: rp.latitude, longitude: rp.longitude, capacity: rp.capacity, currentOccupancy: rp.currentOccupancy, status: rp.status, serviceType: rp.serviceType }))}
             onDroneClick={(id) => {
               if (multiSelectMode) {
