@@ -23,7 +23,8 @@ import java.util.Map;
  *   Backend ControlService -> DdsCommandService -> HTTP -> DDS Gateway -> DDS/ROS2 -> PX4
  * 
  * Supported commands:
- *   ARM, DISARM, TAKEOFF, LAND, RTL, HOLD, OFFBOARD, GOTO
+ *   ARM, DISARM, TAKEOFF, LAND, RTL, HOLD, OFFBOARD, GOTO,
+ *   ORBIT, SET_ROI, SET_YAW, SET_GPS_ORIGIN, MARK_HOME, GET_HOME
  */
 @Slf4j
 @Service

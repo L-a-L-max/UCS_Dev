@@ -23,6 +23,9 @@ import {
   Home,
   Crosshair,
   Locate,
+  ChevronDown,
+  ChevronRight,
+  Circle,
 } from 'lucide-react';
 import {
   sendControlCommand,
@@ -45,10 +48,10 @@ interface PilotViewProps {
 }
 
 // Control commands - ARM/DISARM removed, TAKEOFF handles ARM+OFFBOARD+climb
+// RTL removed from quick commands - use the configurable RTL panel below instead
 const COMMANDS = [
   { type: 'TAKEOFF', label: '\u8d77\u98de', icon: ArrowUp, color: 'bg-blue-600 hover:bg-blue-700', description: '\u89e3\u9501+\u8d77\u98de\u5230\u6307\u5b9a\u9ad8\u5ea6' },
   { type: 'LAND', label: '\u964d\u843d', icon: ArrowDown, color: 'bg-amber-600 hover:bg-amber-700', description: '\u505c\u6b62\u5fc3\u8df3+\u539f\u5730\u964d\u843d' },
-  { type: 'RTL', label: '\u8fd4\u822a', icon: RotateCcw, color: 'bg-purple-600 hover:bg-purple-700', description: '\u8fd4\u56deHome\u70b9' },
   { type: 'HOLD', label: '\u60ac\u505c', icon: Pause, color: 'bg-orange-600 hover:bg-orange-700', description: '\u9501\u5b9a\u5f53\u524d\u4f4d\u7f6e\u60ac\u505c' },
   { type: 'MARK_HOME', label: '\u6807\u8bb0Home', icon: Home, color: 'bg-teal-600 hover:bg-teal-700', description: '\u8bbe\u7f6e\u5f53\u524d\u4f4d\u7f6e\u4e3aHome' },
 ];
@@ -85,9 +88,30 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   // TAKEOFF params
   const [takeoffAlt, setTakeoffAlt] = useState('5');
 
-  // RTL params
-  const [rtlLat, setRtlLat] = useState('');
-  const [rtlLon, setRtlLon] = useState('');
+  // RTL params - single drone mode: 'home' or 'rally'
+  const [singleRtlMode, setSingleRtlMode] = useState<'home' | 'rally'>('home');
+  const [singleSelectedRallyId, setSingleSelectedRallyId] = useState<number | null>(null);
+  const [singleRallySearch, setSingleRallySearch] = useState('');
+
+  // Detail panel section collapse states (Issue 6: collapsed by default)
+  const [gotoExpanded, setGotoExpanded] = useState(false);
+  const [rtlExpanded, setRtlExpanded] = useState(false);
+  const [markHomeExpanded, setMarkHomeExpanded] = useState(false);
+  const [orbitExpanded, setOrbitExpanded] = useState(false);
+
+  // Orbit params (Issue 4)
+  const [orbitLat, setOrbitLat] = useState('');
+  const [orbitLon, setOrbitLon] = useState('');
+  const [orbitRadius, setOrbitRadius] = useState('5');
+
+  // Map click coordinates for dynamic fill (Issue 5)
+  const [mapClickCoords, setMapClickCoords] = useState<{ lat: number; lon: number } | null>(null);
+
+  // Multi-select panel section collapse states
+  const [batchGotoExpanded, setBatchGotoExpanded] = useState(false);
+  const [batchMarkHomeExpanded, setBatchMarkHomeExpanded] = useState(false);
+  const [batchRtlExpanded, setBatchRtlExpanded] = useState(false);
+  const [batchOrbitExpanded, setBatchOrbitExpanded] = useState(false);
 
   // Home position display
   const [homePosition, setHomePosition] = useState<{ lat: number; lon: number; alt: number } | null>(null);
@@ -213,7 +237,12 @@ export default function PilotView({ token, username, partitions = [], onLogout }
 
   // Fetch Home position from Redis when a drone is selected (cross-view sync)
   useEffect(() => {
-    if (!selectedDrone) return;
+    if (!selectedDrone) {
+      setHomePosition(null);
+      return;
+    }
+    // Clear previous Home immediately to avoid stale data from prior drone
+    setHomePosition(null);
     (async () => {
       try {
         const res = await getDroneHomePosition(token, selectedDrone);
@@ -271,11 +300,20 @@ export default function PilotView({ token, username, partitions = [], onLogout }
         address: gotoAddress || undefined,
       });
     } else if (commandType === 'RTL') {
-      const lat = parseFloat(rtlLat);
-      const lon = parseFloat(rtlLon);
-      if (lat && lon) {
-        params = JSON.stringify({ lat, lon });
+      // RTL uses rally point coordinates if in rally mode
+      if (singleRtlMode === 'rally' && singleSelectedRallyId) {
+        const rp = rallyPoints.find(r => r.id === singleSelectedRallyId);
+        if (rp) {
+          params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude });
+        }
       }
+      // Home mode: no extra params, drone returns to its Home point
+    } else if (commandType === 'ORBIT') {
+      params = JSON.stringify({
+        lat: parseFloat(orbitLat) || 0,
+        lon: parseFloat(orbitLon) || 0,
+        radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
+      });
     } else if (commandType === 'MARK_HOME') {
       const droneInfo = mapDrones.find(d => d.uavId === targetUav);
       if (droneInfo && droneInfo.lat && droneInfo.lng) {
@@ -312,6 +350,17 @@ export default function PilotView({ token, username, partitions = [], onLogout }
       setTimeout(() => setQuickFeedback(null), 3000);
     }
   };
+
+  // Dynamic lat/lng fill from map click (Issue 5)
+  useEffect(() => {
+    if (!mapClickCoords) return;
+    setGotoLat(mapClickCoords.lat.toFixed(6));
+    setGotoLon(mapClickCoords.lon.toFixed(6));
+    setBatchHomeLat(mapClickCoords.lat.toFixed(6));
+    setBatchHomeLon(mapClickCoords.lon.toFixed(6));
+    setOrbitLat(mapClickCoords.lat.toFixed(6));
+    setOrbitLon(mapClickCoords.lon.toFixed(6));
+  }, [mapClickCoords]);
 
   // Locate home on map (flashing dot for 5s)
   const locateHome = () => {
@@ -504,11 +553,11 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-slate-700/50 rounded p-2 text-center">
                     <div className="text-[10px] text-slate-400">{'\u6700\u9ad8/\u6700\u4f4e\u9ad8\u5ea6'}</div>
-                    <div className="text-sm font-bold text-blue-300">{aggregateData.maxAlt.toFixed(1)}m / {aggregateData.minAlt.toFixed(1)}m</div>
+                    <div className="text-[11px] font-bold text-blue-300">{aggregateData.maxAlt.toFixed(1)}m / {aggregateData.minAlt.toFixed(1)}m</div>
                   </div>
                   <div className="bg-slate-700/50 rounded p-2 text-center">
                     <div className="text-[10px] text-slate-400">{'\u5728\u7ebf/\u98de\u884c\u4e2d'}</div>
-                    <div className="text-sm font-bold text-green-300">{aggregateData.onlineCount} / {aggregateData.flyingCount}</div>
+                    <div className="text-[11px] font-bold text-green-300">{aggregateData.onlineCount} / {aggregateData.flyingCount}</div>
                   </div>
                 </div>
                 {/* Batch control - larger buttons */}
@@ -790,70 +839,140 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                 </CardContent>
               </Card>
 
-              {/* GOTO target */}
+              {/* GOTO target - collapsible */}
               <Card className="bg-slate-800 border-slate-700">
                 <CardContent className="px-2 py-1.5 space-y-1">
-                  <div className="flex items-center gap-1 text-[9px] text-slate-400"><Crosshair className="w-2.5 h-2.5 text-cyan-400" />{'\u524d\u5f80\u76ee\u6807'}</div>
-                  <div className="space-y-0.5">
-                    <div className="flex items-center gap-1">
-                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u5730\u5740'}</label>
-                      <Input value={gotoAddress} onChange={e => setGotoAddress(e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u5730\u5740/\u5730\u540d(\u53ef\u9009)'} />
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
-                      <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
-                      <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u9ad8\u5ea6'}</label>
-                      <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
-                      <span className="text-[9px] text-slate-400">{'\u7c73'}</span>
-                    </div>
+                  <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setGotoExpanded(!gotoExpanded)}>
+                    {gotoExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
+                    <Crosshair className="w-2.5 h-2.5 text-cyan-400" />{'\u524d\u5f80\u76ee\u6807'}
                   </div>
-                  <Button className="w-full text-xs h-6 bg-cyan-600 hover:bg-cyan-700 text-white"
-                    onClick={() => handleCommand('GOTO')} disabled={sendingCommand !== null}>
-                    <Navigation className="w-3 h-3 mr-1" />{'\u524d\u5f80'}
-                  </Button>
+                  {gotoExpanded && (
+                    <>
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1">
+                          <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u5730\u5740'}</label>
+                          <Input value={gotoAddress} onChange={e => setGotoAddress(e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u5730\u5740/\u5730\u540d(\u53ef\u9009)'} />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
+                          <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
+                          <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u9ad8\u5ea6'}</label>
+                          <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
+                          <span className="text-[9px] text-slate-400">{'\u7c73'}</span>
+                        </div>
+                      </div>
+                      <Button className="w-full text-xs h-6 bg-cyan-600 hover:bg-cyan-700 text-white"
+                        onClick={() => handleCommand('GOTO')} disabled={sendingCommand !== null}>
+                        <Navigation className="w-3 h-3 mr-1" />{'\u524d\u5f80'}
+                      </Button>
+                    </>
+                  )}
                 </CardContent>
               </Card>
 
-              {/* RTL with optional custom location */}
+              {/* RTL with Home/Rally mode - collapsible */}
               <Card className="bg-slate-800 border-slate-700">
                 <CardContent className="px-2 py-1.5 space-y-1">
-                  <div className="flex items-center gap-1 text-[9px] text-slate-400"><RotateCcw className="w-2.5 h-2.5 text-purple-400" />{'\u8fd4\u822a\u8bbe\u7f6e'}</div>
-                  <div className="flex items-center gap-1 text-[9px]">
-                    <Home className="w-2.5 h-2.5 text-teal-400" />
-                    {homePosition ? (
-                      <span className="text-teal-300">Home: {homePosition.lat.toFixed(6)}, {homePosition.lon.toFixed(6)}</span>
-                    ) : (
-                      <span className="text-slate-500">{'\u672a\u8bbe\u7f6eHome'}</span>
-                    )}
-                    <Button size="sm" variant="outline" onClick={locateHome}
-                      className="h-4 px-1 text-[8px] bg-teal-700/50 border-teal-600 text-teal-300 ml-auto">
-                      <Locate className="w-2 h-2 mr-0.5" />{'\u5b9a\u4f4d'}
-                    </Button>
+                  <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setRtlExpanded(!rtlExpanded)}>
+                    {rtlExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
+                    <RotateCcw className="w-2.5 h-2.5 text-purple-400" />{'\u8fd4\u822a\u8bbe\u7f6e'}
                   </div>
-                  <div className="flex items-center gap-1">
-                    <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
-                    <Input type="number" step="0.0001" value={rtlLat} onChange={e => setRtlLat(e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u7559\u7a7a\u8fd4\u56deHome'} />
+                  {rtlExpanded && (
+                    <>
+                      <div className="flex gap-1 mb-1">
+                        <button onClick={() => setSingleRtlMode('home')}
+                          className={`text-[9px] px-2 py-0.5 rounded ${singleRtlMode === 'home' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                          {'\u8fd4\u56deHome'}
+                        </button>
+                        <button onClick={() => setSingleRtlMode('rally')}
+                          className={`text-[9px] px-2 py-0.5 rounded ${singleRtlMode === 'rally' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                          {'\u8fd4\u56de\u96c6\u7ed3\u70b9'}
+                        </button>
+                      </div>
+                      {singleRtlMode === 'home' && (
+                        <div className="flex items-center gap-1 text-[9px]">
+                          <Home className="w-2.5 h-2.5 text-teal-400" />
+                          {homePosition ? (
+                            <span className="text-teal-300">Home: {homePosition.lat.toFixed(6)}, {homePosition.lon.toFixed(6)}</span>
+                          ) : (
+                            <span className="text-slate-500">{'\u672a\u8bbe\u7f6eHome'}</span>
+                          )}
+                          <Button size="sm" variant="outline" onClick={locateHome}
+                            className="h-4 px-1 text-[8px] bg-teal-700/50 border-teal-600 text-teal-300 ml-auto">
+                            <Locate className="w-2 h-2 mr-0.5" />{'\u5b9a\u4f4d'}
+                          </Button>
+                        </div>
+                      )}
+                      {singleRtlMode === 'rally' && (
+                        <div className="space-y-1">
+                          <Input value={singleRallySearch} onChange={e => setSingleRallySearch(e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white text-[9px] h-6" placeholder={'\u641c\u7d22\u96c6\u7ed3\u70b9...'} />
+                          <div className="max-h-20 overflow-y-auto space-y-0.5">
+                            {rallyPoints.filter(rp => !singleRallySearch || rp.name.toLowerCase().includes(singleRallySearch.toLowerCase()) || (rp.address || '').toLowerCase().includes(singleRallySearch.toLowerCase()))
+                              .map(rp => (
+                              <div key={rp.id}
+                                className={`flex items-center justify-between text-[9px] rounded px-2 py-0.5 cursor-pointer ${singleSelectedRallyId === rp.id ? 'bg-purple-700/50 border border-purple-500' : 'bg-slate-700/50 hover:bg-slate-600/50'}`}
+                                onClick={() => setSingleSelectedRallyId(rp.id)}>
+                                <span className="text-purple-300 truncate">{rp.name}</span>
+                                <span className="text-slate-400 text-[8px] shrink-0 ml-1">{rp.currentOccupancy}/{rp.capacity}</span>
+                              </div>
+                            ))}
+                            {rallyPoints.length === 0 && <div className="text-[8px] text-slate-500 text-center py-1">{'\u6682\u65e0\u96c6\u7ed3\u70b9'}</div>}
+                          </div>
+                        </div>
+                      )}
+                      <Button className="w-full text-xs h-6 bg-purple-600 hover:bg-purple-700 text-white"
+                        onClick={() => handleCommand('RTL')} disabled={sendingCommand !== null}>
+                        <RotateCcw className="w-3 h-3 mr-1" />{'\u8fd4\u822a'}
+                      </Button>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Orbit - collapsible (Issue 4) */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardContent className="px-2 py-1.5 space-y-1">
+                  <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setOrbitExpanded(!orbitExpanded)}>
+                    {orbitExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
+                    <Circle className="w-2.5 h-2.5 text-indigo-400" />{'\u76d8\u65cb'}
                   </div>
-                  <div className="flex items-center gap-1">
-                    <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
-                    <Input type="number" step="0.0001" value={rtlLon} onChange={e => setRtlLon(e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u7559\u7a7a\u8fd4\u56deHome'} />
-                  </div>
-                  <Button className="w-full text-xs h-6 bg-purple-600 hover:bg-purple-700 text-white"
-                    onClick={() => handleCommand('RTL')} disabled={sendingCommand !== null}>
-                    <RotateCcw className="w-3 h-3 mr-1" />{'\u8fd4\u822a'}
-                  </Button>
+                  {orbitExpanded && (
+                    <>
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1">
+                          <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
+                          <Input type="number" step="0.0001" value={orbitLat} onChange={e => setOrbitLat(e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u5706\u5fc3\u7eac\u5ea6(\u5fc5\u586b)'} />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
+                          <Input type="number" step="0.0001" value={orbitLon} onChange={e => setOrbitLon(e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u5706\u5fc3\u7ecf\u5ea6(\u5fc5\u586b)'} />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u534a\u5f84'}</label>
+                          <Input type="number" min="2.5" max="20" step="0.5" value={orbitRadius} onChange={e => setOrbitRadius(e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder="5" />
+                          <span className="text-[9px] text-slate-400">{'\u7c73(2.5-20)'}</span>
+                        </div>
+                      </div>
+                      <Button className="w-full text-xs h-6 bg-indigo-600 hover:bg-indigo-700 text-white"
+                        onClick={() => handleCommand('ORBIT')} disabled={sendingCommand !== null}>
+                        <Circle className="w-3 h-3 mr-1" />{'\u76d8\u65cb'}
+                      </Button>
+                    </>
+                  )}
                 </CardContent>
               </Card>
 
@@ -867,6 +986,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
           <MapPanel drones={mapDrones} selectedDroneId={selectedDrone}
             selectedDroneIds={multiSelectMode ? selectedDrones : undefined}
             homeMarker={homeMarker}
+            hasDroneSelected={!!selectedDrone || selectedDrones.size > 0}
+            onMapClick={(lat, lon) => setMapClickCoords({ lat, lon })}
             rallyPoints={rallyPoints.map(rp => ({ id: rp.id, name: rp.name, latitude: rp.latitude, longitude: rp.longitude, capacity: rp.capacity, currentOccupancy: rp.currentOccupancy, status: rp.status, serviceType: rp.serviceType }))}
             onDroneClick={(id) => {
               if (multiSelectMode) {

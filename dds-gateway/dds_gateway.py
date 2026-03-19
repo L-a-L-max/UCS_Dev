@@ -1090,6 +1090,80 @@ class DDSGateway:
             time.sleep(0.3)
             ok = self.publish_vehicle_command(uav_id, command=176, param1=1.0, param2=6.0)
 
+        elif command_type == 'ORBIT':
+            # DO_ORBIT (cmd 34): orbit around a point at specified radius
+            # param1 = radius (meters, min 2.5m hardcoded)
+            # param2 = velocity (m/s, NaN = default)
+            # param3 = yaw behavior (0=heading towards center)
+            # param5 = center lat, param6 = center lon, param7 = center alt
+            lat = float(params.get('lat', 0))
+            lon = float(params.get('lon', 0))
+            radius = max(2.5, float(params.get('radius', 5.0)))
+            alt = float(params.get('alt', 0))
+
+            if lat != 0 and lon != 0:
+                logger.info("[Command] ORBIT: center=%.6f,%.6f radius=%.1fm for %s",
+                            lat, lon, radius, uav_id)
+                ok = self.publish_vehicle_command(
+                    uav_id, command=34,
+                    param1=radius,
+                    param2=float('nan'),  # default velocity
+                    param3=0.0,  # heading towards center
+                    param5=lat, param6=lon, param7=alt)
+            else:
+                # Orbit around current position
+                logger.info("[Command] ORBIT: current position, radius=%.1fm for %s",
+                            radius, uav_id)
+                ok = self.publish_vehicle_command(
+                    uav_id, command=34,
+                    param1=radius,
+                    param2=float('nan'),
+                    param3=0.0)
+
+        elif command_type == 'SET_ROI':
+            # DO_SET_ROI_LOCATION (cmd 195): set region of interest
+            # param5 = lat, param6 = lon, param7 = alt
+            lat = float(params.get('lat', 0))
+            lon = float(params.get('lon', 0))
+            alt = float(params.get('alt', 0))
+            if lat != 0 and lon != 0:
+                logger.info("[Command] SET_ROI: %.6f,%.6f for %s", lat, lon, uav_id)
+                ok = self.publish_vehicle_command(
+                    uav_id, command=195,
+                    param5=lat, param6=lon, param7=alt)
+            else:
+                # Cancel ROI (cmd 197)
+                ok = self.publish_vehicle_command(uav_id, command=197)
+
+        elif command_type == 'SET_YAW':
+            # CONDITION_YAW (cmd 115): set yaw angle
+            # param1 = target angle (degrees)
+            # param2 = angular speed (deg/s)
+            # param3 = direction (-1=ccw, 0=shortest, 1=cw)
+            # param4 = 0=absolute, 1=relative
+            yaw = float(params.get('yaw', 0))
+            speed = float(params.get('speed', 30))
+            relative = int(params.get('relative', 0))
+            logger.info("[Command] SET_YAW: %.1f deg, speed=%.1f for %s", yaw, speed, uav_id)
+            ok = self.publish_vehicle_command(
+                uav_id, command=115,
+                param1=yaw, param2=speed,
+                param3=0.0, param4=float(relative))
+
+        elif command_type == 'SET_GPS_ORIGIN':
+            # SET_GPS_GLOBAL_ORIGIN (cmd 100048): set EKF origin
+            # param5 = lat, param6 = lon, param7 = alt
+            lat = float(params.get('lat', 0))
+            lon = float(params.get('lon', 0))
+            alt = float(params.get('alt', 0))
+            if lat != 0 and lon != 0:
+                logger.info("[Command] SET_GPS_ORIGIN: %.6f,%.6f for %s", lat, lon, uav_id)
+                ok = self.publish_vehicle_command(
+                    uav_id, command=100048,
+                    param5=lat, param6=lon, param7=alt)
+            else:
+                return {'success': False, 'message': 'SET_GPS_ORIGIN requires lat and lon'}
+
         elif command_type == 'GET_HOME':
             # Return current home position (for frontend display)
             home = self._get_home_position(uav_id)

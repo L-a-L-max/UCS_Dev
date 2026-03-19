@@ -20,6 +20,8 @@ import {
   Activity,
   Plane,
   AlertTriangle,
+  Globe,
+  Map as MapIcon,
 } from 'lucide-react';
 
 const getApiBase = () => {
@@ -111,6 +113,10 @@ interface MapPanelProps {
   rallyPoints?: MapRallyPoint[];
   /** 点击无人机标记时的回调 */
   onDroneClick?: (uavId: string) => void;
+  /** 点击地图空白区域时的回调（经纬度），仅在有选中无人机时触发 */
+  onMapClick?: (lat: number, lon: number) => void;
+  /** 是否有选中的无人机（控制地图点击菜单是否显示） */
+  hasDroneSelected?: boolean;
   /** 额外的 CSS 类名 */
   className?: string;
   /** 是否显示无人机列表侧边栏 */
@@ -128,6 +134,8 @@ export default function MapPanel({
   homeMarker,
   rallyPoints = [],
   onDroneClick,
+  onMapClick,
+  hasDroneSelected = false,
   className = '',
   showDroneList = true,
   showEventLog = false,
@@ -143,15 +151,25 @@ export default function MapPanel({
   const onDroneClickRef = useRef(onDroneClick);
   const selectedDroneIdsRef = useRef(selectedDroneIds);
   const selectedDroneIdRef = useRef(selectedDroneId);
+  const onMapClickRef = useRef(onMapClick);
+  const hasDroneSelectedRef = useRef(hasDroneSelected);
   useEffect(() => { onDroneClickRef.current = onDroneClick; }, [onDroneClick]);
   useEffect(() => { selectedDroneIdsRef.current = selectedDroneIds; }, [selectedDroneIds]);
   useEffect(() => { selectedDroneIdRef.current = selectedDroneId; }, [selectedDroneId]);
+  useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
+  useEffect(() => { hasDroneSelectedRef.current = hasDroneSelected; }, [hasDroneSelected]);
   const homeMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const mapClickPopupRef = useRef<maplibregl.Popup | null>(null);
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
+  // 3D map toggle (Issue 7)
+  const [is3DMode, setIs3DMode] = useState(false);
+  const amapContainer = useRef<HTMLDivElement>(null);
+  const amapInstance = useRef<unknown>(null);
+  const amapMarkersRef = useRef<unknown[]>([]);
 
   // 弹窗自动关闭逻辑 - 默认5秒后关闭，鼠标移入保持，移出后倒计时关闭
   const POPUP_AUTO_CLOSE_MS = 5000;
@@ -271,6 +289,28 @@ export default function MapPanel({
 
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
     map.current.addControl(new maplibregl.ScaleControl(), 'bottom-left');
+
+    // Map click handler for QGC-style click menu (Issue 4)
+    map.current.on('click', (e) => {
+      if (!hasDroneSelectedRef.current) return;
+      // Dismiss existing map click popup
+      if (mapClickPopupRef.current) {
+        mapClickPopupRef.current.remove();
+        mapClickPopupRef.current = null;
+      }
+      const { lat, lng } = e.lngLat;
+      // Notify parent of click coordinates
+      onMapClickRef.current?.(lat, lng);
+      // Show coordinate display popup at click location
+      const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '180px' })
+        .setLngLat([lng, lat])
+        .setHTML(`<div style="background:#1e293b;padding:8px;border-radius:6px;color:white;font-size:11px;text-align:center;">
+          <div style="font-size:10px;color:#94a3b8;margin-bottom:2px;">\u70b9\u51fb\u4f4d\u7f6e</div>
+          <div style="font-weight:bold;">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
+        </div>`)
+        .addTo(map.current!);
+      mapClickPopupRef.current = popup;
+    });
 
     map.current.on('load', () => {
       // Force resize to ensure map fills container properly
@@ -657,6 +697,60 @@ export default function MapPanel({
     return () => observer.disconnect();
   }, []);
 
+  // AMap 3D initialization and drone marker sync (Issue 7)
+  useEffect(() => {
+    if (!is3DMode) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const AMap = (window as any).AMap;
+    if (!AMap || !amapContainer.current) return;
+
+    if (!amapInstance.current) {
+      const center = drones.length > 0 && drones[0].lat && drones[0].lng
+        ? [drones[0].lng, drones[0].lat]
+        : [116.397, 39.908];
+      const amap = new AMap.Map(amapContainer.current, {
+        viewMode: '3D',
+        zoom: 14,
+        pitch: 50,
+        center,
+        mapStyle: 'amap://styles/dark',
+      });
+      amapInstance.current = amap;
+    }
+
+    // Sync drone markers to AMap 3D
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const amap = amapInstance.current as any;
+    // Clear old markers
+    amapMarkersRef.current.forEach((m) => amap.remove(m));
+    amapMarkersRef.current = [];
+
+    drones.forEach((drone) => {
+      if (drone.lat == null || drone.lng == null) return;
+      const isOnline = drone.onlineStatus === true;
+      const isFlying = drone.flightStatus === 'FLYING';
+      const color = !isOnline ? '#64748b' : isFlying ? '#22c55e' : '#3b82f6';
+      const marker = new AMap.Marker({
+        position: [drone.lng, drone.lat],
+        content: `<div style="background:${color};color:white;font-size:10px;padding:2px 6px;border-radius:4px;white-space:nowrap;border:1px solid rgba(255,255,255,0.3);">${drone.uavId}</div>`,
+        offset: new AMap.Pixel(-20, -10),
+      });
+      amap.add(marker);
+      amapMarkersRef.current.push(marker);
+    });
+  }, [is3DMode, drones]);
+
+  // Cleanup AMap on unmount
+  useEffect(() => {
+    return () => {
+      if (amapInstance.current) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (amapInstance.current as any).destroy?.();
+        amapInstance.current = null;
+      }
+    };
+  }, []);
+
   // 对无人机排序：在线优先
   const sortedDrones = [...drones].sort((a, b) => {
     const aOnline = a.onlineStatus === true ? 1 : 0;
@@ -684,8 +778,15 @@ export default function MapPanel({
           </div>
         )}
         
+        {/* 3D AMap container (Issue 7) */}
+        <div
+          ref={amapContainer}
+          className={`absolute inset-0 w-full h-full ${is3DMode ? 'block' : 'hidden'}`}
+          style={{ minHeight: '100%', zIndex: is3DMode ? 2 : 0 }}
+        />
+
         {/* 地图控制按钮 */}
-        <div className="absolute top-2 left-2 z-10 flex flex-col gap-1">
+        <div className="absolute top-2 left-2 z-10 flex flex-col gap-1" style={{ zIndex: 15 }}>
           <Button
             size="sm"
             variant="outline"
@@ -693,6 +794,15 @@ export default function MapPanel({
             onClick={focusOnDrones}
           >
             <Locate className="w-3 h-3 mr-1" />聚焦无人机
+          </Button>
+          {/* 2D/3D toggle (Issue 7) */}
+          <Button
+            size="sm"
+            variant="outline"
+            className={`border-slate-600 text-white hover:bg-slate-700/80 text-xs ${is3DMode ? 'bg-indigo-700/80 border-indigo-500' : 'bg-slate-800/80'}`}
+            onClick={() => setIs3DMode(!is3DMode)}
+          >
+            {is3DMode ? <><MapIcon className="w-3 h-3 mr-1" />二维地图</> : <><Globe className="w-3 h-3 mr-1" />三维地图</>}
           </Button>
           <div className="relative">
             <Button

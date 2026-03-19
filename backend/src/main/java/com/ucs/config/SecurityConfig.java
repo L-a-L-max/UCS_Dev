@@ -15,6 +15,8 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import org.springframework.http.HttpMethod;
+
 import java.util.Arrays;
 import java.util.List;
 
@@ -50,11 +52,15 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/leader/**").hasAnyRole("LEADER", "COMMANDER")
                 // Zenoh control endpoints - pilots/operators and above can send commands
                 .requestMatchers("/api/v1/control/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
-                // Rally point management - leaders and commanders
-                // Both base path and sub-paths must be listed explicitly;
-                // in Spring Security 6.x /** may not match the base path without trailing slash
-                .requestMatchers("/api/v1/rally-points").hasAnyRole("LEADER", "COMMANDER")
-                .requestMatchers("/api/v1/rally-points/**").hasAnyRole("LEADER", "COMMANDER")
+                // Rally point management
+                // GET endpoints (read): all authenticated pilots and above can read rally points
+                .requestMatchers(HttpMethod.GET, "/api/v1/rally-points").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
+                .requestMatchers(HttpMethod.GET, "/api/v1/rally-points/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
+                // Write endpoints (POST/PUT/DELETE): only leaders and commanders
+                .requestMatchers(HttpMethod.POST, "/api/v1/rally-points").hasAnyRole("LEADER", "COMMANDER")
+                .requestMatchers(HttpMethod.POST, "/api/v1/rally-points/**").hasAnyRole("LEADER", "COMMANDER")
+                .requestMatchers(HttpMethod.PUT, "/api/v1/rally-points/**").hasAnyRole("LEADER", "COMMANDER")
+                .requestMatchers(HttpMethod.DELETE, "/api/v1/rally-points/**").hasAnyRole("LEADER", "COMMANDER")
                 // Commander-only endpoints - permission transfer, global management
                 .requestMatchers("/api/v1/commander/**").hasRole("COMMANDER")
                 // Operation logs - all authenticated users can view

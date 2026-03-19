@@ -526,9 +526,29 @@ export async function getDroneHomePosition(
 
 /**
  * Geocode an address string to lat/lon coordinates.
- * Uses Nominatim (OpenStreetMap) as free geocoding service.
+ * Uses AMap (Gaode) Web Service API for reliable geocoding in China.
+ * Falls back to Nominatim (OpenStreetMap) if AMap fails.
  */
 export async function geocodeAddress(address: string): Promise<{ lat: number; lon: number; displayName: string } | null> {
+  // Try AMap geocoding first (more reliable in China)
+  try {
+    const amapKey = '4ef7e3b945e30d1df3b3bef9c97f4583'; // AMap Web Service key
+    const response = await fetch(
+      `https://restapi.amap.com/v3/geocode/geo?address=${encodeURIComponent(address)}&output=json&key=${amapKey}`
+    );
+    const data = await response.json();
+    if (data.status === '1' && data.geocodes && data.geocodes.length > 0) {
+      const location = data.geocodes[0].location.split(',');
+      return {
+        lat: parseFloat(location[1]),
+        lon: parseFloat(location[0]),
+        displayName: data.geocodes[0].formatted_address || address,
+      };
+    }
+  } catch {
+    // Fall through to Nominatim
+  }
+  // Fallback: Nominatim (OpenStreetMap)
   try {
     const response = await fetch(
       `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`,
@@ -541,6 +561,25 @@ export async function geocodeAddress(address: string): Promise<{ lat: number; lo
         lon: parseFloat(results[0].lon),
         displayName: results[0].display_name,
       };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reverse geocode lat/lon to address string using AMap.
+ */
+export async function reverseGeocode(lat: number, lon: number): Promise<string | null> {
+  try {
+    const amapKey = '4ef7e3b945e30d1df3b3bef9c97f4583';
+    const response = await fetch(
+      `https://restapi.amap.com/v3/geocode/regeo?location=${lon},${lat}&output=json&key=${amapKey}`
+    );
+    const data = await response.json();
+    if (data.status === '1' && data.regeocode && data.regeocode.formatted_address) {
+      return data.regeocode.formatted_address;
     }
     return null;
   } catch {
