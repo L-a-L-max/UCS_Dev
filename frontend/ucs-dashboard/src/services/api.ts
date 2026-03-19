@@ -530,47 +530,41 @@ export async function getDroneHomePosition(
  * Falls back to Nominatim (OpenStreetMap) if AMap fails.
  */
 export async function geocodeAddress(address: string): Promise<{ lat: number; lon: number; displayName: string } | null> {
-  // Try AMap geocoding first (more reliable in China)
+  // Primary: Nominatim (OpenStreetMap) - free, no API key required, works globally
   try {
-    const amapKey = '4ef7e3b945e30d1df3b3bef9c97f4583'; // AMap Web Service key
     const response = await fetch(
-      `https://restapi.amap.com/v3/geocode/geo?address=${encodeURIComponent(address)}&output=json&key=${amapKey}`
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=5&accept-language=zh-CN`,
+      { headers: { 'User-Agent': 'UCS-Dashboard/1.0 (drone-management-system)' } }
     );
-    const data = await response.json();
-    if (data.status === '1' && data.geocodes && data.geocodes.length > 0) {
-      const loc = data.geocodes[0].location;
-      if (loc && loc.includes(',')) {
-        const parts = loc.split(',');
-        const lon = parseFloat(parts[0]);
-        const lat = parseFloat(parts[1]);
-        if (!isNaN(lat) && !isNaN(lon) && lat !== 0 && lon !== 0) {
+    if (response.ok) {
+      const results = await response.json();
+      if (results && results.length > 0) {
+        const lat = parseFloat(results[0].lat);
+        const lon = parseFloat(results[0].lon);
+        if (!isNaN(lat) && !isNaN(lon)) {
           return {
             lat,
             lon,
-            displayName: data.geocodes[0].formatted_address || address,
+            displayName: results[0].display_name,
           };
         }
       }
     }
   } catch {
-    // Fall through to Nominatim
+    // Fall through to backend proxy
   }
-  // Fallback: Nominatim (OpenStreetMap) - works better for international addresses
+  // Fallback: Backend proxy geocoding (avoids CORS issues)
   try {
     const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1&accept-language=zh-CN`,
-      { headers: { 'User-Agent': 'UCS-Dashboard/1.0 (drone-management)' } }
+      `${API_BASE}/api/v1/public/geocode?address=${encodeURIComponent(address)}`
     );
-    if (!response.ok) throw new Error(`Nominatim HTTP ${response.status}`);
-    const results = await response.json();
-    if (results && results.length > 0) {
-      const lat = parseFloat(results[0].lat);
-      const lon = parseFloat(results[0].lon);
-      if (!isNaN(lat) && !isNaN(lon)) {
+    if (response.ok) {
+      const data = await response.json();
+      if (data.code === 0 && data.data) {
         return {
-          lat,
-          lon,
-          displayName: results[0].display_name,
+          lat: data.data.lat,
+          lon: data.data.lon,
+          displayName: data.data.displayName || address,
         };
       }
     }

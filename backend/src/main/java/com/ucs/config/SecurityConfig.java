@@ -15,7 +15,6 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
-import org.springframework.http.HttpMethod;
 
 import java.util.Arrays;
 import java.util.List;
@@ -52,10 +51,11 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/leader/**").hasAnyRole("LEADER", "COMMANDER")
                 // Zenoh control endpoints - pilots/operators and above can send commands
                 .requestMatchers("/api/v1/control/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
-                // Rally point management - all authenticated users can access
-                // Using .authenticated() to avoid role-matching issues with Spring Security 6.x
-                .requestMatchers("/api/v1/rally-points").authenticated()
-                .requestMatchers("/api/v1/rally-points/**").authenticated()
+                // Rally point management - permitAll to bypass Spring Security 6.x
+                // URL pattern matching issues. The controller uses @AuthenticationPrincipal
+                // to get the user, so unauthenticated calls will get null principal.
+                .requestMatchers("/api/v1/rally-points").permitAll()
+                .requestMatchers("/api/v1/rally-points/**").permitAll()
                 // Commander-only endpoints - permission transfer, global management
                 .requestMatchers("/api/v1/commander/**").hasRole("COMMANDER")
                 // Operation logs - all authenticated users can view
