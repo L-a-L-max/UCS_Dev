@@ -52,10 +52,10 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/leader/**").hasAnyRole("LEADER", "COMMANDER")
                 // Zenoh control endpoints - pilots/operators and above can send commands
                 .requestMatchers("/api/v1/control/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
-                // Rally point management - all authenticated roles can access
-                // UI controls write access (only commander/leader UI exposes create/edit/delete)
-                .requestMatchers("/api/v1/rally-points").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
-                .requestMatchers("/api/v1/rally-points/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
+                // Rally point management - all authenticated users can access
+                // Using .authenticated() to avoid role-matching issues with Spring Security 6.x
+                .requestMatchers("/api/v1/rally-points").authenticated()
+                .requestMatchers("/api/v1/rally-points/**").authenticated()
                 // Commander-only endpoints - permission transfer, global management
                 .requestMatchers("/api/v1/commander/**").hasRole("COMMANDER")
                 // Operation logs - all authenticated users can view
