@@ -820,8 +820,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                         className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" />
                       <span className="text-[10px] text-slate-400">{'\u7c73'}</span>
                     </div>
-                  </div>
-                  <Button className="w-full text-xs h-7 bg-cyan-600 hover:bg-cyan-700 text-white mt-1.5"
+                    <Button className="w-full text-xs h-7 bg-cyan-600 hover:bg-cyan-700 text-white mt-1.5"
                     onClick={() => {
                       const uavIds = multiSelectedDrones.map(d => d.uavId);
                       const params = JSON.stringify({
@@ -838,7 +837,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                       setTimeout(() => setCommandFeedback(null), 3000);
                     }}>
                     <Navigation className="w-3.5 h-3.5 mr-1" />{'\u524d\u5f80'}
-                  </Button>
+                    </Button>
                   </div>}
                 </div>
                 {/* Multi-select MARK_HOME with optional unified coordinates - collapsible */}
@@ -858,8 +857,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                       <Input type="number" step="0.0001" value={batchHomeLon} onChange={e => setBatchHomeLon(e.target.value)}
                         className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder={'\u7559\u7a7a=\u5404\u81ea\u5f53\u524d\u4f4d\u7f6e'} />
                     </div>
-                  </div>
-                  <Button className="w-full text-xs h-7 bg-teal-600 hover:bg-teal-700 text-white mt-1.5"
+                    <Button className="w-full text-xs h-7 bg-teal-600 hover:bg-teal-700 text-white mt-1.5"
                     onClick={() => {
                       const lat = parseFloat(batchHomeLat);
                       const lon = parseFloat(batchHomeLon);
@@ -873,7 +871,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                       setTimeout(() => setCommandFeedback(null), 3000);
                     }}>
                     <Home className="w-3.5 h-3.5 mr-1" />{'\u6807\u8bb0Home'}
-                  </Button>
+                    </Button>
                   </div>}
                 </div>
                 {/* Multi-select RTL with Home/Rally mode - collapsible */}
