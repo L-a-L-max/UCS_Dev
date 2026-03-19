@@ -575,17 +575,35 @@ export async function geocodeAddress(address: string): Promise<{ lat: number; lo
 }
 
 /**
- * Reverse geocode lat/lon to address string using AMap.
+ * Reverse geocode lat/lon to address string.
+ * Uses Nominatim (OpenStreetMap) directly, falls back to backend proxy.
  */
 export async function reverseGeocode(lat: number, lon: number): Promise<string | null> {
+  // Primary: Nominatim reverse geocoding
   try {
-    const amapKey = '4ef7e3b945e30d1df3b3bef9c97f4583';
     const response = await fetch(
-      `https://restapi.amap.com/v3/geocode/regeo?location=${lon},${lat}&output=json&key=${amapKey}`
+      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&accept-language=zh-CN`,
+      { headers: { 'User-Agent': 'UCS-Dashboard/1.0 (drone-management-system)' } }
     );
-    const data = await response.json();
-    if (data.status === '1' && data.regeocode && data.regeocode.formatted_address) {
-      return data.regeocode.formatted_address;
+    if (response.ok) {
+      const data = await response.json();
+      if (data.display_name) {
+        return data.display_name;
+      }
+    }
+  } catch {
+    // Fall through to backend proxy
+  }
+  // Fallback: Backend proxy
+  try {
+    const response = await fetch(
+      `${API_BASE}/api/v1/public/geocode?address=${lat},${lon}`
+    );
+    if (response.ok) {
+      const data = await response.json();
+      if (data.code === 0 && data.data?.displayName) {
+        return data.data.displayName;
+      }
     }
     return null;
   } catch {
