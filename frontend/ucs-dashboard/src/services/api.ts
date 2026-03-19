@@ -524,17 +524,44 @@ export async function getDroneHomePosition(
 
 // ==================== Geocoding API ====================
 
+/** Helper: fetch with timeout via AbortController */
+function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = 5000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 /**
  * Geocode an address string to lat/lon coordinates.
- * Uses AMap (Gaode) Web Service API for reliable geocoding in China.
- * Falls back to Nominatim (OpenStreetMap) if AMap fails.
+ * Priority: backend proxy (reliable) > Nominatim direct (may be blocked in China).
  */
 export async function geocodeAddress(address: string): Promise<{ lat: number; lon: number; displayName: string } | null> {
-  // Primary: Nominatim (OpenStreetMap) - free, no API key required, works globally
+  // Primary: Backend proxy geocoding (server-side, avoids GFW/CORS issues)
   try {
-    const response = await fetch(
+    const response = await fetchWithTimeout(
+      `${API_BASE}/api/v1/public/geocode?address=${encodeURIComponent(address)}`,
+      {},
+      8000
+    );
+    if (response.ok) {
+      const data = await response.json();
+      if (data.code === 0 && data.data) {
+        return {
+          lat: data.data.lat,
+          lon: data.data.lon,
+          displayName: data.data.displayName || address,
+        };
+      }
+    }
+  } catch {
+    // Fall through to direct Nominatim
+  }
+  // Fallback: Nominatim direct from browser (may be slow/blocked in China)
+  try {
+    const response = await fetchWithTimeout(
       `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=5&accept-language=zh-CN`,
-      { headers: { 'User-Agent': 'UCS-Dashboard/1.0 (drone-management-system)' } }
+      { headers: { 'User-Agent': 'UCS-Dashboard/1.0 (drone-management-system)' } },
+      5000
     );
     if (response.ok) {
       const results = await response.json();
@@ -551,39 +578,38 @@ export async function geocodeAddress(address: string): Promise<{ lat: number; lo
       }
     }
   } catch {
-    // Fall through to backend proxy
+    // Both methods failed
   }
-  // Fallback: Backend proxy geocoding (avoids CORS issues)
-  try {
-    const response = await fetch(
-      `${API_BASE}/api/v1/public/geocode?address=${encodeURIComponent(address)}`
-    );
-    if (response.ok) {
-      const data = await response.json();
-      if (data.code === 0 && data.data) {
-        return {
-          lat: data.data.lat,
-          lon: data.data.lon,
-          displayName: data.data.displayName || address,
-        };
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 /**
  * Reverse geocode lat/lon to address string.
- * Uses Nominatim (OpenStreetMap) directly, falls back to backend proxy.
+ * Priority: backend proxy (reliable) > Nominatim direct.
  */
 export async function reverseGeocode(lat: number, lon: number): Promise<string | null> {
-  // Primary: Nominatim reverse geocoding
+  // Primary: Backend proxy reverse geocoding
   try {
-    const response = await fetch(
+    const response = await fetchWithTimeout(
+      `${API_BASE}/api/v1/public/reverse-geocode?lat=${lat}&lon=${lon}`,
+      {},
+      8000
+    );
+    if (response.ok) {
+      const data = await response.json();
+      if (data.code === 0 && data.data?.displayName) {
+        return data.data.displayName;
+      }
+    }
+  } catch {
+    // Fall through to Nominatim direct
+  }
+  // Fallback: Nominatim direct
+  try {
+    const response = await fetchWithTimeout(
       `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&accept-language=zh-CN`,
-      { headers: { 'User-Agent': 'UCS-Dashboard/1.0 (drone-management-system)' } }
+      { headers: { 'User-Agent': 'UCS-Dashboard/1.0 (drone-management-system)' } },
+      5000
     );
     if (response.ok) {
       const data = await response.json();
@@ -592,23 +618,9 @@ export async function reverseGeocode(lat: number, lon: number): Promise<string |
       }
     }
   } catch {
-    // Fall through to backend proxy
+    // Both methods failed
   }
-  // Fallback: Backend proxy
-  try {
-    const response = await fetch(
-      `${API_BASE}/api/v1/public/geocode?address=${lat},${lon}`
-    );
-    if (response.ok) {
-      const data = await response.json();
-      if (data.code === 0 && data.data?.displayName) {
-        return data.data.displayName;
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 // ==================== Pilot API ====================
