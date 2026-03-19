@@ -75,6 +75,21 @@ public class GeocodingController {
             log.warn("[Geocode] Photon failed for '{}': {}", address, e.getMessage());
         }
 
+        // Photon retry: strip common Chinese country prefixes (e.g. "美国旧金山" → "旧金山")
+        String stripped = stripChineseCountryPrefix(address);
+        if (!stripped.equals(address)) {
+            log.info("[Geocode] Retrying Photon with stripped address: '{}'", stripped);
+            try {
+                Map<String, Object> result = geocodeWithPhoton(stripped);
+                if (result != null) {
+                    log.info("[Geocode] Photon (stripped) success: {}", result);
+                    return ApiResponse.success(result);
+                }
+            } catch (Exception e) {
+                log.warn("[Geocode] Photon (stripped) failed: {}", e.getMessage());
+            }
+        }
+
         log.error("[Geocode] All geocoding services failed for '{}'", address);
         return ApiResponse.error(-1, "地址解析失败，所有服务均无法响应，请检查网络或尝试更详细的地址");
     }
@@ -172,6 +187,24 @@ public class GeocodingController {
             }
         }
         return null;
+    }
+
+    private static final String[] CHINESE_COUNTRY_PREFIXES = {
+            "美国", "英国", "法国", "德国", "日本", "韩国", "澳大利亚", "加拿大",
+            "意大利", "西班牙", "俄罗斯", "巴西", "印度", "泰国", "越南", "新加坡",
+            "马来西亚", "印度尼西亚", "菲律宾", "荷兰", "瑞士", "瑞典", "挪威",
+            "丹麦", "芬兰", "新西兰", "墨西哥", "阿根廷", "南非", "埃及",
+            "土耳其", "沙特", "阿联酋", "以色列", "波兰", "捷克", "奥地利",
+            "比利时", "葡萄牙", "希腊", "爱尔兰", "匈牙利", "罗马尼亚",
+    };
+
+    private String stripChineseCountryPrefix(String address) {
+        for (String prefix : CHINESE_COUNTRY_PREFIXES) {
+            if (address.startsWith(prefix) && address.length() > prefix.length()) {
+                return address.substring(prefix.length());
+            }
+        }
+        return address;
     }
 
     private String buildPhotonDisplayName(Map<String, Object> props) {
