@@ -27,6 +27,10 @@ import java.util.*;
  * 
  * Authentication: Uses a shared API key (dds.gateway.api-key) in the
  * X-Gateway-Key header to authenticate gateway requests.
+ * 
+ * [Phase 1 NOTE] This HTTP endpoint is preserved as fallback. The primary data path
+ * is now: Gateway -> Kafka(telemetry.raw) -> TelemetryKafkaConsumer.
+ * When Kafka is fully stable, this endpoint can be deprecated.
  */
 @Slf4j
 @RestController

@@ -94,6 +94,8 @@ class DroneState:
     home_lat: float = 0.0
     home_lon: float = 0.0
     home_alt: float = 0.0
+    # Epoch (generation ID) - incremented on each reconnection
+    epoch: int = 0
 
 
 def _latlon_to_ned(lat: float, lon: float, alt: float,
@@ -130,6 +132,15 @@ class DDSGateway:
         self._lock = threading.Lock()
         self._stats = defaultdict(int)
         self._last_stats_time = time.time()
+
+        # Epoch map: uav_id -> epoch (generation ID)
+        self._epoch_map: Dict[str, int] = {}
+
+        # Kafka producer (optional, for dual-write mode)
+        self._kafka_producer = None
+        self._kafka_enabled = False
+        self._kafka_bootstrap = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+        self._init_kafka()
 
         # Persistent HTTP session for ack forwarding (reuses TCP connections)
         self._ack_session = requests.Session()
@@ -514,6 +525,77 @@ class DDSGateway:
     # Data Forwarding
     # ============================================================
 
+    def _init_kafka(self):
+        """Initialize Kafka producer for dual-write mode."""
+        try:
+            from kafka import KafkaProducer
+            self._kafka_producer = KafkaProducer(
+                bootstrap_servers=self._kafka_bootstrap,
+                key_serializer=lambda k: k.encode('utf-8') if k else None,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+                acks=1,
+                retries=3,
+                max_block_ms=5000,
+            )
+            self._kafka_enabled = True
+            logger.info("[Kafka] Producer initialized: %s", self._kafka_bootstrap)
+        except ImportError:
+            logger.warning("[Kafka] kafka-python not installed. pip install kafka-python")
+        except Exception as e:
+            logger.warning("[Kafka] Producer init failed (will use HTTP only): %s", e)
+
+    def _get_or_increment_epoch(self, uav_id: str, is_new: bool = False) -> int:
+        """Get current epoch for a drone, incrementing on reconnection."""
+        if uav_id not in self._epoch_map:
+            self._epoch_map[uav_id] = 1
+            logger.info("[Epoch] New drone %s, epoch=1", uav_id)
+        elif is_new:
+            self._epoch_map[uav_id] += 1
+            logger.info("[Epoch] Drone %s reconnected, epoch=%d", uav_id, self._epoch_map[uav_id])
+        return self._epoch_map[uav_id]
+
+    def send_to_kafka(self, payload: dict) -> bool:
+        """Send telemetry to Kafka (per-drone messages with uav_id as key)."""
+        if not self._kafka_enabled or not self._kafka_producer:
+            return False
+        try:
+            timestamp_str = payload.get('timestamp', '')
+            drones = payload.get('drones', [])
+            for drone_data in drones:
+                uav_id = drone_data.get('uavId', '')
+                if not uav_id:
+                    continue
+                msg = dict(drone_data)
+                msg['timestamp'] = timestamp_str
+                msg['epoch'] = self._epoch_map.get(uav_id, 0)
+                # Key = uav_id -> same partition -> ordered
+                self._kafka_producer.send('telemetry.raw', key=uav_id, value=msg)
+            self._kafka_producer.flush(timeout=2)
+            self._stats['kafka_success'] += 1
+            return True
+        except Exception as e:
+            logger.error("[Kafka] Send failed: %s", e)
+            self._stats['kafka_errors'] += 1
+            return False
+
+    def send_event_to_kafka(self, event_type: str, uav_id: str, level: str, detail: str):
+        """Send a drone event to the events.drone Kafka topic."""
+        if not self._kafka_enabled or not self._kafka_producer:
+            return
+        try:
+            from datetime import datetime, timezone
+            event = {
+                'eventType': event_type,
+                'uavId': uav_id,
+                'level': level,
+                'detail': detail,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+            self._kafka_producer.send('events.drone', key=uav_id, value=event)
+            logger.info("[Kafka] Event sent: %s %s %s", event_type, uav_id, detail)
+        except Exception as e:
+            logger.error("[Kafka] Event send failed: %s", e)
+
     def build_telemetry_payload(self) -> dict:
         """Build the telemetry batch payload for the backend API."""
         from datetime import datetime, timezone
@@ -538,6 +620,7 @@ class DDSGateway:
                     "armed": state.armed,
                     "flightMode": state.flight_mode,
                     "batteryPercent": state.battery_percent,
+                    "epoch": state.epoch,
                 })
 
         return {
@@ -672,9 +755,16 @@ class DDSGateway:
                     logger.info("[Discovery] Scanning topics (cycle %d)...", cycle)
                     new_drones = self.discover_drones_from_topics()
                     for uid in new_drones:
-                        if uid not in self.drone_states:
+                        is_new = uid not in self.drone_states
+                        if is_new:
                             logger.info("[Discovery] NEW drone: %s", uid)
                             self.subscribe_to_drone(uid)
+                            # Increment epoch for new/reconnected drone
+                            epoch = self._get_or_increment_epoch(uid, is_new=True)
+                            self.drone_states[uid].epoch = epoch
+                            # Publish online event to Kafka
+                            self.send_event_to_kafka('DRONE_ONLINE', uid, 'INFO',
+                                                     f'Drone {uid} connected (epoch={epoch})')
                     if not new_drones and cycle == 0:
                         logger.warning(
                             "[Discovery] No drones found. "
@@ -688,7 +778,11 @@ class DDSGateway:
                         if now - s.last_update < 5
                     )
                     if active > 0:
-                        self.send_to_backend(self.build_telemetry_payload())
+                        telemetry_payload = self.build_telemetry_payload()
+                        # Dual-write: Kafka (primary) + HTTP (fallback)
+                        kafka_ok = self.send_to_kafka(telemetry_payload)
+                        if not kafka_ok:
+                            self.send_to_backend(telemetry_payload)
                     elif cycle % 10 == 0:
                         logger.warning(
                             "[Forward] %d drone(s) tracked but none active",

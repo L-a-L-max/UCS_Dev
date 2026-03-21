@@ -9,7 +9,10 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 public class LoginResponse {
+    /** Access Token（短命，用于接口鉴权） */
     private String token;
+    /** Refresh Token（长命，用于刷新 Access Token） */
+    private String refreshToken;
     private Long userId;
     private String username;
     private String realName;
