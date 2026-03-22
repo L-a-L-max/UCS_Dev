@@ -493,23 +493,38 @@ class DDSGateway:
             logger.error("[CommandAck] Failed to forward ack: %s", e)
 
     def _forward_command_ack(self, ack_payload: dict):
-        """Forward a command ack to the backend REST API.
+        """Forward a command ack to Kafka commands.ack topic (primary) and HTTP (fallback).
 
-        Uses persistent HTTP session for low-latency forwarding.
-        Timeout reduced to 3s since ack delivery is time-sensitive.
+        [Phase 1] Dual-write: Kafka + HTTP for backward compatibility.
+        The backend's CommandKafkaConsumer processes acks from Kafka,
+        while DDSGatewayController handles HTTP acks as fallback.
         """
-        try:
-            resp = self._ack_session.post(
-                f"{self.backend_url}/api/v1/dds-gateway/command-ack",
-                json=ack_payload,
-                timeout=3,
-            )
-            if resp.status_code == 200:
-                logger.info("[CommandAck] Forwarded ack to backend: %s", ack_payload)
-            else:
-                logger.warning("[CommandAck] Backend returned %d: %s", resp.status_code, resp.text[:200])
-        except Exception as e:
-            logger.error("[CommandAck] Forward failed: %s", e)
+        # Primary: send to Kafka commands.ack topic
+        kafka_ok = False
+        if self._kafka_enabled and self._kafka_producer:
+            try:
+                uav_id = ack_payload.get('uavId', '')
+                self._kafka_producer.send('commands.ack', key=uav_id, value=ack_payload)
+                self._kafka_producer.flush(timeout=2)
+                kafka_ok = True
+                logger.info("[CommandAck] Sent to Kafka commands.ack: %s", ack_payload)
+            except Exception as e:
+                logger.warning("[CommandAck] Kafka send failed, falling back to HTTP: %s", e)
+
+        # Fallback: forward via HTTP if Kafka failed
+        if not kafka_ok:
+            try:
+                resp = self._ack_session.post(
+                    f"{self.backend_url}/api/v1/dds-gateway/command-ack",
+                    json=ack_payload,
+                    timeout=3,
+                )
+                if resp.status_code == 200:
+                    logger.info("[CommandAck] Forwarded ack to backend via HTTP: %s", ack_payload)
+                else:
+                    logger.warning("[CommandAck] Backend returned %d: %s", resp.status_code, resp.text[:200])
+            except Exception as e:
+                logger.error("[CommandAck] HTTP forward failed: %s", e)
 
     @staticmethod
     def _nav_state_to_mode(nav_state: int) -> str:
@@ -526,7 +541,7 @@ class DDSGateway:
     # ============================================================
 
     def _init_kafka(self):
-        """Initialize Kafka producer for dual-write mode."""
+        """Initialize Kafka producer and consumer for dual-write mode."""
         try:
             from kafka import KafkaProducer
             self._kafka_producer = KafkaProducer(
@@ -543,6 +558,82 @@ class DDSGateway:
             logger.warning("[Kafka] kafka-python not installed. pip install kafka-python")
         except Exception as e:
             logger.warning("[Kafka] Producer init failed (will use HTTP only): %s", e)
+
+    def _start_kafka_command_consumer(self):
+        """Start a background thread that consumes commands from Kafka commands.down topic.
+
+        This replaces the HTTP-only command path. The backend publishes commands
+        to commands.down via CommandKafkaProducer; the Gateway consumes them here
+        and forwards to PX4 via DDS.
+
+        Message format (JSON):
+        {
+            "uavId": "px4_1",
+            "commandType": "TAKEOFF",
+            "params": "{}",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "userId": 1,
+            "commandLogId": 123
+        }
+        """
+        if not self._kafka_enabled:
+            logger.info("[KafkaCmd] Kafka not enabled, skipping command consumer")
+            return
+        try:
+            from kafka import KafkaConsumer as _KafkaConsumer
+            consumer = _KafkaConsumer(
+                'commands.down',
+                bootstrap_servers=self._kafka_bootstrap,
+                group_id='dds-gateway-command-consumer',
+                value_deserializer=lambda v: json.loads(v.decode('utf-8')),
+                auto_offset_reset='latest',
+                enable_auto_commit=True,
+                consumer_timeout_ms=1000,  # poll returns after 1s if no messages
+            )
+            logger.info("[KafkaCmd] Consumer initialized for commands.down")
+        except Exception as e:
+            logger.warning("[KafkaCmd] Failed to create consumer: %s", e)
+            return
+
+        def _consume_loop():
+            logger.info("[KafkaCmd] Consumer thread started")
+            while self.running:
+                try:
+                    records = consumer.poll(timeout_ms=1000)
+                    for tp, messages in records.items():
+                        for msg in messages:
+                            try:
+                                data = msg.value
+                                uav_id = data.get('uavId', '')
+                                command_type = data.get('commandType', '')
+                                params_raw = data.get('params', '{}')
+                                if isinstance(params_raw, str):
+                                    params = json.loads(params_raw) if params_raw else {}
+                                else:
+                                    params = params_raw
+
+                                logger.info("[KafkaCmd] Received: %s -> %s params=%s",
+                                            command_type, uav_id, params)
+                                result = self.handle_command(uav_id, command_type, params)
+                                logger.info("[KafkaCmd] Result: %s -> %s: %s",
+                                            command_type, uav_id, result)
+                                self._stats['kafka_commands_consumed'] = \
+                                    self._stats.get('kafka_commands_consumed', 0) + 1
+                            except Exception as e:
+                                logger.error("[KafkaCmd] Failed to process command: %s", e)
+                except Exception as e:
+                    if self.running:
+                        logger.error("[KafkaCmd] Poll error: %s", e)
+                        time.sleep(1)
+            try:
+                consumer.close()
+            except Exception:
+                pass
+            logger.info("[KafkaCmd] Consumer thread stopped")
+
+        t = threading.Thread(target=_consume_loop, daemon=True, name='kafka-cmd-consumer')
+        t.start()
+        logger.info("[KafkaCmd] Consumer thread launched")
 
     def _get_or_increment_epoch(self, uav_id: str, is_new: bool = False) -> int:
         """Get current epoch for a drone, incrementing on reconnection."""
@@ -731,9 +822,12 @@ class DDSGateway:
             logger.error("[Startup] Failed to init ROS2 node. Exiting.")
             return
 
-        # Start command HTTP server for receiving commands from backend
+        # Start command HTTP server for receiving commands from backend (fallback)
         cmd_port = int(os.environ.get('DDS_COMMAND_PORT', '5050'))
         self.start_command_server(port=cmd_port)
+
+        # Start Kafka command consumer (primary command path)
+        self._start_kafka_command_consumer()
 
         logger.info("[Startup] Checking backend...")
         for attempt in range(3):
