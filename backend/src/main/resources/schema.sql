@@ -296,6 +296,28 @@ CREATE INDEX IF NOT EXISTS idx_rally_points_city ON rally_points (city);
 CREATE INDEX IF NOT EXISTS idx_rally_points_scope_team ON rally_points (scope, team_id);
 CREATE INDEX IF NOT EXISTS idx_rally_points_deleted_at ON rally_points (deleted_at);
 
+-- Rally Points 表和字段注释
+COMMENT ON TABLE rally_points IS '集结点信息表';
+COMMENT ON COLUMN rally_points.id IS '主键，唯一标识';
+COMMENT ON COLUMN rally_points.name IS '集结点名称，如"北区1号停机坪"';
+COMMENT ON COLUMN rally_points.latitude IS '纬度 (WGS84)';
+COMMENT ON COLUMN rally_points.longitude IS '经度 (WGS84)';
+COMMENT ON COLUMN rally_points.altitude IS '海拔高度（米）';
+COMMENT ON COLUMN rally_points.city IS '所在城市（通过地图服务反向地理编码得到）';
+COMMENT ON COLUMN rally_points.address IS '详细地址';
+COMMENT ON COLUMN rally_points.capacity IS '最大同时停靠无人机数量';
+COMMENT ON COLUMN rally_points.current_occupancy IS '当前已占用数量';
+COMMENT ON COLUMN rally_points.status IS '状态：0-禁用，1-启用，2-维护中';
+COMMENT ON COLUMN rally_points.scope IS '可见范围：0-全局，1-队伍';
+COMMENT ON COLUMN rally_points.team_id IS '当scope=1时，指定所属队伍ID';
+COMMENT ON COLUMN rally_points.radius IS '到达判定半径（米）';
+COMMENT ON COLUMN rally_points.service_type IS '服务类型：0-普通停靠，1-充电，2-维护，3-物资';
+COMMENT ON COLUMN rally_points.description IS '备注信息';
+COMMENT ON COLUMN rally_points.created_by IS '创建者用户ID';
+COMMENT ON COLUMN rally_points.created_at IS '创建时间';
+COMMENT ON COLUMN rally_points.updated_at IS '最后更新时间';
+COMMENT ON COLUMN rally_points.deleted_at IS '软删除时间（NULL表示未删除）';
+
 -- Create trigger function for auto-updating updated_at
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$

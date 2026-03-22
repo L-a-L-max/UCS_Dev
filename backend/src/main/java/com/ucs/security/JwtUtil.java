@@ -38,8 +38,8 @@ public class JwtUtil {
     @Value("${jwt.secret:change-me-in-production}")
     private String secret;
 
-    /** Access Token 有效期，默认 15 分钟 */
-    @Value("${jwt.access-token.expiration:900000}")
+    /** Access Token 有效期，默认 30 分钟 */
+    @Value("${jwt.access-token.expiration:1800000}")
     private Long accessTokenExpiration;
 
     /** Refresh Token 有效期，默认 7 天 */
