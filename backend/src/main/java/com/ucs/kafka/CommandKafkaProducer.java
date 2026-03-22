@@ -25,7 +25,8 @@ import java.util.Map;
  *   "params": "{}",
  *   "timestamp": "2024-01-01T00:00:00Z",
  *   "userId": 1,
- *   "commandLogId": 123
+ *   "commandLogId": 123,
+ *   "epoch": 3
  * }
  */
 @Slf4j
@@ -36,6 +37,7 @@ public class CommandKafkaProducer {
 
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
+    private final EpochManager epochManager;
 
     @Value("${kafka.topic.commands-down:commands.down}")
     private String commandsDownTopic;
@@ -59,6 +61,7 @@ public class CommandKafkaProducer {
             payload.put("timestamp", Instant.now().toString());
             payload.put("userId", userId);
             payload.put("commandLogId", commandLogId);
+            payload.put("epoch", epochManager.getCurrentEpoch(uavId));
 
             String json = objectMapper.writeValueAsString(payload);
 

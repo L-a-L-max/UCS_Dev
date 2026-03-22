@@ -29,6 +29,7 @@ public class CommandKafkaConsumer {
 
     private final ObjectMapper objectMapper;
     private final SimpMessagingTemplate messagingTemplate;
+    private final EpochManager epochManager;
 
     @KafkaListener(
             topics = "${kafka.topic.commands-ack:commands.ack}",
@@ -43,6 +44,17 @@ public class CommandKafkaConsumer {
             String uavId = String.valueOf(payload.getOrDefault("uavId", ""));
             int command = ((Number) payload.getOrDefault("command", 0)).intValue();
             int result = ((Number) payload.getOrDefault("result", -1)).intValue();
+
+            // Epoch validation: discard ack from stale drone session
+            Object epochObj = payload.get("epoch");
+            if (epochObj != null) {
+                long msgEpoch = ((Number) epochObj).longValue();
+                if (!epochManager.validateEpoch(uavId, msgEpoch)) {
+                    log.warn("[CommandAckConsumer] Stale ack discarded: uavId={}, epoch={}",
+                            uavId, msgEpoch);
+                    return;
+                }
+            }
 
             log.info("[CommandAckConsumer] uavId={}, command={}, result={}", uavId, command, result);
 

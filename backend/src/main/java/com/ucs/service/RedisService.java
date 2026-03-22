@@ -67,6 +67,31 @@ public class RedisService {
         }
     }
     
+    /**
+     * Get all currently online drone IDs by scanning drone:*:online keys.
+     * Used by GatewayHealthMonitor to detect gateway offline scenarios.
+     *
+     * @return Set of uavIds that have active heartbeat keys in Redis
+     */
+    public Set<String> getAllOnlineDroneIds() {
+        Set<String> onlineDrones = new HashSet<>();
+        try {
+            Set<String> keys = stringRedisTemplate.keys("drone:*:online");
+            if (keys != null) {
+                for (String key : keys) {
+                    // key format: drone:{uavId}:online
+                    String[] parts = key.split(":");
+                    if (parts.length >= 3) {
+                        onlineDrones.add(parts[1]);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Redis unavailable for getAllOnlineDroneIds(), returning empty set");
+        }
+        return onlineDrones;
+    }
+
     // ========== Drone Partition Mapping ==========
     
     /**

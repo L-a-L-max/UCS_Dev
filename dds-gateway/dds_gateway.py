@@ -487,6 +487,7 @@ class DDSGateway:
                 'command': int(command),
                 'result': int(result),
                 'timestamp': now,
+                'epoch': self._epoch_map.get(uav_id, 0),
             }
             self._ack_executor.submit(self._forward_command_ack, ack_payload)
         except Exception as e:
@@ -573,8 +574,13 @@ class DDSGateway:
             "params": "{}",
             "timestamp": "2024-01-01T00:00:00Z",
             "userId": 1,
-            "commandLogId": 123
+            "commandLogId": 123,
+            "epoch": 3
         }
+
+        Epoch validation: commands with epoch < current drone epoch are
+        discarded as stale (e.g. sent before drone restart but arriving after).
+        Timestamp validation: commands older than 60s are discarded.
         """
         if not self._kafka_enabled:
             logger.info("[KafkaCmd] Kafka not enabled, skipping command consumer")
@@ -612,8 +618,40 @@ class DDSGateway:
                                 else:
                                     params = params_raw
 
-                                logger.info("[KafkaCmd] Received: %s -> %s params=%s",
-                                            command_type, uav_id, params)
+                                # --- Epoch validation: discard stale commands ---
+                                msg_epoch = data.get('epoch', 0)
+                                current_epoch = self._epoch_map.get(uav_id, 0)
+                                if current_epoch > 0 and msg_epoch < current_epoch:
+                                    logger.warn(
+                                        "[KafkaCmd] Stale command discarded: %s -> %s "
+                                        "msgEpoch=%d < currentEpoch=%d",
+                                        command_type, uav_id, msg_epoch, current_epoch)
+                                    self._stats['kafka_commands_stale'] = \
+                                        self._stats.get('kafka_commands_stale', 0) + 1
+                                    continue
+
+                                # --- Timestamp validation: discard commands older than 60s ---
+                                ts_str = data.get('timestamp', '')
+                                if ts_str:
+                                    from datetime import datetime, timezone
+                                    try:
+                                        msg_time = datetime.fromisoformat(
+                                            ts_str.replace('Z', '+00:00'))
+                                        age_s = (datetime.now(timezone.utc)
+                                                 - msg_time).total_seconds()
+                                        if age_s > 60:
+                                            logger.warn(
+                                                "[KafkaCmd] Expired command discarded: "
+                                                "%s -> %s age=%.1fs",
+                                                command_type, uav_id, age_s)
+                                            self._stats['kafka_commands_expired'] = \
+                                                self._stats.get('kafka_commands_expired', 0) + 1
+                                            continue
+                                    except Exception:
+                                        pass  # If timestamp parsing fails, proceed anyway
+
+                                logger.info("[KafkaCmd] Received: %s -> %s epoch=%d params=%s",
+                                            command_type, uav_id, msg_epoch, params)
                                 result = self.handle_command(uav_id, command_type, params)
                                 logger.info("[KafkaCmd] Result: %s -> %s: %s",
                                             command_type, uav_id, result)
@@ -644,6 +682,56 @@ class DDSGateway:
             self._epoch_map[uav_id] += 1
             logger.info("[Epoch] Drone %s reconnected, epoch=%d", uav_id, self._epoch_map[uav_id])
         return self._epoch_map[uav_id]
+
+    def _start_epoch_maintenance(self):
+        """Start a background thread for periodic epoch maintenance.
+
+        Every 6 hours, scan the epoch map:
+          - Normalize: epoch > 10000 → reset to 1
+          - Evict: drones not seen for > 24 hours → remove from map
+
+        This prevents epoch values from growing unbounded over long runtimes.
+        """
+        EPOCH_SOFT_LIMIT = 10000
+        MAX_IDLE_SECONDS = 24 * 3600  # 24 hours
+        MAINTENANCE_INTERVAL = 6 * 3600  # 6 hours
+
+        def _maintenance_loop():
+            logger.info("[EpochMaint] Maintenance thread started (interval=%ds)", MAINTENANCE_INTERVAL)
+            while self.running:
+                time.sleep(MAINTENANCE_INTERVAL)
+                if not self.running:
+                    break
+                now = time.time()
+                normalized = 0
+                evicted = 0
+                uav_ids = list(self._epoch_map.keys())
+                for uav_id in uav_ids:
+                    state = self.drone_states.get(uav_id)
+                    idle_s = (now - state.last_update) if (state and state.last_update > 0) else float('inf')
+
+                    # Evict stale drones
+                    if idle_s > MAX_IDLE_SECONDS:
+                        self._epoch_map.pop(uav_id, None)
+                        evicted += 1
+                        continue
+
+                    # Normalize large epochs
+                    epoch = self._epoch_map.get(uav_id, 0)
+                    if epoch > EPOCH_SOFT_LIMIT:
+                        self._epoch_map[uav_id] = 1
+                        normalized += 1
+                        logger.info("[EpochMaint] Normalized drone %s epoch: %d -> 1", uav_id, epoch)
+
+                if normalized > 0 or evicted > 0:
+                    logger.info("[EpochMaint] Maintenance: normalized=%d, evicted=%d, remaining=%d",
+                                normalized, evicted, len(self._epoch_map))
+
+            logger.info("[EpochMaint] Maintenance thread stopped")
+
+        t = threading.Thread(target=_maintenance_loop, daemon=True, name='epoch-maintenance')
+        t.start()
+        logger.info("[EpochMaint] Maintenance thread launched")
 
     def send_to_kafka(self, payload: dict) -> bool:
         """Send telemetry to Kafka (per-drone messages with uav_id as key)."""
@@ -828,6 +916,9 @@ class DDSGateway:
 
         # Start Kafka command consumer (primary command path)
         self._start_kafka_command_consumer()
+
+        # Start epoch periodic maintenance (prevents unbounded epoch growth)
+        self._start_epoch_maintenance()
 
         logger.info("[Startup] Checking backend...")
         for attempt in range(3):
