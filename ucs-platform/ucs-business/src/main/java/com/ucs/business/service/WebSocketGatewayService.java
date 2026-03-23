@@ -44,7 +44,13 @@ public class WebSocketGatewayService {
     public void broadcastToPartitions(Map<String, List<Map<String, Object>>> partitionData, Instant timestamp) {
         for (Map.Entry<String, List<Map<String, Object>>> entry : partitionData.entrySet()) {
             String partitionName = entry.getKey();
-            List<Map<String, Object>> drones = entry.getValue();
+            List<Map<String, Object>> rawDrones = entry.getValue();
+
+            // Convert to frontend TelemetryData format
+            List<Map<String, Object>> drones = new ArrayList<>(rawDrones.size());
+            for (Map<String, Object> raw : rawDrones) {
+                drones.add(buildTelemetryDataMap(raw));
+            }
 
             String topic = "/topic/telemetry/partition/" + partitionName;
             Map<String, Object> message = new LinkedHashMap<>();
@@ -54,10 +60,12 @@ public class WebSocketGatewayService {
             messagingTemplate.convertAndSend(topic, message);
         }
 
-        log.info("[WebSocket] Broadcast to {} partition(s)", partitionData.size());
-        for (Map.Entry<String, List<Map<String, Object>>> entry2 : partitionData.entrySet()) {
-            log.info("[WebSocket]   -> /topic/telemetry/partition/{} ({} drone(s))",
-                    entry2.getKey(), entry2.getValue().size());
+        if (log.isDebugEnabled()) {
+            log.debug("[WebSocket] Broadcast to {} partition(s)", partitionData.size());
+            for (Map.Entry<String, List<Map<String, Object>>> entry2 : partitionData.entrySet()) {
+                log.debug("[WebSocket]   -> /topic/telemetry/partition/{} ({} drone(s))",
+                        entry2.getKey(), entry2.getValue().size());
+            }
         }
     }
 
@@ -120,27 +128,99 @@ public class WebSocketGatewayService {
                 offlineDroneIds.size(), reason);
     }
 
+    /** 消息序列号计数器 */
+    private long msgSeqCounter = 0;
+
     /**
-     * Broadcast all telemetry data to the global topic (for monitoring/persistence).
+     * Broadcast all telemetry data to the global topic.
+     * Sends TelemetryBatch format matching frontend interface:
+     *   { timestamp, msgSeqNumber, homeLat, homeLon, homeAlt,
+     *     numUavsTotal, numUavsActive, uavs: [TelemetryData...] }
      *
-     * @param allTelemetry List of all drone telemetry messages
+     * @param allTelemetry List of all drone telemetry messages (raw Map from Kafka)
      * @param timestamp    The telemetry timestamp
      */
     public void broadcastAll(List<Map<String, Object>> allTelemetry, Instant timestamp) {
-        // Send to /topic/telemetry/all
-        Map<String, Object> allDataMsg = new LinkedHashMap<>();
-        allDataMsg.put("timestamp", timestamp.toString());
-        allDataMsg.put("numDrones", allTelemetry.size());
-        allDataMsg.put("drones", allTelemetry);
-        messagingTemplate.convertAndSend("/topic/telemetry/all", allDataMsg);
+        // Convert raw Kafka payload maps to frontend TelemetryData format
+        List<Map<String, Object>> uavs = new ArrayList<>(allTelemetry.size());
+        for (Map<String, Object> raw : allTelemetry) {
+            uavs.add(buildTelemetryDataMap(raw));
+        }
 
-        // Send to legacy /topic/telemetry for backward compatibility
-        Map<String, Object> legacyBatch = new LinkedHashMap<>();
-        legacyBatch.put("timestamp", timestamp.toString());
-        legacyBatch.put("msgSeqNumber", System.currentTimeMillis() / 1000);
-        legacyBatch.put("numUavsTotal", allTelemetry.size());
-        legacyBatch.put("numUavsActive", allTelemetry.size());
-        legacyBatch.put("uavs", allTelemetry);
-        messagingTemplate.convertAndSend("/topic/telemetry", legacyBatch);
+        long activeCount = uavs.stream()
+                .filter(d -> Boolean.TRUE.equals(d.get("isActive")))
+                .count();
+
+        // Build TelemetryBatch matching frontend TelemetryBatch interface exactly
+        Map<String, Object> batch = new LinkedHashMap<>();
+        batch.put("timestamp", timestamp.toString());
+        batch.put("msgSeqNumber", ++msgSeqCounter);
+        batch.put("homeLat", 0.0);
+        batch.put("homeLon", 0.0);
+        batch.put("homeAlt", 0.0);
+        batch.put("numUavsTotal", uavs.size());
+        batch.put("numUavsActive", activeCount);
+        batch.put("uavs", uavs);
+
+        // Send to /topic/telemetry (frontend main subscription)
+        messagingTemplate.convertAndSend("/topic/telemetry", batch);
+
+        // Also send to /topic/telemetry/all (monitoring/persistence)
+        messagingTemplate.convertAndSend("/topic/telemetry/all", batch);
+    }
+
+    /**
+     * Convert raw Kafka payload Map to frontend TelemetryData format.
+     * Handles both field name differences and type coercion.
+     */
+    private Map<String, Object> buildTelemetryDataMap(Map<String, Object> raw) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        String uavId = String.valueOf(raw.getOrDefault("uavId", ""));
+        map.put("uavId", uavId);
+        map.put("uavName", raw.getOrDefault("uavName", uavId));
+
+        // Timestamp: convert epoch millis to ISO string
+        Object ts = raw.get("timestamp");
+        if (ts instanceof Number) {
+            map.put("timestamp", Instant.ofEpochMilli(((Number) ts).longValue()).toString());
+        } else if (ts instanceof String) {
+            map.put("timestamp", ts);
+        } else {
+            map.put("timestamp", Instant.now().toString());
+        }
+
+        map.put("lat", toDouble(raw.get("lat")));
+        map.put("lon", toDouble(raw.get("lon")));
+        map.put("alt", toDouble(raw.get("alt")));
+        map.put("heading", toDouble(raw.get("heading")));
+        map.put("groundSpeed", toDouble(raw.get("groundSpeed")));
+        map.put("verticalSpeed", toDouble(raw.get("verticalSpeed")));
+        map.put("nedX", toDouble(raw.get("nedX")));
+        map.put("nedY", toDouble(raw.get("nedY")));
+        map.put("nedZ", toDouble(raw.get("nedZ")));
+        map.put("vx", toDouble(raw.get("vx")));
+        map.put("vy", toDouble(raw.get("vy")));
+        map.put("vz", toDouble(raw.get("vz")));
+        map.put("dataAge", 0.0);
+        map.put("msgCount", 0);
+        map.put("isActive", true);
+        map.put("armed", toBool(raw.get("armed")));
+        map.put("flightMode", raw.getOrDefault("flightMode", ""));
+        map.put("batteryPercent", toDouble(raw.get("batteryPercent")));
+        return map;
+    }
+
+    private static double toDouble(Object val) {
+        if (val instanceof Number) return ((Number) val).doubleValue();
+        if (val instanceof String) {
+            try { return Double.parseDouble((String) val); } catch (Exception e) { return 0.0; }
+        }
+        return 0.0;
+    }
+
+    private static boolean toBool(Object val) {
+        if (val instanceof Boolean) return (Boolean) val;
+        if (val instanceof String) return "true".equalsIgnoreCase((String) val);
+        return false;
     }
 }

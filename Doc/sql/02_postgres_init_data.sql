@@ -52,34 +52,7 @@ INSERT INTO user_role_map (user_id, role_id, assigned_at) VALUES
 ((SELECT id FROM users WHERE username = 'qianqi' LIMIT 1),    (SELECT id FROM roles WHERE role_name = 'operator' LIMIT 1),  NOW()),
 ((SELECT id FROM users WHERE username = 'sunba' LIMIT 1),     (SELECT id FROM roles WHERE role_name = 'operator' LIMIT 1),  NOW());
 
--- ========== 6. Drones (PX4 SITL 仿真无人机，uav_id 对应 DDS Gateway 发现的 drone prefix) ==========
-INSERT INTO drones (drone_sn, uav_id, mavlink_system_id, model, manufacturer, default_team_id, online_status, created_at, updated_at) VALUES
-('SN-PX4-001', 'px4_1', 1, 'PX4 Quadrotor', 'PX4 Autopilot', (SELECT id FROM teams WHERE team_name = '巡检队伍' LIMIT 1), FALSE, NOW(), NOW()),
-('SN-PX4-002', 'px4_2', 2, 'PX4 Quadrotor', 'PX4 Autopilot', (SELECT id FROM teams WHERE team_name = '巡检队伍' LIMIT 1), FALSE, NOW(), NOW()),
-('SN-PX4-003', 'px4_3', 3, 'PX4 Quadrotor', 'PX4 Autopilot', (SELECT id FROM teams WHERE team_name = '应急队伍' LIMIT 1), FALSE, NOW(), NOW());
-
--- ========== 7. Drone Ownership (初始分配：px4_1/px4_2 → 巡检队长张三，px4_3 → 应急队长赵六) ==========
-INSERT INTO drone_ownership (drone_id, user_id, assigned_by, assigned_at) VALUES
-((SELECT id FROM drones WHERE uav_id = 'px4_1' LIMIT 1), (SELECT id FROM users WHERE username = 'zhangsan' LIMIT 1), (SELECT id FROM users WHERE username = 'commander' LIMIT 1), NOW()),
-((SELECT id FROM drones WHERE uav_id = 'px4_2' LIMIT 1), (SELECT id FROM users WHERE username = 'zhangsan' LIMIT 1), (SELECT id FROM users WHERE username = 'commander' LIMIT 1), NOW()),
-((SELECT id FROM drones WHERE uav_id = 'px4_3' LIMIT 1), (SELECT id FROM users WHERE username = 'zhaoliu' LIMIT 1), (SELECT id FROM users WHERE username = 'commander' LIMIT 1), NOW());
-
--- ========== 8. Team-Drone Mapping (无人机分配到队伍) ==========
-INSERT INTO team_drone_map (team_id, drone_id, assigned_at) VALUES
-((SELECT id FROM teams WHERE team_name = '巡检队伍' LIMIT 1), (SELECT id FROM drones WHERE uav_id = 'px4_1' LIMIT 1), NOW()),
-((SELECT id FROM teams WHERE team_name = '巡检队伍' LIMIT 1), (SELECT id FROM drones WHERE uav_id = 'px4_2' LIMIT 1), NOW()),
-((SELECT id FROM teams WHERE team_name = '应急队伍' LIMIT 1), (SELECT id FROM drones WHERE uav_id = 'px4_3' LIMIT 1), NOW());
-
--- ========== 9. Drone Partition Map (分区路由：Commander 看全部，各队长看自己队伍的无人机) ==========
-INSERT INTO drone_partition_map (drone_id, uav_id, partition_name, is_active, created_at, updated_at) VALUES
-((SELECT id FROM drones WHERE uav_id = 'px4_1' LIMIT 1), 'px4_1', 'commander', TRUE, NOW(), NOW()),
-((SELECT id FROM drones WHERE uav_id = 'px4_2' LIMIT 1), 'px4_2', 'commander', TRUE, NOW(), NOW()),
-((SELECT id FROM drones WHERE uav_id = 'px4_3' LIMIT 1), 'px4_3', 'commander', TRUE, NOW(), NOW()),
-((SELECT id FROM drones WHERE uav_id = 'px4_1' LIMIT 1), 'px4_1', 'zs_3',      TRUE, NOW(), NOW()),
-((SELECT id FROM drones WHERE uav_id = 'px4_2' LIMIT 1), 'px4_2', 'zs_3',      TRUE, NOW(), NOW()),
-((SELECT id FROM drones WHERE uav_id = 'px4_3' LIMIT 1), 'px4_3', 'zl_6',      TRUE, NOW(), NOW());
-
--- ========== 10. Team Members ==========
+-- ========== 6. Team Members ==========
 INSERT INTO team_members (team_id, user_id, team_role_id, joined_at) VALUES
 (
   (SELECT id FROM teams WHERE team_name = '巡检队伍' LIMIT 1),

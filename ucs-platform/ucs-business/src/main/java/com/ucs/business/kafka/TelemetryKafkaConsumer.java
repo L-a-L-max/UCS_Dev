@@ -2,8 +2,6 @@ package com.ucs.business.kafka;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ucs.business.entity.Drone;
-import com.ucs.business.repository.DroneRepository;
 import com.ucs.business.service.PartitionRoutingService;
 import com.ucs.business.service.RedisService;
 import com.ucs.business.service.TelemetryPersistenceService;
@@ -19,18 +17,19 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Kafka 遥测数据消费者。
+ * Kafka 遥测数据消费者（业务服务）。
  *
- * 消费 telemetry.raw topic 中的遥测消息，替代原先的 HTTP 同步调用链路。
- * 消息以 uav_id 为 Key，Kafka 保证同一架无人机的消息在同一个分区中有序。
+ * 消费 telemetry.processed topic（由 ucs-telemetry-ingest 校验/清洗后转发）。
+ * ucs-telemetry-ingest 已完成：Epoch校验、Redis状态更新、GeoHash索引。
+ * 本消费者职责：
+ *   1. 自动注册未知无人机（含分区映射）
+ *   2. 标记在线（冗余保证）
+ *   3. 持久化遥测数据到 uav_latest_state 表
+ *   4. 分区路由 + WebSocket 推送（TelemetryBatch 格式）
  *
- * 消费流程：
- *   1. 反序列化消息
- *   2. Epoch 校验 —— 丢弃过期代际的消息（防止僵尸数据）
- *   3. 时间戳校验 —— 丢弃超过 30 秒的过期消息
- *   4. 标记无人机在线（Redis heartbeat）
- *   5. 持久化遥测数据（TelemetryPersistenceService）
- *   6. 分区路由 + WebSocket 推送（WebSocketGatewayService）
+ * 数据链路：
+ *   telemetry.raw → [ingest: 校验/Redis/GeoHash] → telemetry.processed
+ *     → [本消费者: 自动注册/持久化/分区路由/WebSocket广播] → 前端
  */
 @Slf4j
 @Component
@@ -39,22 +38,17 @@ import java.util.concurrent.ConcurrentHashMap;
 public class TelemetryKafkaConsumer {
 
     private final ObjectMapper objectMapper;
-    private final EpochManager epochManager;
     private final PartitionRoutingService partitionRoutingService;
     private final TelemetryPersistenceService telemetryPersistenceService;
     private final WebSocketGatewayService webSocketGatewayService;
     private final RedisService redisService;
-    private final DroneRepository droneRepository;
-
-    /** 消息过期阈值（秒）：超过此时间的消息将被丢弃 */
-    private static final long MAX_MESSAGE_AGE_SECONDS = 30;
 
     /** 已知无人机缓存，避免每条消息都查库 */
     private final Set<String> knownDrones = ConcurrentHashMap.newKeySet();
 
     @KafkaListener(
-            topics = "${kafka.topic.telemetry-raw:telemetry.raw}",
-            groupId = "ucs-telemetry-consumer",
+            topics = "${kafka.topic.telemetry-processed:telemetry.processed}",
+            groupId = "ucs-business-telemetry",
             concurrency = "4"
     )
     public void consumeTelemetry(String message) {
@@ -67,67 +61,39 @@ public class TelemetryKafkaConsumer {
                 return;
             }
 
-            // --- Epoch 校验：丢弃过期代际的消息 ---
-            long msgEpoch = payload.containsKey("epoch")
-                    ? ((Number) payload.get("epoch")).longValue()
-                    : 0L;
-            if (!epochManager.validateEpoch(uavId, msgEpoch)) {
-                log.debug("[KafkaConsumer] Stale epoch for {}: msg={} current={}",
-                        uavId, msgEpoch, epochManager.getCurrentEpoch(uavId));
-                return;
-            }
-
-            // --- 时间戳校验：丢弃超过 30 秒的过期消息 ---
-            // Gateway sends epoch millis (long); legacy may send ISO string — handle both
+            // --- 解析时间戳（Ingest已校验，此处仅提取用于广播）---
             Object tsRaw = payload.get("timestamp");
             Instant msgTime = null;
             if (tsRaw instanceof Number) {
                 msgTime = Instant.ofEpochMilli(((Number) tsRaw).longValue());
             } else if (tsRaw instanceof String) {
-                try {
-                    msgTime = Instant.parse((String) tsRaw);
-                } catch (Exception ignored) {}
-            }
-            if (msgTime != null) {
-                long ageSeconds = Instant.now().getEpochSecond() - msgTime.getEpochSecond();
-                if (ageSeconds > MAX_MESSAGE_AGE_SECONDS) {
-                    log.debug("[KafkaConsumer] Expired message for {}: age={}s", uavId, ageSeconds);
-                    return;
-                }
+                try { msgTime = Instant.parse((String) tsRaw); } catch (Exception ignored) {}
             }
 
-            // --- 自动注册未知无人机到数据库 ---
+            // --- 自动注册未知无人机（含分区映射 observer+commander）---
             if (!knownDrones.contains(uavId)) {
                 try {
-                    Optional<Drone> existing = droneRepository.findByUavId(uavId);
-                    if (existing.isEmpty()) {
-                        Drone drone = new Drone();
-                        drone.setDroneSn("AUTO-" + uavId.toUpperCase());
-                        drone.setUavId(uavId);
-                        drone.setModel("PX4 Quadrotor");
-                        drone.setManufacturer("PX4 Autopilot");
-                        drone.setOnlineStatus(true);
-                        droneRepository.save(drone);
-                        log.info("[KafkaConsumer] Auto-registered new drone: {}", uavId);
-                    }
+                    // getPartitionsForDrone 内部会检查DB，如果不存在则自动创建drone+分区映射
+                    partitionRoutingService.getPartitionsForDrone(uavId);
                     knownDrones.add(uavId);
+                    log.info("[BusinessConsumer] Drone '{}' registered/confirmed with partitions", uavId);
                 } catch (Exception regEx) {
-                    log.warn("[KafkaConsumer] Drone auto-registration failed for {}: {}", uavId, regEx.getMessage());
+                    log.warn("[BusinessConsumer] Drone registration failed for {}: {}", uavId, regEx.getMessage());
                 }
             }
 
-            // --- 标记在线（Redis不可用不影响后续流程）---
+            // --- 标记在线（冗余保证，Ingest已做但TTL可能过期）---
             try {
                 redisService.setDroneOnline(uavId);
             } catch (Exception redisEx) {
-                log.warn("[KafkaConsumer] Redis setDroneOnline failed for {}: {}", uavId, redisEx.getMessage());
+                log.debug("[BusinessConsumer] Redis setDroneOnline failed for {}: {}", uavId, redisEx.getMessage());
             }
 
-            // --- 持久化（独立try-catch，不影响WebSocket推送）---
+            // --- 持久化到 uav_latest_state 表 ---
             try {
                 telemetryPersistenceService.persistFromMap(payload);
             } catch (Exception persistEx) {
-                log.error("[KafkaConsumer] Persistence failed for {}: {}", uavId, persistEx.getMessage());
+                log.error("[BusinessConsumer] Persistence failed for {}: {}", uavId, persistEx.getMessage());
             }
 
             // --- 分区路由 + WebSocket 推送 ---
@@ -140,18 +106,18 @@ public class TelemetryKafkaConsumer {
                 }
                 webSocketGatewayService.broadcastToPartitions(partitionData, timestamp);
             } catch (Exception routeEx) {
-                log.warn("[KafkaConsumer] Partition routing failed for {}: {}", uavId, routeEx.getMessage());
+                log.warn("[BusinessConsumer] Partition routing failed for {}: {}", uavId, routeEx.getMessage());
             }
 
-            // --- 全局广播（独立于分区路由，始终执行）---
+            // --- 全局广播（TelemetryBatch格式，独立于分区路由，始终执行）---
             try {
                 webSocketGatewayService.broadcastAll(List.of(payload), timestamp);
             } catch (Exception wsEx) {
-                log.warn("[KafkaConsumer] WebSocket broadcastAll failed: {}", wsEx.getMessage());
+                log.warn("[BusinessConsumer] WebSocket broadcastAll failed: {}", wsEx.getMessage());
             }
 
         } catch (Exception e) {
-            log.error("[KafkaConsumer] Failed to process telemetry message: {}", e.getMessage(), e);
+            log.error("[BusinessConsumer] Failed to process telemetry message: {}", e.getMessage(), e);
         }
     }
 }

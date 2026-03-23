@@ -52,32 +52,49 @@ public class TelemetryPersistenceService {
     }
 
     /**
-     * Accept telemetry data from a map structure.
+     * Accept telemetry data from a map structure (Kafka deserialized payload).
+     * Uses safe type conversion — Jackson may deserialize numbers as Integer, Long, Double, or String.
      */
     public void persistFromMap(Map<String, Object> telemetryMsg) {
         TelemetryRecord record = new TelemetryRecord();
         record.uavId = String.valueOf(telemetryMsg.get("uavId"));
-        record.lat = ((Number) telemetryMsg.getOrDefault("lat", 0.0)).doubleValue();
-        record.lon = ((Number) telemetryMsg.getOrDefault("lon", 0.0)).doubleValue();
-        record.alt = ((Number) telemetryMsg.getOrDefault("alt", 0.0)).doubleValue();
-        record.heading = ((Number) telemetryMsg.getOrDefault("heading", 0.0)).doubleValue();
-        record.groundSpeed = ((Number) telemetryMsg.getOrDefault("groundSpeed", 0.0)).doubleValue();
-        record.verticalSpeed = ((Number) telemetryMsg.getOrDefault("verticalSpeed", 0.0)).doubleValue();
+        record.lat = safeDouble(telemetryMsg.get("lat"));
+        record.lon = safeDouble(telemetryMsg.get("lon"));
+        record.alt = safeDouble(telemetryMsg.get("alt"));
+        record.heading = safeDouble(telemetryMsg.get("heading"));
+        record.groundSpeed = safeDouble(telemetryMsg.get("groundSpeed"));
+        record.verticalSpeed = safeDouble(telemetryMsg.get("verticalSpeed"));
         // NED local coordinates
-        record.nedX = ((Number) telemetryMsg.getOrDefault("nedX", 0.0)).doubleValue();
-        record.nedY = ((Number) telemetryMsg.getOrDefault("nedY", 0.0)).doubleValue();
-        record.nedZ = ((Number) telemetryMsg.getOrDefault("nedZ", 0.0)).doubleValue();
+        record.nedX = safeDouble(telemetryMsg.get("nedX"));
+        record.nedY = safeDouble(telemetryMsg.get("nedY"));
+        record.nedZ = safeDouble(telemetryMsg.get("nedZ"));
         // NED velocity
-        record.vx = ((Number) telemetryMsg.getOrDefault("vx", 0.0)).doubleValue();
-        record.vy = ((Number) telemetryMsg.getOrDefault("vy", 0.0)).doubleValue();
-        record.vz = ((Number) telemetryMsg.getOrDefault("vz", 0.0)).doubleValue();
+        record.vx = safeDouble(telemetryMsg.get("vx"));
+        record.vy = safeDouble(telemetryMsg.get("vy"));
+        record.vz = safeDouble(telemetryMsg.get("vz"));
         // Flight status
-        record.armed = telemetryMsg.get("armed") instanceof Boolean ? (Boolean) telemetryMsg.get("armed") : false;
+        record.armed = safeBool(telemetryMsg.get("armed"));
         record.flightMode = telemetryMsg.get("flightMode") != null ? String.valueOf(telemetryMsg.get("flightMode")) : "";
-        Object bp = telemetryMsg.get("batteryPercent");
-        record.batteryPercent = bp instanceof Number ? ((Number) bp).floatValue() : -1f;
+        record.batteryPercent = (float) safeDouble(telemetryMsg.get("batteryPercent"));
+        if (record.batteryPercent == 0f && telemetryMsg.get("batteryPercent") == null) {
+            record.batteryPercent = -1f;
+        }
         record.timestamp = Instant.now();
         buffer.add(record);
+    }
+
+    private static double safeDouble(Object val) {
+        if (val instanceof Number) return ((Number) val).doubleValue();
+        if (val instanceof String) {
+            try { return Double.parseDouble((String) val); } catch (Exception e) { return 0.0; }
+        }
+        return 0.0;
+    }
+
+    private static boolean safeBool(Object val) {
+        if (val instanceof Boolean) return (Boolean) val;
+        if (val instanceof String) return "true".equalsIgnoreCase((String) val);
+        return false;
     }
 
     /**
