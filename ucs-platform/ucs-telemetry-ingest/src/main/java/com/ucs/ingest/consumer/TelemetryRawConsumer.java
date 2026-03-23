@@ -40,16 +40,33 @@ public class TelemetryRawConsumer {
             concurrency = "16"
     )
     public void consume(ConsumerRecord<String, String> record) {
+        String rawValue = record.value();
+        TelemetryMessage msg;
         try {
-            TelemetryMessage msg = JsonUtil.parse(record.value(), TelemetryMessage.class);
-            String uavId = msg.getUavId();
+            msg = JsonUtil.parse(rawValue, TelemetryMessage.class);
+        } catch (Exception e) {
+            log.error("[Ingest] JSON parse failed, raw={}: {}", rawValue, e.getMessage(), e);
+            return;
+        }
 
-            // 1. Epoch validation — discard stale messages
+        String uavId = msg.getUavId();
+        if (uavId == null || uavId.isEmpty()) {
+            log.warn("[Ingest] Skipping message with null/empty uavId");
+            return;
+        }
+
+        // 1. Epoch validation — discard stale messages
+        try {
             if (!epochService.validate(uavId, msg.getEpoch())) {
                 return;
             }
+        } catch (Exception e) {
+            log.warn("[Ingest] Epoch validation error for {}: {}", uavId, e.getMessage());
+            // Continue — don't block forward on epoch errors
+        }
 
-            // 2. Update Redis drone state (Hash structure)
+        // 2. Update Redis drone state (each step independent — Redis failure must NOT block forward)
+        try {
             Map<String, String> stateMap = new HashMap<>();
             stateMap.put("lat", String.valueOf(msg.getLat()));
             stateMap.put("lon", String.valueOf(msg.getLon()));
@@ -61,23 +78,28 @@ public class TelemetryRawConsumer {
             stateMap.put("flightMode", msg.getFlightMode() != null ? msg.getFlightMode() : "UNKNOWN");
             stateMap.put("epoch", String.valueOf(msg.getEpoch()));
             stateMap.put("timestamp", String.valueOf(msg.getTimestamp()));
-
             redisService.updateDroneState(uavId, stateMap);
             redisService.setDroneOnline(uavId);
+        } catch (Exception e) {
+            log.warn("[Ingest] Redis update failed for {}: {}", uavId, e.getMessage());
+        }
 
-            // 3. Update GeoHash spatial index (Phase 4.5)
+        // 3. Update GeoHash spatial index
+        try {
             if (msg.getLat() != 0.0 || msg.getLon() != 0.0) {
                 geoService.updateDronePosition(uavId, msg.getLat(), msg.getLon());
             }
-
-            // 4. Forward validated/cleaned message to telemetry.processed
-            //    Downstream services (push, store) consume from this topic.
-            kafkaTemplate.send(KafkaTopicConstants.TELEMETRY_PROCESSED, uavId, record.value());
-
-            log.trace("[Ingest] Processed telemetry: uavId={}, epoch={}", uavId, msg.getEpoch());
-
         } catch (Exception e) {
-            log.error("[Ingest] Failed to process telemetry record: {}", e.getMessage());
+            log.warn("[Ingest] GeoHash update failed for {}: {}", uavId, e.getMessage());
+        }
+
+        // 4. CRITICAL: Forward to telemetry.processed — this MUST succeed even if steps 2/3 fail
+        try {
+            kafkaTemplate.send(KafkaTopicConstants.TELEMETRY_PROCESSED, uavId, rawValue);
+            log.debug("[Ingest] Forwarded telemetry: uavId={}, epoch={}", uavId, msg.getEpoch());
+        } catch (Exception e) {
+            log.error("[Ingest] CRITICAL: Failed to forward to telemetry.processed for {}: {}",
+                    uavId, e.getMessage(), e);
         }
     }
 }

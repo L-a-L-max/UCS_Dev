@@ -34,6 +34,7 @@ kafka:
   enabled: ${KAFKA_ENABLED:true}
   topic:
     telemetry-raw: telemetry.raw
+    telemetry-processed: telemetry.processed
     events-drone: events.drone
     commands-down: commands.down
     commands-ack: commands.ack

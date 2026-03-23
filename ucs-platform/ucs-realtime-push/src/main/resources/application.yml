@@ -10,6 +10,9 @@ spring:
       auto-offset-reset: latest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      max-poll-records: 500
+    listener:
+      type: batch
   data:
     redis:
       host: ${REDIS_HOST:localhost}

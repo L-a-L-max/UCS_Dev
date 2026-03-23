@@ -27,6 +27,9 @@ public class KafkaConfig {
     @Value("${kafka.topic.telemetry-raw:telemetry.raw}")
     private String telemetryRawTopic;
 
+    @Value("${kafka.topic.telemetry-processed:telemetry.processed}")
+    private String telemetryProcessedTopic;
+
     @Value("${kafka.topic.events-drone:events.drone}")
     private String eventsDroneTopic;
 
@@ -39,6 +42,14 @@ public class KafkaConfig {
     @Bean
     public NewTopic telemetryRawTopic() {
         return TopicBuilder.name(telemetryRawTopic)
+                .partitions(16)
+                .replicas(1)
+                .build();
+    }
+
+    @Bean
+    public NewTopic telemetryProcessedTopic() {
+        return TopicBuilder.name(telemetryProcessedTopic)
                 .partitions(16)
                 .replicas(1)
                 .build();
