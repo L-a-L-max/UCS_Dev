@@ -2,6 +2,8 @@ package com.ucs.business.kafka;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ucs.business.entity.Drone;
+import com.ucs.business.repository.DroneRepository;
 import com.ucs.business.service.PartitionRoutingService;
 import com.ucs.business.service.RedisService;
 import com.ucs.business.service.TelemetryPersistenceService;
@@ -14,6 +16,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Kafka 遥测数据消费者。
@@ -41,9 +44,13 @@ public class TelemetryKafkaConsumer {
     private final TelemetryPersistenceService telemetryPersistenceService;
     private final WebSocketGatewayService webSocketGatewayService;
     private final RedisService redisService;
+    private final DroneRepository droneRepository;
 
     /** 消息过期阈值（秒）：超过此时间的消息将被丢弃 */
     private static final long MAX_MESSAGE_AGE_SECONDS = 30;
+
+    /** 已知无人机缓存，避免每条消息都查库 */
+    private final Set<String> knownDrones = ConcurrentHashMap.newKeySet();
 
     @KafkaListener(
             topics = "${kafka.topic.telemetry-raw:telemetry.raw}",
@@ -86,6 +93,26 @@ public class TelemetryKafkaConsumer {
                 if (ageSeconds > MAX_MESSAGE_AGE_SECONDS) {
                     log.debug("[KafkaConsumer] Expired message for {}: age={}s", uavId, ageSeconds);
                     return;
+                }
+            }
+
+            // --- 自动注册未知无人机到数据库 ---
+            if (!knownDrones.contains(uavId)) {
+                try {
+                    Optional<Drone> existing = droneRepository.findByUavId(uavId);
+                    if (existing.isEmpty()) {
+                        Drone drone = new Drone();
+                        drone.setDroneSn("AUTO-" + uavId.toUpperCase());
+                        drone.setUavId(uavId);
+                        drone.setModel("PX4 Quadrotor");
+                        drone.setManufacturer("PX4 Autopilot");
+                        drone.setOnlineStatus(true);
+                        droneRepository.save(drone);
+                        log.info("[KafkaConsumer] Auto-registered new drone: {}", uavId);
+                    }
+                    knownDrones.add(uavId);
+                } catch (Exception regEx) {
+                    log.warn("[KafkaConsumer] Drone auto-registration failed for {}: {}", uavId, regEx.getMessage());
                 }
             }
 
