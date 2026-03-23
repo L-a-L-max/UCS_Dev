@@ -1,0 +1,31 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: ucs-telemetry-store
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      auto-offset-reset: latest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      max-poll-records: 500
+      fetch-min-size: 65536   # 64KB min batch fetch
+      fetch-max-wait: 500     # 500ms max wait
+    listener:
+      type: batch
+  datasource:
+    url: jdbc:postgresql://${TIMESCALEDB_HOST:localhost}:${TIMESCALEDB_PORT:5432}/${TIMESCALEDB_DB:ucs_telemetry}
+    username: ${TIMESCALEDB_USER:ucs}
+    password: ${TIMESCALEDB_PASS:ucs_password}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics

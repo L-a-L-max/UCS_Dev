@@ -1,0 +1,55 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ucs-api-gateway
+  cloud:
+    gateway:
+      routes:
+        # ---- 无人机状态服务 ----
+        - id: drone-state
+          uri: ${DRONE_STATE_URI:http://localhost:8085}
+          predicates:
+            - Path=/api/v1/drones/**
+
+        # ---- 指令下发服务 ----
+        - id: command
+          uri: ${COMMAND_URI:http://localhost:8084}
+          predicates:
+            - Path=/api/v1/commands/**
+
+        # ---- 业务管理服务 ----
+        - id: business-users
+          uri: ${BUSINESS_URI:http://localhost:8086}
+          predicates:
+            - Path=/api/v1/users/**,/api/v1/auth/**,/api/v1/teams/**,/api/v1/events/**,/api/v1/tasks/**,/api/v1/rally-points/**
+
+        # ---- 实时推送服务 (WebSocket) ----
+        - id: realtime-push-ws
+          uri: ${PUSH_WS_URI:ws://localhost:8083}
+          predicates:
+            - Path=/ws/**
+
+        # ---- 遥测存储服务 (历史查询) ----
+        - id: telemetry-store
+          uri: ${STORE_URI:http://localhost:8082}
+          predicates:
+            - Path=/api/v1/telemetry/**
+
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+jwt:
+  secret: ${JWT_SECRET:change-me-in-production}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,gateway
