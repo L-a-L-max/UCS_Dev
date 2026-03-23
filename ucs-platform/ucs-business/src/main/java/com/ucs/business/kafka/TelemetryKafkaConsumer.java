@@ -16,7 +16,6 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Kafka 遥测数据消费者（业务服务）。
@@ -59,15 +58,9 @@ public class TelemetryKafkaConsumer {
     /**
      * 全量无人机快照：保留所有已知在线无人机的最新数据。
      * 与 latestPayloads（增量缓冲区）不同，此 Map 不会被清空，
-     * 确保每次广播都包含所有无人机（即使某架无人机在该周期内没有新数据）。
+     * 确保每次分区广播都包含所有无人机（即使某架无人机在该周期内没有新数据）。
      */
     private final ConcurrentHashMap<String, Map<String, Object>> allDroneSnapshot = new ConcurrentHashMap<>();
-
-    /** 全局广播节流：上次全局广播时间戳 */
-    private final AtomicLong lastGlobalBroadcastMs = new AtomicLong(0);
-
-    /** 全局广播间隔（毫秒）：降低 /topic/telemetry 频率，减少不必要的前端 re-render */
-    private static final long GLOBAL_BROADCAST_INTERVAL_MS = 3000;
 
     @KafkaListener(
             topics = "${kafka.topic.telemetry-processed:telemetry.processed}",
@@ -131,34 +124,36 @@ public class TelemetryKafkaConsumer {
     }
 
     /**
-     * 定时刷新聚合缓冲区，统一广播遥测数据。
+     * 定时刷新聚合缓冲区，统一广播遥测数据到分区 topic。
      *
-     * 分区广播（/topic/telemetry/partition/{name}）：每 500ms，只发送本周期有新数据的无人机。
-     * 全局广播（/topic/telemetry）：每 3 秒，发送全量无人机快照。
+     * 每 500ms 执行，将全量无人机快照广播到各分区 topic。
      *
-     * 分离两种广播频率的原因：
-     *   - 前端 useTelemetryWebSocket hook 订阅 /topic/telemetry 后会触发 setLastBatch
-     *     状态更新，即使 Commander 不使用该数据也会导致 React re-render。
-     *   - 分区广播是 Commander/Leader 的主要数据源，保持 500ms 实时性。
-     *   - 全局广播降频到 3s，减少不必要的 re-render，消除界面闪烁。
+     * 关键设计（参考 DDSTest 分支渲染逻辑）：
+     *   1. 只广播到分区 topic（/topic/telemetry/partition/{name}），
+     *      不再广播到全局 /topic/telemetry。
+     *      原因：前端 useTelemetryWebSocket hook 总是订阅 /topic/telemetry，
+     *      每次收到消息都触发 setLastBatch() → React state 变更 → CommanderView re-render → 界面闪烁。
+     *      Commander/Leader 使用分区 topic 作为主数据源，Observer 在 App.tsx 中单独处理。
+     *   2. 每次广播发送全量快照（allDroneSnapshot），而非仅增量数据。
+     *      前端 handlePartitionData 通过 Map merge 合并数据，全量快照确保每架无人机都在。
+     *      与 DDSTest 的 DDSGatewayController 行为一致：每次 HTTP 批次包含所有无人机。
      */
     @Scheduled(fixedRate = 500)
     public void flushTelemetryBroadcast() {
-        if (latestPayloads.isEmpty()) {
+        if (allDroneSnapshot.isEmpty()) {
             return;
         }
 
-        // 取出本周期增量数据并清空缓冲区
-        Map<String, Map<String, Object>> snapshot = new HashMap<>(latestPayloads);
+        // 消费增量缓冲区（避免无限增长），实际广播使用全量快照
         latestPayloads.clear();
 
         Instant now = Instant.now();
 
-        // --- 分区路由 + WebSocket 推送（500ms 增量，仅本周期有新数据的无人机）---
+        // --- 全量分区路由 + WebSocket 推送 ---
+        // 使用 allDroneSnapshot（全量），确保每个分区每次广播都包含其所有无人机
         try {
-            List<Map<String, Object>> incrementalPayloads = new ArrayList<>(snapshot.values());
             Map<String, List<Map<String, Object>>> partitionData = new LinkedHashMap<>();
-            for (Map<String, Object> payload : incrementalPayloads) {
+            for (Map<String, Object> payload : allDroneSnapshot.values()) {
                 String uavId = String.valueOf(payload.get("uavId"));
                 Set<String> partitions = partitionRoutingService.getPartitionsForDrone(uavId);
                 for (String partition : partitions) {
@@ -170,18 +165,6 @@ public class TelemetryKafkaConsumer {
             log.warn("[BusinessConsumer] Partition routing failed: {}", routeEx.getMessage());
         }
 
-        // --- 全局广播（3s 全量快照，降频减少前端 re-render）---
-        long nowMs = now.toEpochMilli();
-        if (nowMs - lastGlobalBroadcastMs.get() >= GLOBAL_BROADCAST_INTERVAL_MS) {
-            lastGlobalBroadcastMs.set(nowMs);
-            try {
-                List<Map<String, Object>> allPayloads = new ArrayList<>(allDroneSnapshot.values());
-                if (!allPayloads.isEmpty()) {
-                    webSocketGatewayService.broadcastAll(allPayloads, now);
-                }
-            } catch (Exception wsEx) {
-                log.warn("[BusinessConsumer] WebSocket broadcastAll failed: {}", wsEx.getMessage());
-            }
-        }
+        // 注意：不再广播到 /topic/telemetry，避免触发前端 setLastBatch re-render
     }
 }

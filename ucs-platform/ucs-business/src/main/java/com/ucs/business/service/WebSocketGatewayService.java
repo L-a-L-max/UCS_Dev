@@ -203,8 +203,14 @@ public class WebSocketGatewayService {
         map.put("vz", toDouble(raw.get("vz")));
         map.put("dataAge", 0.0);
         map.put("msgCount", 0);
-        map.put("isActive", true);
-        map.put("armed", toBool(raw.get("armed")));
+        // isActive 必须与 armed 一致（参考 DDSTest DDSGatewayController 行为）
+        // DDSTest: droneData.put("isActive", armed != null && Boolean.TRUE.equals(armed))
+        // 如果 isActive 硬编码为 true，前端 handlePartitionData 中
+        //   armed: uav.armed ?? uav.isActive ?? false
+        // 会在 armed=false 时回退到 isActive=true → 显示为 armed → 状态闪烁
+        boolean armedVal = toBool(raw.get("armed"));
+        map.put("isActive", armedVal);
+        map.put("armed", armedVal);
         map.put("flightMode", raw.getOrDefault("flightMode", ""));
         map.put("batteryPercent", toDouble(raw.get("batteryPercent")));
         return map;
