@@ -27,6 +27,15 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_NUM_PARTITIONS: 16
       KAFKA_LOG_RETENTION_HOURS: 168
+      # ---- 单节点必须设置 replication-factor=1 ----
+      # 默认值为3，单broker无法满足，导致 __consumer_offsets 等内部topic创建失败
+      # 消费者组协调器依赖 __consumer_offsets，创建失败 → 消费者永远挂起
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # ---- 数据目录与卷挂载对齐 ----
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
     volumes:
       - kafka-data:/var/lib/kafka/data
     networks:
