@@ -40,6 +40,7 @@ public class CommanderController {
     private final UserRoleMapRepository userRoleMapRepository;
     private final TeamRoleRepository teamRoleRepository;
     private final TeamServiceImpl teamService;
+    private final UavLatestStateRepository uavLatestStateRepository;
     
     public CommanderController(PermissionService permissionService,
                                 RedisService redisService,
@@ -51,7 +52,8 @@ public class CommanderController {
                                 UserRepository userRepository,
                                 UserRoleMapRepository userRoleMapRepository,
                                 TeamRoleRepository teamRoleRepository,
-                                TeamServiceImpl teamService) {
+                                TeamServiceImpl teamService,
+                                UavLatestStateRepository uavLatestStateRepository) {
         this.permissionService = permissionService;
         this.redisService = redisService;
         this.droneRepository = droneRepository;
@@ -63,6 +65,7 @@ public class CommanderController {
         this.userRoleMapRepository = userRoleMapRepository;
         this.teamRoleRepository = teamRoleRepository;
         this.teamService = teamService;
+        this.uavLatestStateRepository = uavLatestStateRepository;
     }
     
     /**
@@ -117,6 +120,13 @@ public class CommanderController {
     public ApiResponse<Map<String, Object>> getFleetOverview() {
         List<Drone> allDrones = droneRepository.findAll();
         
+        // Build uavId -> UavLatestState map for telemetry data
+        List<UavLatestState> latestStates = uavLatestStateRepository.findAllByOrderByUavIdAsc();
+        Map<String, UavLatestState> stateMap = new HashMap<>();
+        for (UavLatestState state : latestStates) {
+            stateMap.put(state.getUavId(), state);
+        }
+        
         long totalDrones = allDrones.size();
         long onlineDrones = allDrones.stream()
                 .filter(d -> d.getUavId() != null && redisService.isDroneOnline(d.getUavId()))
@@ -166,6 +176,26 @@ public class CommanderController {
                     info.put("model", drone.getModel() != null ? drone.getModel() : "");
                     info.put("onlineStatus", online);
                     info.put("controllerId", controllerId != null ? controllerId : -1);
+                    
+                    // Add telemetry data from uav_latest_state (populated by Kafka consumer)
+                    UavLatestState telemetry = drone.getUavId() != null ? stateMap.get(drone.getUavId()) : null;
+                    if (telemetry != null) {
+                        info.put("lat", telemetry.getLat() != null ? telemetry.getLat() : 0.0);
+                        info.put("lng", telemetry.getLon() != null ? telemetry.getLon() : 0.0);
+                        info.put("altitude", telemetry.getAlt() != null ? telemetry.getAlt() : 0.0);
+                        info.put("heading", telemetry.getHeading() != null ? telemetry.getHeading() : 0f);
+                        info.put("flightStatus", Boolean.TRUE.equals(telemetry.getIsActive()) ? "FLYING" : "IDLE");
+                        info.put("battery", -1); // No battery data in uav_latest_state yet
+                        info.put("lastHeartbeat", telemetry.getLastUpdate() != null ? telemetry.getLastUpdate().toString() : "");
+                    } else {
+                        info.put("lat", 0.0);
+                        info.put("lng", 0.0);
+                        info.put("altitude", 0.0);
+                        info.put("heading", 0f);
+                        info.put("flightStatus", "OFFLINE");
+                        info.put("battery", -1);
+                        info.put("lastHeartbeat", "");
+                    }
                     
                     // Add team info
                     String teamName = droneTeamMap.getOrDefault(drone.getId(), "未分配队伍");

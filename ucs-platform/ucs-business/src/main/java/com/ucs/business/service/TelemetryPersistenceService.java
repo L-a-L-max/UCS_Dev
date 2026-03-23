@@ -63,6 +63,19 @@ public class TelemetryPersistenceService {
         record.heading = ((Number) telemetryMsg.getOrDefault("heading", 0.0)).doubleValue();
         record.groundSpeed = ((Number) telemetryMsg.getOrDefault("groundSpeed", 0.0)).doubleValue();
         record.verticalSpeed = ((Number) telemetryMsg.getOrDefault("verticalSpeed", 0.0)).doubleValue();
+        // NED local coordinates
+        record.nedX = ((Number) telemetryMsg.getOrDefault("nedX", 0.0)).doubleValue();
+        record.nedY = ((Number) telemetryMsg.getOrDefault("nedY", 0.0)).doubleValue();
+        record.nedZ = ((Number) telemetryMsg.getOrDefault("nedZ", 0.0)).doubleValue();
+        // NED velocity
+        record.vx = ((Number) telemetryMsg.getOrDefault("vx", 0.0)).doubleValue();
+        record.vy = ((Number) telemetryMsg.getOrDefault("vy", 0.0)).doubleValue();
+        record.vz = ((Number) telemetryMsg.getOrDefault("vz", 0.0)).doubleValue();
+        // Flight status
+        record.armed = telemetryMsg.get("armed") instanceof Boolean ? (Boolean) telemetryMsg.get("armed") : false;
+        record.flightMode = telemetryMsg.get("flightMode") != null ? String.valueOf(telemetryMsg.get("flightMode")) : "";
+        Object bp = telemetryMsg.get("batteryPercent");
+        record.batteryPercent = bp instanceof Number ? ((Number) bp).floatValue() : -1f;
         record.timestamp = Instant.now();
         buffer.add(record);
     }
@@ -112,7 +125,16 @@ public class TelemetryPersistenceService {
             state.setHeading((float) r.heading);
             state.setGroundSpeed((float) r.groundSpeed);
             state.setVerticalSpeed((float) r.verticalSpeed);
+            state.setNedX(r.nedX);
+            state.setNedY(r.nedY);
+            state.setNedZ(r.nedZ);
+            state.setVx(r.vx);
+            state.setVy(r.vy);
+            state.setVz(r.vz);
             state.setIsActive(true);
+            state.setArmed(r.armed);
+            state.setFlightMode(r.flightMode);
+            state.setBatteryPercent(r.batteryPercent);
             latestStates.add(state);
         }
 
@@ -144,6 +166,15 @@ public class TelemetryPersistenceService {
         double heading;
         double groundSpeed;
         double verticalSpeed;
+        double nedX;
+        double nedY;
+        double nedZ;
+        double vx;
+        double vy;
+        double vz;
+        boolean armed;
+        String flightMode;
+        float batteryPercent;
         Instant timestamp;
     }
 }

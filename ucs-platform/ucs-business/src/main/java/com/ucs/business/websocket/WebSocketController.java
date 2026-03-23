@@ -71,12 +71,24 @@ public class WebSocketController {
                     .map(this::stateToMap)
                     .collect(Collectors.toList());
 
-            Map<String, Object> message = new LinkedHashMap<>();
-            message.put("timestamp", java.time.Instant.now().toString());
-            message.put("numDrones", drones.size());
-            message.put("drones", drones);
+            // Send to /topic/telemetry (legacy format matching TelemetryBatch interface)
+            Map<String, Object> legacyBatch = new LinkedHashMap<>();
+            legacyBatch.put("timestamp", java.time.Instant.now().toString());
+            legacyBatch.put("msgSeqNumber", System.currentTimeMillis() / 1000);
+            legacyBatch.put("homeLat", 0.0);
+            legacyBatch.put("homeLon", 0.0);
+            legacyBatch.put("homeAlt", 0.0);
+            legacyBatch.put("numUavsTotal", drones.size());
+            legacyBatch.put("numUavsActive", drones.size());
+            legacyBatch.put("uavs", drones);
+            messagingTemplate.convertAndSend("/topic/telemetry", legacyBatch);
 
-            messagingTemplate.convertAndSend("/topic/drones", message);
+            // Also send to /topic/drones for backward compatibility
+            Map<String, Object> dronesMsg = new LinkedHashMap<>();
+            dronesMsg.put("timestamp", java.time.Instant.now().toString());
+            dronesMsg.put("numDrones", drones.size());
+            dronesMsg.put("drones", drones);
+            messagingTemplate.convertAndSend("/topic/drones", dronesMsg);
         } catch (Exception e) {
             log.debug("[WebSocket] broadcastDroneStatus failed: {}", e.getMessage());
         }
@@ -127,14 +139,26 @@ public class WebSocketController {
     private Map<String, Object> stateToMap(UavLatestState state) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("uavId", state.getUavId());
+        map.put("uavName", state.getUavId()); // Use uavId as name if no separate name field
+        map.put("timestamp", state.getLastUpdate() != null ? state.getLastUpdate().toString() : "");
         map.put("lat", state.getLat() != null ? state.getLat() : 0.0);
         map.put("lon", state.getLon() != null ? state.getLon() : 0.0);
         map.put("alt", state.getAlt() != null ? state.getAlt() : 0.0);
         map.put("heading", state.getHeading() != null ? state.getHeading() : 0f);
         map.put("groundSpeed", state.getGroundSpeed() != null ? state.getGroundSpeed() : 0f);
         map.put("verticalSpeed", state.getVerticalSpeed() != null ? state.getVerticalSpeed() : 0f);
+        map.put("nedX", state.getNedX() != null ? state.getNedX() : 0.0);
+        map.put("nedY", state.getNedY() != null ? state.getNedY() : 0.0);
+        map.put("nedZ", state.getNedZ() != null ? state.getNedZ() : 0.0);
+        map.put("vx", state.getVx() != null ? state.getVx() : 0.0);
+        map.put("vy", state.getVy() != null ? state.getVy() : 0.0);
+        map.put("vz", state.getVz() != null ? state.getVz() : 0.0);
+        map.put("dataAge", state.getDataAge() != null ? state.getDataAge() : 0.0);
+        map.put("msgCount", state.getMsgCount() != null ? state.getMsgCount() : 0L);
         map.put("isActive", Boolean.TRUE.equals(state.getIsActive()));
-        map.put("lastUpdate", state.getLastUpdate() != null ? state.getLastUpdate().toString() : "");
+        map.put("armed", Boolean.TRUE.equals(state.getArmed()));
+        map.put("flightMode", state.getFlightMode() != null ? state.getFlightMode() : "");
+        map.put("batteryPercent", state.getBatteryPercent() != null ? state.getBatteryPercent() : -1f);
         return map;
     }
 }

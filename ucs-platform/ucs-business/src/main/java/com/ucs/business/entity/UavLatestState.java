@@ -68,4 +68,14 @@ public class UavLatestState {
     
     @Column(name = "is_active")
     private Boolean isActive;
+    
+    // Flight status fields (populated from Kafka telemetry)
+    @Column(name = "armed")
+    private Boolean armed;
+    
+    @Column(name = "flight_mode", length = 50)
+    private String flightMode;
+    
+    @Column(name = "battery_percent")
+    private Float batteryPercent;
 }

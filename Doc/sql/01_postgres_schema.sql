@@ -381,5 +381,8 @@ CREATE TABLE IF NOT EXISTS uav_latest_state (
     vz DOUBLE PRECISION,
     data_age DOUBLE PRECISION,
     msg_count BIGINT,
-    is_active BOOLEAN
+    is_active BOOLEAN,
+    armed BOOLEAN,
+    flight_mode VARCHAR(50),
+    battery_percent REAL
 );

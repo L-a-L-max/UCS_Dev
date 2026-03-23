@@ -87,16 +87,19 @@ public class DroneService {
         dto.setUavId(state.getUavId());
         dto.setDroneSn(state.getUavId());
         dto.setLat(state.getLat());
-        dto.setLng(state.getLon());
+        dto.setLng(state.getLon()); // Frontend expects 'lng', DB stores 'lon'
         dto.setAltitude(state.getAlt());
         dto.setVelocity(state.getGroundSpeed() != null ? state.getGroundSpeed() : 0f);
         dto.setHeading(state.getHeading() != null ? state.getHeading() : 0f);
-        dto.setFlightStatus(Boolean.TRUE.equals(state.getIsActive()) ? "FLYING" : "IDLE");
+        dto.setBattery(state.getBatteryPercent() != null ? state.getBatteryPercent() : -1f);
+        dto.setOnlineStatus(true); // Present in uav_latest_state means online
+        dto.setFlightStatus(Boolean.TRUE.equals(state.getArmed()) ? "FLYING" : "IDLE");
         dto.setTaskStatus("IDLE");
         dto.setHardwareStatus("NORMAL");
-        dto.setColor(Boolean.TRUE.equals(state.getIsActive()) ? "#00FF00" : "#808080");
+        dto.setColor(Boolean.TRUE.equals(state.getArmed()) ? "#00FF00" : "#808080");
         dto.setModel("PX4-SITL");
         dto.setOwner("DDS");
+        dto.setLastHeartbeat(state.getLastUpdate() != null ? state.getLastUpdate().toString() : "");
         return dto;
     }
     
