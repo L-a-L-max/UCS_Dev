@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -46,6 +47,13 @@ public class TelemetryKafkaConsumer {
     /** 已知无人机缓存，避免每条消息都查库 */
     private final Set<String> knownDrones = ConcurrentHashMap.newKeySet();
 
+    /**
+     * 聚合缓冲区：uavId -> 最新遥测 payload。
+     * 多个 Kafka 消费线程写入，定时任务读取并清空。
+     * ConcurrentHashMap 保证线程安全，每架无人机只保留最新数据。
+     */
+    private final ConcurrentHashMap<String, Map<String, Object>> latestPayloads = new ConcurrentHashMap<>();
+
     @KafkaListener(
             topics = "${kafka.topic.telemetry-processed:telemetry.processed}",
             groupId = "ucs-business-telemetry",
@@ -59,15 +67,6 @@ public class TelemetryKafkaConsumer {
             String uavId = String.valueOf(payload.get("uavId"));
             if (uavId == null || "null".equals(uavId)) {
                 return;
-            }
-
-            // --- 解析时间戳（Ingest已校验，此处仅提取用于广播）---
-            Object tsRaw = payload.get("timestamp");
-            Instant msgTime = null;
-            if (tsRaw instanceof Number) {
-                msgTime = Instant.ofEpochMilli(((Number) tsRaw).longValue());
-            } else if (tsRaw instanceof String) {
-                try { msgTime = Instant.parse((String) tsRaw); } catch (Exception ignored) {}
             }
 
             // --- 自动注册未知无人机（含分区映射 observer+commander）---
@@ -96,28 +95,52 @@ public class TelemetryKafkaConsumer {
                 log.error("[BusinessConsumer] Persistence failed for {}: {}", uavId, persistEx.getMessage());
             }
 
-            // --- 分区路由 + WebSocket 推送 ---
-            Instant timestamp = msgTime != null ? msgTime : Instant.now();
-            try {
-                Set<String> partitions = partitionRoutingService.getPartitionsForDrone(uavId);
-                Map<String, List<Map<String, Object>>> partitionData = new LinkedHashMap<>();
-                for (String partition : partitions) {
-                    partitionData.computeIfAbsent(partition, k -> new ArrayList<>()).add(payload);
-                }
-                webSocketGatewayService.broadcastToPartitions(partitionData, timestamp);
-            } catch (Exception routeEx) {
-                log.warn("[BusinessConsumer] Partition routing failed for {}: {}", uavId, routeEx.getMessage());
-            }
-
-            // --- 全局广播（TelemetryBatch格式，独立于分区路由，始终执行）---
-            try {
-                webSocketGatewayService.broadcastAll(List.of(payload), timestamp);
-            } catch (Exception wsEx) {
-                log.warn("[BusinessConsumer] WebSocket broadcastAll failed: {}", wsEx.getMessage());
-            }
+            // --- 存入聚合缓冲区（定时任务统一广播，避免单条推送导致前端闪烁）---
+            latestPayloads.put(uavId, payload);
 
         } catch (Exception e) {
             log.error("[BusinessConsumer] Failed to process telemetry message: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 定时刷新聚合缓冲区，统一广播所有无人机的最新遥测数据。
+     * 每 500ms 执行一次，将缓冲区中所有无人机数据组装为一个 TelemetryBatch 推送，
+     * 前端收到的每个 batch 都包含所有在线无人机，不再闪烁。
+     */
+    @Scheduled(fixedRate = 500)
+    public void flushTelemetryBroadcast() {
+        if (latestPayloads.isEmpty()) {
+            return;
+        }
+
+        // 取出所有数据并清空缓冲区
+        Map<String, Map<String, Object>> snapshot = new HashMap<>(latestPayloads);
+        latestPayloads.clear();
+
+        Instant now = Instant.now();
+        List<Map<String, Object>> allPayloads = new ArrayList<>(snapshot.values());
+
+        // --- 全局广播（TelemetryBatch格式，包含所有无人机）---
+        try {
+            webSocketGatewayService.broadcastAll(allPayloads, now);
+        } catch (Exception wsEx) {
+            log.warn("[BusinessConsumer] WebSocket broadcastAll failed: {}", wsEx.getMessage());
+        }
+
+        // --- 分区路由 + WebSocket 推送 ---
+        try {
+            Map<String, List<Map<String, Object>>> partitionData = new LinkedHashMap<>();
+            for (Map<String, Object> payload : allPayloads) {
+                String uavId = String.valueOf(payload.get("uavId"));
+                Set<String> partitions = partitionRoutingService.getPartitionsForDrone(uavId);
+                for (String partition : partitions) {
+                    partitionData.computeIfAbsent(partition, k -> new ArrayList<>()).add(payload);
+                }
+            }
+            webSocketGatewayService.broadcastToPartitions(partitionData, now);
+        } catch (Exception routeEx) {
+            log.warn("[BusinessConsumer] Partition routing failed: {}", routeEx.getMessage());
         }
     }
 }

@@ -13,7 +13,7 @@ public interface TeamMemberRepository extends JpaRepository<TeamMember, Long> {
     List<TeamMember> findByUserId(Long userId);
     Optional<TeamMember> findByTeamIdAndUserId(Long teamId, Long userId);
     
-    @Query("SELECT tm FROM TeamMember tm JOIN FETCH tm.user WHERE tm.teamId = :teamId")
+    @Query("SELECT tm FROM TeamMember tm JOIN FETCH tm.user LEFT JOIN FETCH tm.teamRole WHERE tm.teamId = :teamId")
     List<TeamMember> findByTeamIdWithUser(Long teamId);
     
     @Query("SELECT COUNT(tm) FROM TeamMember tm WHERE tm.teamId = :teamId")
