@@ -18,6 +18,7 @@ import reactor.core.publisher.Mono;
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * API Gateway JWT鉴权全局过滤器。
@@ -87,10 +88,18 @@ public class JwtAuthGatewayFilter implements GlobalFilter, Ordered {
             Object userIdObj = claims.get("userId");
             String userId = userIdObj != null ? userIdObj.toString() : username;
 
+            // Extract roles for downstream services (critical for Spring Security RBAC)
+            @SuppressWarnings("unchecked")
+            List<String> roles = claims.get("roles", List.class);
+            String rolesHeader = (roles != null && !roles.isEmpty())
+                    ? roles.stream().map(Object::toString).collect(Collectors.joining(","))
+                    : "";
+
             // Forward user info to downstream services via headers
             ServerHttpRequest mutatedRequest = exchange.getRequest().mutate()
                     .header("X-User-Id", userId)
                     .header("X-User-Name", username)
+                    .header("X-User-Roles", rolesHeader)
                     .header("X-Token-Type", tokenType != null ? tokenType : "access")
                     .build();
 
