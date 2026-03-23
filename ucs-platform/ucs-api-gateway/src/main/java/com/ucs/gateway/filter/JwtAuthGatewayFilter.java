@@ -39,7 +39,8 @@ public class JwtAuthGatewayFilter implements GlobalFilter, Ordered {
             "/api/v1/dds-gateway",   // DDS Gateway 使用 X-Gateway-Key 认证，不走JWT
             "/api/v1/public",        // 公共接口（地理编码等），无需认证
             "/api/v1/map",           // 地图瓦片代理，无需认证
-            "/actuator/health",
+            "/api/v1/telemetry",     // 遥测数据查询，内部服务调用
+            "/actuator",             // Spring Boot Actuator 健康检查等
             "/ws"
     );
 
@@ -64,36 +65,56 @@ public class JwtAuthGatewayFilter implements GlobalFilter, Ordered {
 
         String token = authHeader.substring(7);
         try {
-            SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
+            SecretKey key = getSigningKey();
             Claims claims = Jwts.parser()
                     .verifyWith(key)
                     .build()
                     .parseSignedClaims(token)
                     .getPayload();
 
-            String userId = claims.getSubject();
-            String tokenType = claims.get("type", String.class);
+            String username = claims.getSubject();
+            String tokenType = claims.get("tokenType", String.class);
 
             // Only Access Token can be used for API access
-            if (!"access".equals(tokenType)) {
-                log.warn("[Gateway] Non-access token used for API: path={}", path);
+            // 兼容旧 token（没有 tokenType 字段的视为 access）
+            if (tokenType != null && !"access".equals(tokenType)) {
+                log.warn("[Gateway] Non-access token used for API: path={}, type={}", path, tokenType);
                 exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
                 return exchange.getResponse().setComplete();
             }
 
+            // Extract userId for downstream services
+            Object userIdObj = claims.get("userId");
+            String userId = userIdObj != null ? userIdObj.toString() : username;
+
             // Forward user info to downstream services via headers
             ServerHttpRequest mutatedRequest = exchange.getRequest().mutate()
                     .header("X-User-Id", userId)
-                    .header("X-Token-Type", tokenType)
+                    .header("X-User-Name", username)
+                    .header("X-Token-Type", tokenType != null ? tokenType : "access")
                     .build();
 
             return chain.filter(exchange.mutate().request(mutatedRequest).build());
 
         } catch (Exception e) {
-            log.warn("[Gateway] JWT validation failed: {}", e.getMessage());
+            log.warn("[Gateway] JWT validation failed for path={}: {}", path, e.getMessage());
             exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
             return exchange.getResponse().setComplete();
         }
+    }
+
+    /**
+     * 构建签名密钥 — 与 ucs-business JwtUtil.getSigningKey() 保持一致。
+     * 短密钥自动补齐到 32 字节，确保 HMAC-SHA256 签名一致。
+     */
+    private SecretKey getSigningKey() {
+        byte[] keyBytes = jwtSecret.getBytes(StandardCharsets.UTF_8);
+        if (keyBytes.length < 32) {
+            byte[] paddedKey = new byte[32];
+            System.arraycopy(keyBytes, 0, paddedKey, 0, keyBytes.length);
+            keyBytes = paddedKey;
+        }
+        return Keys.hmacShaKeyFor(keyBytes);
     }
 
     @Override
