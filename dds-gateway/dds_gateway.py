@@ -673,6 +673,12 @@ class DDSGateway:
                                             command_type, uav_id, result)
                                 self._stats['kafka_commands_consumed'] = \
                                     self._stats.get('kafka_commands_consumed', 0) + 1
+
+                                # Send ACK to commands.ack topic
+                                self._send_command_ack(
+                                    uav_id, command_type, msg_epoch,
+                                    data.get('commandLogId'),
+                                    result)
                             except Exception as e:
                                 logger.error("[KafkaCmd] Failed to process command: %s", e)
                 except Exception as e:
@@ -688,6 +694,33 @@ class DDSGateway:
         t = threading.Thread(target=_consume_loop, daemon=True, name='kafka-cmd-consumer')
         t.start()
         logger.info("[KafkaCmd] Consumer thread launched")
+
+    def _send_command_ack(self, uav_id: str, command_type: str, epoch: int,
+                          command_log_id, result: dict):
+        """Send command execution ACK to commands.ack Kafka topic.
+
+        This ensures the commands.ack topic is created and downstream services
+        (e.g., ucs-command CommandAckConsumer) can track command outcomes.
+        """
+        if not self._kafka_enabled or not self._kafka_producer:
+            return
+        try:
+            from datetime import datetime, timezone
+            success = result.get('success', False) if isinstance(result, dict) else False
+            detail = result.get('message', '') if isinstance(result, dict) else str(result)
+            ack = {
+                'uavId': uav_id,
+                'command': command_type,
+                'success': success,
+                'detail': detail,
+                'epoch': epoch,
+                'commandId': command_log_id,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+            self._kafka_producer.send('commands.ack', key=uav_id, value=ack)
+            logger.info("[KafkaCmd] ACK sent: %s -> %s success=%s", command_type, uav_id, success)
+        except Exception as e:
+            logger.error("[KafkaCmd] ACK send failed: %s", e)
 
     def _get_or_increment_epoch(self, uav_id: str, is_new: bool = False) -> int:
         """Get current epoch for a drone, incrementing on reconnection."""
@@ -750,18 +783,23 @@ class DDSGateway:
         logger.info("[EpochMaint] Maintenance thread launched")
 
     def send_to_kafka(self, payload: dict) -> bool:
-        """Send telemetry to Kafka (per-drone messages with uav_id as key)."""
+        """Send telemetry to Kafka (per-drone messages with uav_id as key).
+
+        Timestamps are sent as epoch milliseconds (long) to match the
+        TelemetryMessage DTO expected by all downstream Java microservices.
+        """
         if not self._kafka_enabled or not self._kafka_producer:
             return False
         try:
-            timestamp_str = payload.get('timestamp', '')
+            # Use epoch millis — matches TelemetryMessage.timestamp (long) in Java services
+            timestamp_ms = int(time.time() * 1000)
             drones = payload.get('drones', [])
             for drone_data in drones:
                 uav_id = drone_data.get('uavId', '')
                 if not uav_id:
                     continue
                 msg = dict(drone_data)
-                msg['timestamp'] = timestamp_str
+                msg['timestamp'] = timestamp_ms
                 msg['epoch'] = self._epoch_map.get(uav_id, 0)
                 # Key = uav_id -> same partition -> ordered
                 self._kafka_producer.send('telemetry.raw', key=uav_id, value=msg)

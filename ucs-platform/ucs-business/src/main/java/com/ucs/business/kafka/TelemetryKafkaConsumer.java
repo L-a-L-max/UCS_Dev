@@ -71,9 +71,17 @@ public class TelemetryKafkaConsumer {
             }
 
             // --- 时间戳校验：丢弃超过 30 秒的过期消息 ---
-            String tsStr = (String) payload.get("timestamp");
-            if (tsStr != null) {
-                Instant msgTime = Instant.parse(tsStr);
+            // Gateway sends epoch millis (long); legacy may send ISO string — handle both
+            Object tsRaw = payload.get("timestamp");
+            Instant msgTime = null;
+            if (tsRaw instanceof Number) {
+                msgTime = Instant.ofEpochMilli(((Number) tsRaw).longValue());
+            } else if (tsRaw instanceof String) {
+                try {
+                    msgTime = Instant.parse((String) tsRaw);
+                } catch (Exception ignored) {}
+            }
+            if (msgTime != null) {
                 long ageSeconds = Instant.now().getEpochSecond() - msgTime.getEpochSecond();
                 if (ageSeconds > MAX_MESSAGE_AGE_SECONDS) {
                     log.debug("[KafkaConsumer] Expired message for {}: age={}s", uavId, ageSeconds);
@@ -96,7 +104,7 @@ public class TelemetryKafkaConsumer {
             }
 
             // --- 分区路由 + WebSocket 推送 ---
-            Instant timestamp = tsStr != null ? Instant.parse(tsStr) : Instant.now();
+            Instant timestamp = msgTime != null ? msgTime : Instant.now();
             try {
                 Set<String> partitions = partitionRoutingService.getPartitionsForDrone(uavId);
                 Map<String, List<Map<String, Object>>> partitionData = new LinkedHashMap<>();
