@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Kafka 指令下发生产者（业务微服务内部版本）。
@@ -40,32 +41,26 @@ public class CommandKafkaProducer {
      * @param commandLogId 指令日志 ID（用于回执关联）
      */
     public void sendCommand(String uavId, String commandType, String params,
-                            Long userId, Long commandLogId) {
-        try {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("uavId", uavId);
-            payload.put("commandType", commandType);
-            payload.put("params", params != null ? params : "{}");
-            payload.put("timestamp", Instant.now().toString());
-            payload.put("userId", userId);
-            payload.put("commandLogId", commandLogId);
-            payload.put("epoch", epochManager.getCurrentEpoch(uavId));
+                            Long userId, Long commandLogId) throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("uavId", uavId);
+        payload.put("commandType", commandType);
+        payload.put("params", params != null ? params : "{}");
+        payload.put("timestamp", Instant.now().toString());
+        payload.put("userId", userId);
+        payload.put("commandLogId", commandLogId);
+        payload.put("epoch", epochManager.getCurrentEpoch(uavId));
 
-            String json = objectMapper.writeValueAsString(payload);
+        String json = objectMapper.writeValueAsString(payload);
 
-            kafkaTemplate.send(commandsDownTopic, uavId, json)
-                    .whenComplete((result, ex) -> {
-                        if (ex != null) {
-                            log.error("[CommandProducer] Failed to send command {} -> {}: {}",
-                                    commandType, uavId, ex.getMessage());
-                        } else {
-                            log.info("[CommandProducer] Command {} -> {} sent to partition {}",
-                                    commandType, uavId,
-                                    result.getRecordMetadata().partition());
-                        }
-                    });
-        } catch (Exception e) {
-            log.error("[CommandProducer] Failed to serialize command: {}", e.getMessage(), e);
-        }
+        // 同步等待 Kafka 发送结果（最多5秒），确保命令真正到达 Kafka
+        // 失败时抛出异常，由 ControlService 捕获并降级到 HTTP
+        var sendResult = kafkaTemplate.send(commandsDownTopic, uavId, json)
+                .get(5, TimeUnit.SECONDS);
+        log.info("[CommandProducer] Command {} -> {} sent to partition {} offset {} epoch {}",
+                commandType, uavId,
+                sendResult.getRecordMetadata().partition(),
+                sendResult.getRecordMetadata().offset(),
+                payload.get("epoch"));
     }
 }

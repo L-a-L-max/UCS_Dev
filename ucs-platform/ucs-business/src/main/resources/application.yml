@@ -45,6 +45,10 @@ kafka:
     commands-down: commands.down
     commands-ack: commands.ack
 
+dds:
+  gateway:
+    command-url: ${DDS_GATEWAY_COMMAND_URL:http://localhost:5050}
+
 jwt:
   secret: ${JWT_SECRET:change-me-in-production}
   access-token-expiration: 1800000

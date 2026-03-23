@@ -279,6 +279,11 @@ services:
       REDIS_PORT: 6379
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      # DDS Gateway 通常运行在宿主机（带 ROS2/DDS 环境），使用 host.docker.internal 访问
+      # Linux 下需要在 extra_hosts 中添加映射，或直接使用宿主机 IP
+      DDS_GATEWAY_COMMAND_URL: ${DDS_GATEWAY_COMMAND_URL:-http://host.docker.internal:5050}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       kafka:
         condition: service_healthy

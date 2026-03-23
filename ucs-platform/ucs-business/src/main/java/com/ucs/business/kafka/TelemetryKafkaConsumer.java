@@ -16,6 +16,7 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Kafka 遥测数据消费者（业务服务）。
@@ -43,6 +44,7 @@ public class TelemetryKafkaConsumer {
     private final TelemetryPersistenceService telemetryPersistenceService;
     private final WebSocketGatewayService webSocketGatewayService;
     private final RedisService redisService;
+    private final EpochManager epochManager;
 
     /** 已知无人机缓存，避免每条消息都查库 */
     private final Set<String> knownDrones = ConcurrentHashMap.newKeySet();
@@ -53,6 +55,19 @@ public class TelemetryKafkaConsumer {
      * ConcurrentHashMap 保证线程安全，每架无人机只保留最新数据。
      */
     private final ConcurrentHashMap<String, Map<String, Object>> latestPayloads = new ConcurrentHashMap<>();
+
+    /**
+     * 全量无人机快照：保留所有已知在线无人机的最新数据。
+     * 与 latestPayloads（增量缓冲区）不同，此 Map 不会被清空，
+     * 确保每次广播都包含所有无人机（即使某架无人机在该周期内没有新数据）。
+     */
+    private final ConcurrentHashMap<String, Map<String, Object>> allDroneSnapshot = new ConcurrentHashMap<>();
+
+    /** 全局广播节流：上次全局广播时间戳 */
+    private final AtomicLong lastGlobalBroadcastMs = new AtomicLong(0);
+
+    /** 全局广播间隔（毫秒）：降低 /topic/telemetry 频率，减少不必要的前端 re-render */
+    private static final long GLOBAL_BROADCAST_INTERVAL_MS = 3000;
 
     @KafkaListener(
             topics = "${kafka.topic.telemetry-processed:telemetry.processed}",
@@ -81,6 +96,17 @@ public class TelemetryKafkaConsumer {
                 }
             }
 
+            // --- 同步 Epoch（确保 CommandKafkaProducer 发送正确的 epoch）---
+            try {
+                Object epochObj = payload.get("epoch");
+                if (epochObj instanceof Number) {
+                    long msgEpoch = ((Number) epochObj).longValue();
+                    epochManager.validateEpoch(uavId, msgEpoch);
+                }
+            } catch (Exception epochEx) {
+                log.debug("[BusinessConsumer] Epoch sync failed for {}: {}", uavId, epochEx.getMessage());
+            }
+
             // --- 标记在线（冗余保证，Ingest已做但TTL可能过期）---
             try {
                 redisService.setDroneOnline(uavId);
@@ -97,6 +123,7 @@ public class TelemetryKafkaConsumer {
 
             // --- 存入聚合缓冲区（定时任务统一广播，避免单条推送导致前端闪烁）---
             latestPayloads.put(uavId, payload);
+            allDroneSnapshot.put(uavId, payload);
 
         } catch (Exception e) {
             log.error("[BusinessConsumer] Failed to process telemetry message: {}", e.getMessage(), e);
@@ -104,9 +131,16 @@ public class TelemetryKafkaConsumer {
     }
 
     /**
-     * 定时刷新聚合缓冲区，统一广播所有无人机的最新遥测数据。
-     * 每 500ms 执行一次，将缓冲区中所有无人机数据组装为一个 TelemetryBatch 推送，
-     * 前端收到的每个 batch 都包含所有在线无人机，不再闪烁。
+     * 定时刷新聚合缓冲区，统一广播遥测数据。
+     *
+     * 分区广播（/topic/telemetry/partition/{name}）：每 500ms，只发送本周期有新数据的无人机。
+     * 全局广播（/topic/telemetry）：每 3 秒，发送全量无人机快照。
+     *
+     * 分离两种广播频率的原因：
+     *   - 前端 useTelemetryWebSocket hook 订阅 /topic/telemetry 后会触发 setLastBatch
+     *     状态更新，即使 Commander 不使用该数据也会导致 React re-render。
+     *   - 分区广播是 Commander/Leader 的主要数据源，保持 500ms 实时性。
+     *   - 全局广播降频到 3s，减少不必要的 re-render，消除界面闪烁。
      */
     @Scheduled(fixedRate = 500)
     public void flushTelemetryBroadcast() {
@@ -114,24 +148,17 @@ public class TelemetryKafkaConsumer {
             return;
         }
 
-        // 取出所有数据并清空缓冲区
+        // 取出本周期增量数据并清空缓冲区
         Map<String, Map<String, Object>> snapshot = new HashMap<>(latestPayloads);
         latestPayloads.clear();
 
         Instant now = Instant.now();
-        List<Map<String, Object>> allPayloads = new ArrayList<>(snapshot.values());
 
-        // --- 全局广播（TelemetryBatch格式，包含所有无人机）---
+        // --- 分区路由 + WebSocket 推送（500ms 增量，仅本周期有新数据的无人机）---
         try {
-            webSocketGatewayService.broadcastAll(allPayloads, now);
-        } catch (Exception wsEx) {
-            log.warn("[BusinessConsumer] WebSocket broadcastAll failed: {}", wsEx.getMessage());
-        }
-
-        // --- 分区路由 + WebSocket 推送 ---
-        try {
+            List<Map<String, Object>> incrementalPayloads = new ArrayList<>(snapshot.values());
             Map<String, List<Map<String, Object>>> partitionData = new LinkedHashMap<>();
-            for (Map<String, Object> payload : allPayloads) {
+            for (Map<String, Object> payload : incrementalPayloads) {
                 String uavId = String.valueOf(payload.get("uavId"));
                 Set<String> partitions = partitionRoutingService.getPartitionsForDrone(uavId);
                 for (String partition : partitions) {
@@ -141,6 +168,20 @@ public class TelemetryKafkaConsumer {
             webSocketGatewayService.broadcastToPartitions(partitionData, now);
         } catch (Exception routeEx) {
             log.warn("[BusinessConsumer] Partition routing failed: {}", routeEx.getMessage());
+        }
+
+        // --- 全局广播（3s 全量快照，降频减少前端 re-render）---
+        long nowMs = now.toEpochMilli();
+        if (nowMs - lastGlobalBroadcastMs.get() >= GLOBAL_BROADCAST_INTERVAL_MS) {
+            lastGlobalBroadcastMs.set(nowMs);
+            try {
+                List<Map<String, Object>> allPayloads = new ArrayList<>(allDroneSnapshot.values());
+                if (!allPayloads.isEmpty()) {
+                    webSocketGatewayService.broadcastAll(allPayloads, now);
+                }
+            } catch (Exception wsEx) {
+                log.warn("[BusinessConsumer] WebSocket broadcastAll failed: {}", wsEx.getMessage());
+            }
         }
     }
 }
