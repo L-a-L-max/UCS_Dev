@@ -63,6 +63,9 @@ services:
       POSTGRES_PASSWORD: ucs_password
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # 自动执行初始化脚本（首次启动时）
+      - ./Doc/sql/01_postgres_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./Doc/sql/02_postgres_init_data.sql:/docker-entrypoint-initdb.d/02_init_data.sql:ro
     networks:
       - ucs-net
     healthcheck:
@@ -83,8 +86,8 @@ services:
       POSTGRES_PASSWORD: ucs_password
     volumes:
       - timescaledb-data:/var/lib/postgresql/data
-      # 自动执行初始化脚本
-      - ./ucs-platform/ucs-telemetry-store/src/main/resources/db/migration:/docker-entrypoint-initdb.d
+      # 自动执行初始化脚本（首次启动时）
+      - ./Doc/sql/03_timescaledb_init.sql:/docker-entrypoint-initdb.d/01_timescaledb_init.sql:ro
     networks:
       - ucs-net
     healthcheck:
