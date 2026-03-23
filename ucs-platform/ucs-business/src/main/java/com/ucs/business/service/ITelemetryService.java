@@ -1,0 +1,43 @@
+package com.ucs.business.service;
+
+import com.ucs.business.dto.UavTelemetryBatchDTO;
+import com.ucs.business.dto.UavTelemetryDTO;
+import com.ucs.business.entity.UavLatestState;
+import com.ucs.business.entity.UavTelemetry;
+
+import java.time.Instant;
+import java.util.List;
+
+/**
+ * Service interface for UAV telemetry data
+ */
+public interface ITelemetryService {
+    
+    /**
+     * Process batch telemetry data from ROS 2 gateway
+     * - Saves to history table (for path replay)
+     * - Updates latest state table (for dashboard)
+     * - Broadcasts to WebSocket subscribers
+     */
+    void processBatchTelemetry(UavTelemetryBatchDTO batch);
+    
+    /**
+     * Get all latest UAV states for dashboard
+     */
+    List<UavLatestState> getAllLatestStates();
+    
+    /**
+     * Get latest state for a specific UAV
+     */
+    UavLatestState getLatestState(String uavId);
+    
+    /**
+     * Get telemetry history for path replay
+     */
+    List<UavTelemetry> getTelemetryHistory(String uavId, Instant startTime, Instant endTime);
+    
+    /**
+     * Clean up old telemetry data based on retention policy
+     */
+    void cleanupOldTelemetry(int retentionDays);
+}

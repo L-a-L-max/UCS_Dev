@@ -1,0 +1,123 @@
+package com.ucs.business.service;
+
+import com.ucs.business.dto.LoginRequest;
+import com.ucs.business.dto.LoginResponse;
+import com.ucs.business.entity.Role;
+import com.ucs.business.entity.Team;
+import com.ucs.business.entity.User;
+import com.ucs.business.entity.UserRoleMap;
+import com.ucs.business.repository.RoleRepository;
+import com.ucs.business.repository.TeamRepository;
+import com.ucs.business.repository.UserRepository;
+import com.ucs.business.repository.UserRoleMapRepository;
+import com.ucs.business.security.JwtUtil;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+
+import com.ucs.business.util.PartitionNameUtil;
+import java.util.List;
+import java.util.stream.Collectors;
+
+@Service
+public class AuthService {
+    
+    private final UserRepository userRepository;
+    private final UserRoleMapRepository userRoleMapRepository;
+    private final TeamRepository teamRepository;
+    private final RoleRepository roleRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final JwtUtil jwtUtil;
+    
+    public AuthService(UserRepository userRepository, 
+                       UserRoleMapRepository userRoleMapRepository,
+                       TeamRepository teamRepository,
+                       RoleRepository roleRepository,
+                       PasswordEncoder passwordEncoder, 
+                       JwtUtil jwtUtil) {
+        this.userRepository = userRepository;
+        this.userRoleMapRepository = userRoleMapRepository;
+        this.teamRepository = teamRepository;
+        this.roleRepository = roleRepository;
+        this.passwordEncoder = passwordEncoder;
+        this.jwtUtil = jwtUtil;
+    }
+    
+    public LoginResponse login(LoginRequest request) {
+        User user = userRepository.findByUsername(request.getUsername())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+        
+        if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
+            throw new RuntimeException("Invalid password");
+        }
+        
+        if (user.getStatus() != 1) {
+            throw new RuntimeException("User is disabled");
+        }
+        
+        List<UserRoleMap> userRoles = userRoleMapRepository.findByUserIdWithRole(user.getId());
+        List<String> roles = userRoles.stream()
+                .map(urm -> urm.getRole().getRoleName())
+                .collect(Collectors.toList());
+        
+        // 双 Token：生成 Access Token（短命）+ Refresh Token（长命）
+        String accessToken = jwtUtil.generateAccessToken(user.getId(), user.getUsername(), roles);
+        String refreshToken = jwtUtil.generateRefreshToken(user.getId(), user.getUsername(), roles);
+        
+        LoginResponse response = new LoginResponse();
+        response.setToken(accessToken);
+        response.setRefreshToken(refreshToken);
+        response.setUserId(user.getId());
+        response.setUsername(user.getUsername());
+        response.setRealName(user.getRealName());
+        response.setRoles(roles);
+        response.setTeamId(user.getTeamId());
+        
+        if (user.getTeamId() != null) {
+            teamRepository.findById(user.getTeamId())
+                    .ifPresent(team -> response.setTeamName(team.getTeamName()));
+        }
+        
+        // Set user's subscription partitions
+        // Compute dynamically if not stored in DB
+        String partitionName = user.getPartitionName();
+        if (partitionName == null || partitionName.isEmpty()) {
+            // Compute from role + username + id
+            String primaryRole = roles.isEmpty() ? "operator" : roles.get(0);
+            partitionName = PartitionNameUtil.computePartitionName(primaryRole, user.getUsername(), user.getId());
+            // Persist computed partition name
+            user.setPartitionName(partitionName);
+            userRepository.save(user);
+        }
+        response.setPartitions(List.of(partitionName));
+        
+        return response;
+    }
+    
+    public User register(String username, String password, String realName, String roleName) {
+        if (userRepository.existsByUsername(username)) {
+            throw new RuntimeException("Username already exists");
+        }
+        
+        User user = new User();
+        user.setUsername(username);
+        user.setPasswordHash(passwordEncoder.encode(password));
+        user.setRealName(realName);
+        user.setStatus(1);
+        user = userRepository.save(user);
+        
+        // Compute and set partition name after ID is generated
+        String partition = PartitionNameUtil.computePartitionName(roleName, username, user.getId());
+        user.setPartitionName(partition);
+        user = userRepository.save(user);
+        
+        Role role = roleRepository.findByRoleName(roleName)
+                .orElseThrow(() -> new RuntimeException("Role not found: " + roleName));
+        
+        UserRoleMap userRoleMap = new UserRoleMap();
+        userRoleMap.setUserId(user.getId());
+        userRoleMap.setRoleId(role.getId());
+        userRoleMapRepository.save(userRoleMap);
+        
+        return user;
+    }
+}

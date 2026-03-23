@@ -20,10 +20,10 @@ spring:
             - Path=/api/v1/commands/**,/api/v1/control/**
 
         # ---- 业务管理服务 ----
-        - id: business-users
+        - id: business
           uri: ${BUSINESS_URI:http://localhost:8086}
           predicates:
-            - Path=/api/v1/users/**,/api/v1/auth/**,/api/v1/teams/**,/api/v1/events/**,/api/v1/tasks/**,/api/v1/rally-points/**
+            - Path=/api/v1/users/**,/api/v1/user/**,/api/v1/auth/**,/api/v1/teams/**,/api/v1/events/**,/api/v1/tasks/**,/api/v1/rally-points/**,/api/v1/screen/**,/api/v1/pilot/**,/api/v1/leader/**,/api/v1/commander/**,/api/v1/operations/**,/api/v1/public/**,/api/v1/map/**
 
         # ---- 实时推送服务 (WebSocket) ----
         - id: realtime-push-ws
