@@ -36,6 +36,7 @@ public class JwtAuthGatewayFilter implements GlobalFilter, Ordered {
             "/api/v1/auth/login",
             "/api/v1/auth/register",
             "/api/v1/auth/refresh",
+            "/api/v1/dds-gateway",   // DDS Gateway 使用 X-Gateway-Key 认证，不走JWT
             "/actuator/health",
             "/ws"
     );

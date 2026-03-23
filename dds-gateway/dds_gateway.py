@@ -189,19 +189,35 @@ class DDSGateway:
             return False
 
     def check_backend_health(self) -> bool:
-        """Verify backend is reachable."""
-        try:
-            resp = requests.get(
-                f"{self.backend_url}/api/v1/dds-gateway/health", timeout=5
-            )
-            if resp.status_code == 200:
-                logger.info("[Backend] Health check passed: %s", resp.json())
-                return True
-            logger.error("[Backend] Health check failed: HTTP %d", resp.status_code)
-            return False
-        except requests.exceptions.ConnectionError:
-            logger.error("[Backend] Cannot connect to %s", self.backend_url)
-            return False
+        """Verify backend is reachable.
+
+        Tries multiple health check endpoints for compatibility with both
+        the legacy monolithic backend and the new microservice architecture:
+          1. /api/v1/dds-gateway/health  (API Gateway local endpoint or legacy backend)
+          2. /actuator/health            (Spring Boot Actuator, available on all services)
+        """
+        endpoints = [
+            "/api/v1/dds-gateway/health",
+            "/actuator/health",
+        ]
+        for endpoint in endpoints:
+            try:
+                resp = requests.get(
+                    f"{self.backend_url}{endpoint}", timeout=5
+                )
+                if resp.status_code == 200:
+                    logger.info("[Backend] Health check passed via %s: %s",
+                                endpoint, resp.json())
+                    return True
+                logger.debug("[Backend] %s returned HTTP %d", endpoint, resp.status_code)
+            except requests.exceptions.ConnectionError:
+                logger.debug("[Backend] Cannot connect to %s%s",
+                             self.backend_url, endpoint)
+            except Exception as e:
+                logger.debug("[Backend] Health check %s failed: %s", endpoint, e)
+
+        logger.error("[Backend] All health check endpoints failed on %s", self.backend_url)
+        return False
 
     def discover_drones_from_topics(self) -> Set[str]:
         """

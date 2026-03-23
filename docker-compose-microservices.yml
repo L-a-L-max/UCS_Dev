@@ -134,6 +134,7 @@ services:
       BUSINESS_URI: http://ucs-business:8086
       PUSH_WS_URI: ws://ucs-realtime-push:8083
       STORE_URI: http://ucs-telemetry-store:8082
+      INGEST_URI: http://ucs-telemetry-ingest:8081
     depends_on:
       redis:
         condition: service_healthy
