@@ -28,6 +28,7 @@ public class DroneService {
     private final UserRepository userRepository;
     private final CommandLogRepository commandLogRepository;
     private final EventLogRepository eventLogRepository;
+    private final UavLatestStateRepository uavLatestStateRepository;
 
     /** Kafka 指令生产者（可选，Kafka 未启用时为 null） */
     @Autowired(required = false)
@@ -39,7 +40,8 @@ public class DroneService {
                         TeamDroneMapRepository teamDroneMapRepository,
                         UserRepository userRepository,
                         CommandLogRepository commandLogRepository,
-                        EventLogRepository eventLogRepository) {
+                        EventLogRepository eventLogRepository,
+                        UavLatestStateRepository uavLatestStateRepository) {
         this.droneRepository = droneRepository;
         this.droneStatusRepository = droneStatusRepository;
         this.droneOwnershipRepository = droneOwnershipRepository;
@@ -47,6 +49,7 @@ public class DroneService {
         this.userRepository = userRepository;
         this.commandLogRepository = commandLogRepository;
         this.eventLogRepository = eventLogRepository;
+        this.uavLatestStateRepository = uavLatestStateRepository;
     }
     
     public List<DroneStatusDTO> getDronesByUserId(Long userId) {
@@ -66,9 +69,35 @@ public class DroneService {
     }
     
     public List<DroneStatusDTO> getAllDrones() {
+        // Read from uav_latest_state table (populated by TelemetryKafkaConsumer via TelemetryPersistenceService)
+        List<UavLatestState> latestStates = uavLatestStateRepository.findAllByOrderByUavIdAsc();
+        if (!latestStates.isEmpty()) {
+            return latestStates.stream()
+                    .map(this::convertLatestStateToDto)
+                    .collect(Collectors.toList());
+        }
+        // Fallback to old drone_status table if no telemetry data yet
         List<Drone> drones = droneRepository.findAll();
         List<Long> droneIds = drones.stream().map(Drone::getId).collect(Collectors.toList());
         return getDroneStatusList(droneIds);
+    }
+    
+    private DroneStatusDTO convertLatestStateToDto(UavLatestState state) {
+        DroneStatusDTO dto = new DroneStatusDTO();
+        dto.setUavId(state.getUavId());
+        dto.setDroneSn(state.getUavId());
+        dto.setLat(state.getLat());
+        dto.setLng(state.getLon());
+        dto.setAltitude(state.getAlt());
+        dto.setVelocity(state.getGroundSpeed() != null ? state.getGroundSpeed() : 0f);
+        dto.setHeading(state.getHeading() != null ? state.getHeading() : 0f);
+        dto.setFlightStatus(Boolean.TRUE.equals(state.getIsActive()) ? "FLYING" : "IDLE");
+        dto.setTaskStatus("IDLE");
+        dto.setHardwareStatus("NORMAL");
+        dto.setColor(Boolean.TRUE.equals(state.getIsActive()) ? "#00FF00" : "#808080");
+        dto.setModel("PX4-SITL");
+        dto.setOwner("DDS");
+        return dto;
     }
     
     private List<DroneStatusDTO> getDroneStatusList(List<Long> droneIds) {
@@ -252,8 +281,16 @@ public class DroneService {
     }
     
     public List<HeatmapPointDTO> getHeatmapData() {
+        // Read from uav_latest_state for real-time telemetry heatmap
+        List<UavLatestState> latestStates = uavLatestStateRepository.findAllByOrderByUavIdAsc();
+        if (!latestStates.isEmpty()) {
+            return latestStates.stream()
+                    .filter(s -> s.getLat() != null && s.getLon() != null)
+                    .map(s -> new HeatmapPointDTO(s.getLat(), s.getLon(), 0.8))
+                    .collect(Collectors.toList());
+        }
+        // Fallback to old drone_status table
         List<DroneStatus> allLatest = droneStatusRepository.findAllLatest();
-        
         return allLatest.stream()
                 .filter(s -> s.getLat() != null && s.getLng() != null)
                 .map(s -> new HeatmapPointDTO(s.getLat(), s.getLng(), 0.8))

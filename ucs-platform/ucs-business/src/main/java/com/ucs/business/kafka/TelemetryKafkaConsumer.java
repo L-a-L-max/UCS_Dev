@@ -81,22 +81,39 @@ public class TelemetryKafkaConsumer {
                 }
             }
 
-            // --- 标记在线 ---
-            redisService.setDroneOnline(uavId);
-
-            // --- 持久化 ---
-            telemetryPersistenceService.persistFromMap(payload);
-
-            // --- 分区路由 + WebSocket 推送 ---
-            Set<String> partitions = partitionRoutingService.getPartitionsForDrone(uavId);
-            Map<String, List<Map<String, Object>>> partitionData = new LinkedHashMap<>();
-            for (String partition : partitions) {
-                partitionData.computeIfAbsent(partition, k -> new ArrayList<>()).add(payload);
+            // --- 标记在线（Redis不可用不影响后续流程）---
+            try {
+                redisService.setDroneOnline(uavId);
+            } catch (Exception redisEx) {
+                log.warn("[KafkaConsumer] Redis setDroneOnline failed for {}: {}", uavId, redisEx.getMessage());
             }
 
+            // --- 持久化（独立try-catch，不影响WebSocket推送）---
+            try {
+                telemetryPersistenceService.persistFromMap(payload);
+            } catch (Exception persistEx) {
+                log.error("[KafkaConsumer] Persistence failed for {}: {}", uavId, persistEx.getMessage());
+            }
+
+            // --- 分区路由 + WebSocket 推送 ---
             Instant timestamp = tsStr != null ? Instant.parse(tsStr) : Instant.now();
-            webSocketGatewayService.broadcastToPartitions(partitionData, timestamp);
-            webSocketGatewayService.broadcastAll(List.of(payload), timestamp);
+            try {
+                Set<String> partitions = partitionRoutingService.getPartitionsForDrone(uavId);
+                Map<String, List<Map<String, Object>>> partitionData = new LinkedHashMap<>();
+                for (String partition : partitions) {
+                    partitionData.computeIfAbsent(partition, k -> new ArrayList<>()).add(payload);
+                }
+                webSocketGatewayService.broadcastToPartitions(partitionData, timestamp);
+            } catch (Exception routeEx) {
+                log.warn("[KafkaConsumer] Partition routing failed for {}: {}", uavId, routeEx.getMessage());
+            }
+
+            // --- 全局广播（独立于分区路由，始终执行）---
+            try {
+                webSocketGatewayService.broadcastAll(List.of(payload), timestamp);
+            } catch (Exception wsEx) {
+                log.warn("[KafkaConsumer] WebSocket broadcastAll failed: {}", wsEx.getMessage());
+            }
 
         } catch (Exception e) {
             log.error("[KafkaConsumer] Failed to process telemetry message: {}", e.getMessage(), e);
