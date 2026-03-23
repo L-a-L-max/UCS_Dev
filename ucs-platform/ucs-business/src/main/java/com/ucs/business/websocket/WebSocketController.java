@@ -71,19 +71,12 @@ public class WebSocketController {
                     .map(this::stateToMap)
                     .collect(Collectors.toList());
 
-            // Send to /topic/telemetry (legacy format matching TelemetryBatch interface)
-            Map<String, Object> legacyBatch = new LinkedHashMap<>();
-            legacyBatch.put("timestamp", java.time.Instant.now().toString());
-            legacyBatch.put("msgSeqNumber", System.currentTimeMillis() / 1000);
-            legacyBatch.put("homeLat", 0.0);
-            legacyBatch.put("homeLon", 0.0);
-            legacyBatch.put("homeAlt", 0.0);
-            legacyBatch.put("numUavsTotal", drones.size());
-            legacyBatch.put("numUavsActive", drones.size());
-            legacyBatch.put("uavs", drones);
-            messagingTemplate.convertAndSend("/topic/telemetry", legacyBatch);
+            // 注意：不再广播到 /topic/telemetry
+            // 原因：useTelemetryWebSocket hook 总是订阅 /topic/telemetry，
+            // 每次消息触发 setLastBatch() → React state 变更 → CommanderView re-render → 界面闪烁
+            // 遥测数据由 TelemetryKafkaConsumer 通过分区 topic 推送
 
-            // Also send to /topic/drones for backward compatibility
+            // Send to /topic/drones for backward compatibility (不触发前端 setLastBatch)
             Map<String, Object> dronesMsg = new LinkedHashMap<>();
             dronesMsg.put("timestamp", java.time.Instant.now().toString());
             dronesMsg.put("numDrones", drones.size());

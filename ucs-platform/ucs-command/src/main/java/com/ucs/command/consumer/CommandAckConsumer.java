@@ -8,12 +8,15 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Component;
 
 /**
  * 指令回执消费者。
- * 从 Kafka commands.ack 消费 → Epoch校验 → 通知前端指令执行结果。
+ * 从 Kafka commands.ack 消费 → Epoch校验 → 记录回执结果。
+ *
+ * 注意：WebSocket 广播由 ucs-business 的 BusinessCommandKafkaConsumer 负责。
+ * 本消费者只做 Epoch 校验和日志记录，不依赖 SimpMessagingTemplate，
+ * 避免因缺少 WebSocket 配置导致服务启动失败。
  */
 @Slf4j
 @Component
@@ -21,7 +24,6 @@ import org.springframework.stereotype.Component;
 public class CommandAckConsumer {
 
     private final EpochValidationService epochService;
-    private final SimpMessagingTemplate messagingTemplate;
 
     @KafkaListener(
             topics = KafkaTopicConstants.COMMANDS_ACK,
@@ -39,10 +41,8 @@ public class CommandAckConsumer {
                 return;
             }
 
-            // Push ack to frontend via WebSocket
-            messagingTemplate.convertAndSend("/topic/command-ack/" + ack.getUavId(), record.value());
-            messagingTemplate.convertAndSend("/topic/command-ack", record.value());
-
+            // WebSocket 广播由 ucs-business 的 BusinessCommandKafkaConsumer 负责
+            // 本消费者仅记录 ACK 信息用于指令状态跟踪
             log.info("[CommandAck] Received: uavId={}, cmd={}, success={}, commandId={}",
                     ack.getUavId(), ack.getCommand(), ack.isSuccess(), ack.getCommandId());
 

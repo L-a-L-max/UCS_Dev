@@ -96,8 +96,9 @@ public class TelemetryServiceImpl implements ITelemetryService {
         // Batch save/update latest states (JPA will handle upsert via @Id)
         latestStateRepository.saveAll(latestStates);
         
-        // Broadcast to WebSocket subscribers
-        messagingTemplate.convertAndSend("/topic/telemetry", batch);
+        // 注意：不再广播到 /topic/telemetry
+        // 遥测数据由 TelemetryKafkaConsumer 通过分区 topic 推送
+        // 广播到 /topic/telemetry 会触发前端 setLastBatch() → re-render → 闪烁
         
         log.debug("Processed and broadcast {} UAV telemetry records", telemetryList.size());
     }

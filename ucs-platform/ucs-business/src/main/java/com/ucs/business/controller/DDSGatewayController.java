@@ -122,8 +122,11 @@ public class DDSGatewayController {
             }
 
             // === Gateway 3: WebSocket Server Gateway ===
+            // 只广播到分区 topic，不广播到全局 /topic/telemetry
+            // 原因：useTelemetryWebSocket hook 总是订阅 /topic/telemetry，
+            // 每次消息触发 setLastBatch() → React state 变更 → CommanderView re-render → 界面闪烁
+            // Commander/Leader 使用分区 topic，Observer 在 App.tsx 中单独处理
             webSocketGatewayService.broadcastToPartitions(partitionData, timestamp);
-            webSocketGatewayService.broadcastAll(allTelemetry, timestamp);
 
             // Detailed logging for debugging data flow
             log.info("[DDSGateway] Received {} drone(s), routed to {} partition(s)",
