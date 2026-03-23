@@ -37,19 +37,23 @@ public class TelemetryBatchConsumer {
     public void consumeBatch(List<ConsumerRecord<String, String>> records) {
         if (records.isEmpty()) return;
 
-        List<TelemetryMessage> batch = new ArrayList<>(records.size());
-        for (ConsumerRecord<String, String> record : records) {
-            try {
-                TelemetryMessage msg = JsonUtil.parse(record.value(), TelemetryMessage.class);
-                batch.add(msg);
-            } catch (Exception e) {
-                log.warn("[Store] Failed to parse telemetry record: {}", e.getMessage());
+        try {
+            List<TelemetryMessage> batch = new ArrayList<>(records.size());
+            for (ConsumerRecord<String, String> record : records) {
+                try {
+                    TelemetryMessage msg = JsonUtil.parse(record.value(), TelemetryMessage.class);
+                    batch.add(msg);
+                } catch (Exception e) {
+                    log.warn("[Store] Failed to parse telemetry record: {}", e.getMessage());
+                }
             }
-        }
 
-        if (!batch.isEmpty()) {
-            int saved = telemetryRepository.batchInsert(batch);
-            log.debug("[Store] Batch saved: {} / {} records", saved, records.size());
+            if (!batch.isEmpty()) {
+                int saved = telemetryRepository.batchInsert(batch);
+                log.debug("[Store] Batch saved: {} / {} records", saved, records.size());
+            }
+        } catch (Exception e) {
+            log.error("[Store] Unexpected error in consumeBatch: {}", e.getMessage(), e);
         }
     }
 }

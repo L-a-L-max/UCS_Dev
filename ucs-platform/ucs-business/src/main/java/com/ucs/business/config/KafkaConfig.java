@@ -1,11 +1,15 @@
 package com.ucs.business.config;
 
+import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.TopicBuilder;
+import org.springframework.kafka.listener.CommonErrorHandler;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.util.backoff.FixedBackOff;
 
 /**
  * Kafka 配置类：自动创建所需的 Topic。
@@ -20,6 +24,7 @@ import org.springframework.kafka.config.TopicBuilder;
  *   - 默认 16 个分区，Kafka 对 key 做 murmur2 哈希取模
  *   - 同一个 uav_id 的消息始终进入同一个分区，保证单机有序
  */
+@Slf4j
 @Configuration
 @ConditionalOnProperty(name = "kafka.enabled", havingValue = "true", matchIfMissing = true)
 public class KafkaConfig {
@@ -38,6 +43,24 @@ public class KafkaConfig {
 
     @Value("${kafka.topic.commands-ack:commands.ack}")
     private String commandsAckTopic;
+
+    /**
+     * Error handler that retries 3 times with 1s interval, then logs and skips.
+     * NEVER stops the container — ensures consumer threads stay alive.
+     */
+    @Bean
+    public CommonErrorHandler kafkaErrorHandler() {
+        DefaultErrorHandler handler = new DefaultErrorHandler(
+                (record, exception) -> {
+                    log.error("[Business] Consumer error after retries exhausted: topic={}, partition={}, offset={}, error={}",
+                            record.topic(), record.partition(), record.offset(),
+                            exception.getMessage(), exception);
+                },
+                new FixedBackOff(1000L, 3L)
+        );
+        handler.setAckAfterHandle(true);
+        return handler;
+    }
 
     @Bean
     public NewTopic telemetryRawTopic() {
