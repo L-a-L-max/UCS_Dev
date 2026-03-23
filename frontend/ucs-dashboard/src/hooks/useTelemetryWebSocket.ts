@@ -98,8 +98,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onDroneRemoved, onCommandAck, onConnectionChange } = options;
   const clientRef = useRef<Client | null>(null);
   const [connected, setConnected] = useState(false);
-  const [lastBatch, setLastBatch] = useState<TelemetryBatch | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Use refs for callbacks and partitions to avoid recreating connect/disconnect on every render
   const onTelemetryReceivedRef = useRef(onTelemetryReceived);
@@ -117,31 +116,71 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   useEffect(() => { onConnectionChangeRef.current = onConnectionChange; }, [onConnectionChange]);
   useEffect(() => { partitionsRef.current = partitions; }, [partitions]);
 
+  // ==================== Buffer + Throttle ====================
+  // Instead of calling setState on every WebSocket message (which triggers re-render),
+  // we buffer partition data into a Map and flush at 10Hz (100ms).
+  // This eliminates flickering caused by per-message React state updates.
+  const partitionBufferRef = useRef<Map<string, TelemetryData>>(new Map());
+  const partitionBufferDirtyRef = useRef(false);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushPartitionBuffer = useCallback(() => {
+    flushTimerRef.current = null;
+    if (!partitionBufferDirtyRef.current) return;
+    partitionBufferDirtyRef.current = false;
+
+    // Build a synthetic PartitionTelemetryMessage from buffer snapshot
+    const drones = Array.from(partitionBufferRef.current.values());
+    if (drones.length === 0) return;
+
+    const syntheticMsg: PartitionTelemetryMessage = {
+      partition: '_buffered',
+      timestamp: new Date().toISOString(),
+      drones,
+    };
+    onPartitionDataReceivedRef.current?.(syntheticMsg);
+  }, []);
+
+  const scheduleFlush = useCallback(() => {
+    if (!flushTimerRef.current) {
+      flushTimerRef.current = setTimeout(flushPartitionBuffer, 100); // 10Hz
+    }
+  }, [flushPartitionBuffer]);
+
+  // handleMessage: /topic/telemetry — NO setState, just callback
   const handleMessage = useCallback((message: IMessage) => {
     try {
       const batch: TelemetryBatch = JSON.parse(message.body);
-      setLastBatch(batch);
+      // Do NOT call setLastBatch — it causes React re-render on every message
+      // which is the root cause of UI flickering.
       onTelemetryReceivedRef.current?.(batch);
     } catch (error) {
       console.error('Failed to parse telemetry message:', error);
     }
   }, []);
 
+  // handlePartitionMessage: buffer data, flush at 10Hz instead of per-message setState
   const handlePartitionMessage = useCallback((message: IMessage) => {
     try {
       const data: PartitionTelemetryMessage = JSON.parse(message.body);
-      // Handle drone removal notifications
+      // Handle drone removal notifications immediately (low frequency event)
       if (data.type === 'drone_removed' && data.removedDrones && data.removedDrones.length > 0) {
-        console.log('[WS] Drone removal notification:', data.partition, 'removed:', data.removedDrones);
+        data.removedDrones.forEach(id => partitionBufferRef.current.delete(id));
         onDroneRemovedRef.current?.(data.removedDrones);
         return;
       }
-      console.log('[WS] Partition message received:', data.partition, 'drones:', data.drones?.length, data.drones?.map(d => `${d.uavId}(${d.lat},${d.lon},armed=${d.armed})`));
-      onPartitionDataReceivedRef.current?.(data);
+      // Buffer drone data — only keep latest per uavId
+      if (data.drones) {
+        data.drones.forEach(d => {
+          partitionBufferRef.current.set(d.uavId, d);
+        });
+        partitionBufferDirtyRef.current = true;
+        scheduleFlush();
+      }
     } catch (error) {
       console.error('Failed to parse partition telemetry message:', error);
     }
-  }, []);
+  }, [scheduleFlush]);
 
   const handleCommandAck = useCallback((message: IMessage) => {
     try {
@@ -221,6 +260,11 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
+    // Clean up flush timer
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
     
     if (clientRef.current) {
       clientRef.current.deactivate();
@@ -245,7 +289,6 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
 
   return {
     connected,
-    lastBatch,
     connect,
     disconnect,
   };

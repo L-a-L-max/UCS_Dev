@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -112,43 +112,55 @@ export default function CommanderView({ token, username, partitions = [], onLogo
   // 地图选中的无人机
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
 
-  // Real-time telemetry drones from WebSocket partition subscription
-  const [telemetryDrones, setTelemetryDrones] = useState<Map<string, MapDrone>>(new Map());
+  // ==================== Telemetry Buffer (no-flicker) ====================
+  // Use useRef buffer + version counter instead of useState<Map> to avoid
+  // per-message React re-renders. Only bump version at 10Hz from the hook's
+  // flush timer, giving a single batched state update.
+  const telemetryBufferRef = useRef<Map<string, MapDrone>>(new Map());
+  const [telemetryVersion, setTelemetryVersion] = useState(0);
 
-  // WebSocket telemetry handler - updates drone positions in real-time
+  // WebSocket telemetry handler - writes to ref buffer (no setState per message)
   const handlePartitionData = useCallback((data: PartitionTelemetryMessage) => {
     if (!data.drones || data.drones.length === 0) return;
-    console.log('[CommanderView] handlePartitionData:', data.partition, data.drones.length, 'drones');
-    setTelemetryDrones(prev => {
-      const next = new Map(prev);
-      data.drones.forEach(uav => {
-        next.set(uav.uavId, {
+    const buf = telemetryBufferRef.current;
+    data.drones.forEach(uav => {
+      const existing = buf.get(uav.uavId);
+      if (existing) {
+        // In-place field update — reuse object to minimize GC and diff
+        existing.lat = uav.lat;
+        existing.lng = uav.lon;
+        existing.altitude = uav.alt;
+        existing.onlineStatus = true;
+        existing.armed = uav.armed ?? uav.isActive ?? false;
+        existing.flightStatus = existing.armed ? 'FLYING' : 'IDLE';
+        existing.heading = uav.heading;
+        if (uav.batteryPercent != null && uav.batteryPercent >= 0) {
+          existing.battery = uav.batteryPercent;
+        }
+      } else {
+        buf.set(uav.uavId, {
           uavId: uav.uavId,
           lat: uav.lat,
           lng: uav.lon,
           altitude: uav.alt,
           battery: uav.batteryPercent != null && uav.batteryPercent >= 0 ? uav.batteryPercent : undefined,
           flightStatus: uav.armed ? 'FLYING' : 'IDLE',
-          onlineStatus: true, // Receiving telemetry = online
+          onlineStatus: true,
           armed: uav.armed ?? uav.isActive ?? false,
-          model: undefined,
-          owner: undefined,
           heading: uav.heading,
         });
-      });
-      return next;
+      }
     });
+    // Bump version to trigger a single re-render (called at 10Hz by hook flush)
+    setTelemetryVersion(v => v + 1);
   }, []);
 
   // Handle drone removal notification from WebSocket (permission transfer)
   const handleDroneRemoved = useCallback((removedUavIds: string[]) => {
-    console.log('[CommanderView] Drones removed from partition:', removedUavIds);
-    setTelemetryDrones(prev => {
-      const next = new Map(prev);
-      removedUavIds.forEach(id => next.delete(id));
-      return next;
-    });
-    // Clear selection if the selected drone was removed (don't auto-jump)
+    const buf = telemetryBufferRef.current;
+    removedUavIds.forEach(id => buf.delete(id));
+    setTelemetryVersion(v => v + 1);
+    // Clear selection if the selected drone was removed
     setSelectedMapDrone(prev => {
       if (prev && removedUavIds.includes(prev)) return null;
       return prev;
@@ -464,8 +476,9 @@ export default function CommanderView({ token, username, partitions = [], onLogo
   };
 
   // 将 DroneInfo 转换为 MapDrone 格式，并合并 WebSocket 实时遥测数据
-  const mapDrones: MapDrone[] = (() => {
-    // Start with REST API drones
+  // useMemo ensures this only recalculates when drones or telemetryVersion changes
+  const mapDrones: MapDrone[] = useMemo(() => {
+    // Start with REST API drones (metadata: owner, team, model, etc.)
     const droneMap = new Map<string, MapDrone>();
     drones.forEach(d => {
       droneMap.set(d.uavId, {
@@ -476,10 +489,10 @@ export default function CommanderView({ token, username, partitions = [], onLogo
       });
     });
     // Merge real-time telemetry data (WebSocket takes priority for position/battery)
-    telemetryDrones.forEach((td, uavId) => {
+    const telBuf = telemetryBufferRef.current;
+    telBuf.forEach((td, uavId) => {
       const existing = droneMap.get(uavId);
       if (existing) {
-        // Update position from real-time telemetry
         existing.lat = td.lat;
         existing.lng = td.lng;
         existing.altitude = td.altitude;
@@ -487,17 +500,15 @@ export default function CommanderView({ token, username, partitions = [], onLogo
         existing.armed = td.armed;
         if (td.battery != null) existing.battery = td.battery;
         if (td.flightStatus) existing.flightStatus = td.flightStatus;
+        if (td.heading != null) existing.heading = td.heading;
       } else {
-        // New drone only seen via WebSocket telemetry
-        droneMap.set(uavId, td);
+        droneMap.set(uavId, { ...td });
       }
     });
-    const result = Array.from(droneMap.values());
-    if (telemetryDrones.size > 0) {
-      console.log('[CommanderView] mapDrones:', result.length, 'total,', telemetryDrones.size, 'from WS');
-    }
-    return result;
-  })();
+    // Stable sort by uavId to prevent list reorder flicker
+    return Array.from(droneMap.values()).sort((a, b) => a.uavId.localeCompare(b.uavId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drones, telemetryVersion]);
 
   // Chart data for fleet overview
   const droneChartData = useMemo(() => {
@@ -672,12 +683,8 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                     </Button>
                   </div>
                   <div className="flex-1 overflow-y-auto space-y-1 scrollbar-thin" style={{ scrollbarWidth: 'thin', scrollbarColor: '#475569 #1e293b' }}>
-                    {[...mapDrones].sort((a, b) => {
-                      const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
-                      if (aO !== bO) return bO - aO;
-                      const aA = a.armed === true ? 1 : 0, bA = b.armed === true ? 1 : 0;
-                      return bA - aA;
-                    }).map(drone => (
+                    {/* Use stable sort order from mapDrones (sorted by uavId) to prevent list reorder flicker */}
+                    {mapDrones.map(drone => (
                       <div key={drone.uavId}
                         className={`p-2 rounded text-xs cursor-pointer transition-all ${selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
                         onClick={() => setSelectedMapDrone(prev => prev === drone.uavId ? null : drone.uavId)}>
