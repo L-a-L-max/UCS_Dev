@@ -25,9 +25,9 @@ spring:
           predicates:
             - Path=/api/v1/users/**,/api/v1/user/**,/api/v1/auth/**,/api/v1/teams/**,/api/v1/events/**,/api/v1/tasks/**,/api/v1/rally-points/**,/api/v1/screen/**,/api/v1/pilot/**,/api/v1/leader/**,/api/v1/commander/**,/api/v1/operations/**,/api/v1/public/**,/api/v1/map/**
 
-        # ---- WebSocket (路由到ucs-business，所有WebSocket广播/消费者均在此服务) ----
-        - id: business-ws
-          uri: ${BUSINESS_WS_URI:ws://localhost:8086}
+        # ---- WebSocket (路由到ucs-realtime-push，遥测推送服务负责WebSocket广播) ----
+        - id: realtime-push-ws
+          uri: ${PUSH_WS_URI:ws://localhost:8083}
           predicates:
             - Path=/ws/**
 

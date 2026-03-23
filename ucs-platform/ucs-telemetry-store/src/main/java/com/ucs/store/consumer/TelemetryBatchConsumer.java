@@ -15,8 +15,11 @@ import java.util.List;
 
 /**
  * 遥测数据批量消费者。
- * 从 Kafka telemetry.raw 批量消费（max 500 records），
+ * 从 Kafka telemetry.processed 批量消费（已经过 Ingest 服务的 Epoch 校验和清洗），
  * 使用 JDBC batchUpdate 写入 TimescaleDB，实现 >50k rows/s 吞吐。
+ *
+ * 数据链路：
+ *   telemetry.raw → [ingest: 校验/清洗] → telemetry.processed → [本服务: 批量持久化]
  */
 @Slf4j
 @Component
@@ -26,7 +29,7 @@ public class TelemetryBatchConsumer {
     private final TelemetryRepository telemetryRepository;
 
     @KafkaListener(
-            topics = KafkaTopicConstants.TELEMETRY_RAW,
+            topics = KafkaTopicConstants.TELEMETRY_PROCESSED,
             groupId = KafkaTopicConstants.GROUP_STORE,
             batch = "true",
             concurrency = "4"

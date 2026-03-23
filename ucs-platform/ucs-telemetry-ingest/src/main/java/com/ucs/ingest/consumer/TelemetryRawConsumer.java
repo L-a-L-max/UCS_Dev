@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
@@ -18,8 +19,10 @@ import java.util.Map;
 /**
  * 遥测原始数据消费者。
  * 消费 Kafka telemetry.raw，16线程并发处理。
- * 职责：Epoch校验 → Redis状态更新 → GeoHash索引更新
- * 不做持久化，不做WebSocket推送（交给其他服务）。
+ * 职责：Epoch校验 → Redis状态更新 → GeoHash索引更新 → 转发至 telemetry.processed
+ *
+ * 数据链路：
+ *   telemetry.raw → [本服务: 校验/清洗/Redis] → telemetry.processed → push/store 服务
  */
 @Slf4j
 @Component
@@ -29,6 +32,7 @@ public class TelemetryRawConsumer {
     private final EpochValidationService epochService;
     private final RedisClusterService redisService;
     private final GeoSpatialService geoService;
+    private final KafkaTemplate<String, String> kafkaTemplate;
 
     @KafkaListener(
             topics = KafkaTopicConstants.TELEMETRY_RAW,
@@ -65,6 +69,10 @@ public class TelemetryRawConsumer {
             if (msg.getLat() != 0.0 || msg.getLon() != 0.0) {
                 geoService.updateDronePosition(uavId, msg.getLat(), msg.getLon());
             }
+
+            // 4. Forward validated/cleaned message to telemetry.processed
+            //    Downstream services (push, store) consume from this topic.
+            kafkaTemplate.send(KafkaTopicConstants.TELEMETRY_PROCESSED, uavId, record.value());
 
             log.trace("[Ingest] Processed telemetry: uavId={}, epoch={}", uavId, msg.getEpoch());
 

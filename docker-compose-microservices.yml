@@ -132,7 +132,6 @@ services:
       DRONE_STATE_URI: http://ucs-drone-state:8085
       COMMAND_URI: http://ucs-command:8084
       BUSINESS_URI: http://ucs-business:8086
-      BUSINESS_WS_URI: ws://ucs-business:8086
       PUSH_WS_URI: ws://ucs-realtime-push:8083
       STORE_URI: http://ucs-telemetry-store:8082
       INGEST_URI: http://ucs-telemetry-ingest:8081
