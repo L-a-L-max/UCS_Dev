@@ -171,6 +171,8 @@ services:
       - "8082:8082"
     environment:
       KAFKA_BOOTSTRAP: kafka:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       TIMESCALEDB_HOST: timescaledb
       TIMESCALEDB_PORT: 5432
       TIMESCALEDB_DB: ucs_telemetry
@@ -178,6 +180,8 @@ services:
       TIMESCALEDB_PASS: ucs_password
     depends_on:
       kafka:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       timescaledb:
         condition: service_healthy

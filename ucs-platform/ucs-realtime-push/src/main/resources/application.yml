@@ -11,8 +11,13 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       max-poll-records: 500
+      properties:
+        session.timeout.ms: 45000
+        heartbeat.interval.ms: 15000
+        max.poll.interval.ms: 600000
     listener:
       type: batch
+      missing-topics-fatal: false
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -21,6 +26,13 @@ spring:
         pool:
           max-active: 16
           max-idle: 8
+
+logging:
+  level:
+    com.ucs.push: INFO
+    org.springframework.kafka: INFO
+    org.apache.kafka: WARN
+    org.apache.kafka.clients.consumer: INFO
 
 management:
   endpoints:

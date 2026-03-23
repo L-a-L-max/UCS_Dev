@@ -37,7 +37,7 @@ public class TelemetryRawConsumer {
     @KafkaListener(
             topics = KafkaTopicConstants.TELEMETRY_RAW,
             groupId = KafkaTopicConstants.GROUP_INGEST,
-            concurrency = "16"
+            concurrency = "4"
     )
     public void consume(ConsumerRecord<String, String> record) {
         String rawValue = record.value();
