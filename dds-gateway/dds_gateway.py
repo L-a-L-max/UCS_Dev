@@ -1104,55 +1104,6 @@ class DDSGateway:
     # Command Publishing (Backend -> DDS)
     # ============================================================
 
-    def _set_drone_default_params(self, uav_id: str):
-        """Set default PX4 parameters for a newly discovered drone.
-
-        Uses MAV_CMD_DO_SET_PARAMETER (command 180) via VehicleCommand topic:
-          param1 = parameter numeric index (unused by PX4, set to 0)
-          param2 = parameter value
-
-        PX4 also supports setting params via the ParameterSetValueRequest topic
-        if available. We try that first, then fall back to VehicleCommand.
-
-        Parameters set:
-          MPC_YAW_MODE = 1  (auto-yaw towards next waypoint / direction of travel)
-        """
-        if not self._rclpy_available or not self._px4_msgs_available or not self._node:
-            return
-
-        try:
-            import px4_msgs.msg as px4
-
-            # Try ParameterSetValueRequest if available (PX4 v1.14+)
-            if hasattr(px4, 'ParameterSetValueRequest'):
-                topic = f"/{uav_id}/fmu/in/parameter_set_value_request"
-                pub = self._get_or_create_publisher(topic, px4.ParameterSetValueRequest)
-                msg = px4.ParameterSetValueRequest()
-                # PX4 parameter name: MPC_YAW_MODE
-                param_name = 'MPC_YAW_MODE'
-                # ParameterSetValueRequest uses a char[17] array for param_id
-                msg.param_id = [0] * 16
-                for i, ch in enumerate(param_name[:16]):
-                    msg.param_id[i] = ord(ch)
-                msg.int_value = 1  # YAW towards next waypoint
-                msg.param_type = 6  # PARAM_TYPE_INT32
-                msg.timestamp = int(time.time() * 1e6)
-                pub.publish(msg)
-                logger.info("[Params] Set MPC_YAW_MODE=1 for %s via ParameterSetValueRequest", uav_id)
-            else:
-                # Fallback: MAV_CMD_DO_SET_PARAMETER (180)
-                # param1=0 (index not used), param2=1.0 (value)
-                # Note: This may not work for all PX4 versions
-                ok = self.publish_vehicle_command(
-                    uav_id, command=180, param1=0.0, param2=1.0
-                )
-                if ok:
-                    logger.info("[Params] Set MPC_YAW_MODE=1 for %s via VehicleCommand(180)", uav_id)
-                else:
-                    logger.warning("[Params] Failed to set MPC_YAW_MODE for %s", uav_id)
-        except Exception as e:
-            logger.warning("[Params] Error setting default params for %s: %s", uav_id, e)
-
     def _extract_system_id(self, uav_id: str) -> int:
         """Extract PX4 system ID from uav_id.
 
@@ -1364,8 +1315,7 @@ class DDSGateway:
             logger.info("[Command] TAKEOFF (ARM+OFFBOARD): relative=%.1fm, NED_z=%.1f for %s",
                         relative_alt, target_z, uav_id)
 
-            # Step 0: Set flight parameters + save home position
-            self._set_drone_default_params(uav_id)  # MPC_YAW_MODE=1 (auto-yaw towards waypoint)
+            # Step 0: Save home position + set home on flight controller
             self._save_home_position(uav_id)
             self.publish_vehicle_command(uav_id, command=179, param1=1.0)  # use current pos
 
@@ -1463,19 +1413,39 @@ class DDSGateway:
             home = self._get_home_position(uav_id)
             if home:
                 home_lat, home_lon, home_alt = home
-                north, east, down = _latlon_to_ned(
+                # Target position in NED (relative to home)
+                target_n, target_e, _ = _latlon_to_ned(
                     lat, lon, home_alt + alt,
                     home_lat, home_lon, home_alt)
                 target_z = -alt  # NED: negative = up from home
-                # Yaw is handled by MPC_YAW_MODE=1 (auto-yaw towards next waypoint)
-                # No need to calculate bearing here
+
+                # Calculate yaw: bearing from drone's CURRENT position to target
+                # Use current NED position (updated by _on_local_position callback)
+                with self._lock:
+                    state = self.drone_states.get(uav_id)
+                cur_n = state.ned_x if state else 0.0
+                cur_e = state.ned_y if state else 0.0
+                delta_n = target_n - cur_n  # north difference (meters)
+                delta_e = target_e - cur_e  # east difference (meters)
+                dist = math.sqrt(delta_n ** 2 + delta_e ** 2)
+                if dist > 0.5:  # Only set yaw if target is >0.5m away
+                    # atan2(east, north) → 0=North, pi/2=East (NED yaw convention)
+                    target_yaw = math.atan2(delta_e, delta_n)
+                else:
+                    target_yaw = float('nan')  # Too close, keep current heading
+
                 logger.info(
-                    "[Command] GOTO: lat=%.6f lon=%.6f alt=%.1f -> NED [%.1f, %.1f, %.1f] for %s",
-                    lat, lon, alt, north, east, target_z, uav_id)
-                # Update heartbeat setpoint with new target (yaw=NaN, handled by PX4)
+                    "[Command] GOTO: target=(%.6f,%.6f) alt=%.1f -> NED [%.1f,%.1f,%.1f] "
+                    "cur_NED=[%.1f,%.1f] dist=%.1fm yaw=%.2frad(%.1f°) for %s",
+                    lat, lon, alt, target_n, target_e, target_z,
+                    cur_n, cur_e, dist,
+                    target_yaw, math.degrees(target_yaw) if not math.isnan(target_yaw) else 0,
+                    uav_id)
+                # Update heartbeat setpoint with new target + yaw
                 self.start_offboard_heartbeat(
                     uav_id, target_z=target_z,
-                    target_x=north, target_y=east)
+                    target_x=target_n, target_y=target_e,
+                    target_yaw=target_yaw)
                 # Ensure OFFBOARD mode
                 ok = self.publish_vehicle_command(
                     uav_id, command=176, param1=1.0, param2=6.0)
@@ -1751,10 +1721,14 @@ class DDSGateway:
                     target_n = center_n + radius * math.cos(angle)
                     target_e = center_e + radius * math.sin(angle)
 
-                    # Yaw is handled by MPC_YAW_MODE=1 (auto-yaw towards flight direction)
+                    # Yaw towards orbit center so the drone faces inward
+                    dn = center_n - target_n  # north delta to center
+                    de = center_e - target_e  # east delta to center
+                    yaw = math.atan2(de, dn)  # 0=North, pi/2=East
+
                     self.publish_offboard_control_mode(uav_id, position=True)
                     self.publish_trajectory_setpoint(
-                        uav_id, target_n, target_e, alt_ned, log=False)
+                        uav_id, target_n, target_e, alt_ned, yaw=yaw, log=False)
                 except Exception as e:
                     logger.error("[Orbit] Error for %s: %s", uav_id, e)
                 time.sleep(interval)
