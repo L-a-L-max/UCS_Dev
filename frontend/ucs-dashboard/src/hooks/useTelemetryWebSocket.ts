@@ -84,6 +84,16 @@ export interface CommandAckMessage {
   timestamp: string;
 }
 
+/**
+ * Drone status change message (online/offline) from DroneHeartbeatService.
+ */
+export interface DroneStatusMessage {
+  type: 'drone_offline' | 'drone_online';
+  uavId: string;
+  timestamp: string;
+  reason?: string;
+}
+
 interface UseTelemetryWebSocketOptions {
   enabled?: boolean;
   partitions?: string[];
@@ -91,11 +101,12 @@ interface UseTelemetryWebSocketOptions {
   onPartitionDataReceived?: (data: PartitionTelemetryMessage) => void;
   onDroneRemoved?: (removedUavIds: string[]) => void;
   onCommandAck?: (ack: CommandAckMessage) => void;
+  onDroneStatusChange?: (status: DroneStatusMessage) => void;
   onConnectionChange?: (connected: boolean) => void;
 }
 
 export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}) {
-  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onDroneRemoved, onCommandAck, onConnectionChange } = options;
+  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onDroneRemoved, onCommandAck, onDroneStatusChange, onConnectionChange } = options;
   const clientRef = useRef<Client | null>(null);
   const [connected, setConnected] = useState(false);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -105,6 +116,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   const onPartitionDataReceivedRef = useRef(onPartitionDataReceived);
   const onDroneRemovedRef = useRef(onDroneRemoved);
   const onCommandAckRef = useRef(onCommandAck);
+  const onDroneStatusChangeRef = useRef(onDroneStatusChange);
   const onConnectionChangeRef = useRef(onConnectionChange);
   const partitionsRef = useRef(partitions);
 
@@ -113,6 +125,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   useEffect(() => { onPartitionDataReceivedRef.current = onPartitionDataReceived; }, [onPartitionDataReceived]);
   useEffect(() => { onDroneRemovedRef.current = onDroneRemoved; }, [onDroneRemoved]);
   useEffect(() => { onCommandAckRef.current = onCommandAck; }, [onCommandAck]);
+  useEffect(() => { onDroneStatusChangeRef.current = onDroneStatusChange; }, [onDroneStatusChange]);
   useEffect(() => { onConnectionChangeRef.current = onConnectionChange; }, [onConnectionChange]);
   useEffect(() => { partitionsRef.current = partitions; }, [partitions]);
 
@@ -192,6 +205,22 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
     }
   }, []);
 
+  // Handle drone status changes (online/offline from DroneHeartbeatService)
+  const handleDroneStatus = useCallback((message: IMessage) => {
+    try {
+      const status: DroneStatusMessage = JSON.parse(message.body);
+      console.log('[WS] Drone status:', status.uavId, status.type);
+      // Remove offline drones from buffer
+      if (status.type === 'drone_offline') {
+        partitionBufferRef.current.delete(status.uavId);
+        onDroneRemovedRef.current?.([status.uavId]);
+      }
+      onDroneStatusChangeRef.current?.(status);
+    } catch (error) {
+      console.error('Failed to parse drone status message:', error);
+    }
+  }, []);
+
   const connect = useCallback(() => {
     if (clientRef.current?.active) {
       return;
@@ -219,6 +248,10 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
         // Subscribe to command acknowledgment topic
         client.subscribe('/topic/command-ack', handleCommandAck);
         console.log('[WS] Subscribed to /topic/command-ack');
+        
+        // Subscribe to drone status topic (online/offline from heartbeat service)
+        client.subscribe('/topic/drone-status', handleDroneStatus);
+        console.log('[WS] Subscribed to /topic/drone-status');
         
         // Subscribe to partition-specific topics if partitions are provided
         if (currentPartitions && currentPartitions.length > 0) {
@@ -253,7 +286,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
 
     clientRef.current = client;
     client.activate();
-  }, [handleMessage, handlePartitionMessage, handleCommandAck]);
+  }, [handleMessage, handlePartitionMessage, handleCommandAck, handleDroneStatus]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {

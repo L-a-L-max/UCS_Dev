@@ -24,10 +24,15 @@ spring:
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      max-poll-records: 1
+      fetch-min-size: 1
+      fetch-max-wait: 100
       properties:
         session.timeout.ms: 45000
         heartbeat.interval.ms: 15000
         max.poll.interval.ms: 600000
+        fetch.min.bytes: 1
+        fetch.max.wait.ms: 100
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer

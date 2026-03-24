@@ -33,6 +33,7 @@ public class RedisService {
     private static final String DRONE_CONTROLLER_PREFIX = "drone:%s:controller";
     private static final String PARTITION_DRONES_PREFIX = "partition:%s:drones";
     private static final String LOCK_DRONE_PREFIX = "lock:drone:%s";
+    private static final String DRONE_HEARTBEAT_ZSET = "drone:heartbeat";
     private static final Duration HEARTBEAT_TTL = Duration.ofSeconds(30);
     private static final Duration LOCK_TTL = Duration.ofSeconds(5);
     
@@ -44,6 +45,33 @@ public class RedisService {
     public void setDroneOnline(String uavId) {
         String key = String.format(DRONE_ONLINE_PREFIX, uavId);
         stringRedisTemplate.opsForValue().set(key, "true", HEARTBEAT_TTL);
+    }
+
+    /**
+     * 更新无人机心跳时间戳（ZSet 结构）。
+     * key = drone:heartbeat, member = uavId, score = 当前时间戳毫秒。
+     * DroneHeartbeatService 定时扫描 score < (now - 3s) 的成员判定离线。
+     */
+    public void updateDroneHeartbeat(String uavId) {
+        double nowMs = System.currentTimeMillis();
+        stringRedisTemplate.opsForZSet().add(DRONE_HEARTBEAT_ZSET, uavId, nowMs);
+    }
+
+    /**
+     * 获取超时的无人机ID列表（心跳超过 timeoutMs 毫秒未更新）。
+     */
+    public Set<String> getTimedOutDrones(long timeoutMs) {
+        double cutoff = System.currentTimeMillis() - timeoutMs;
+        Set<String> timedOut = stringRedisTemplate.opsForZSet()
+                .rangeByScore(DRONE_HEARTBEAT_ZSET, 0, cutoff);
+        return timedOut != null ? timedOut : Collections.emptySet();
+    }
+
+    /**
+     * 从心跳 ZSet 中移除无人机（离线后清理）。
+     */
+    public void removeDroneHeartbeat(String uavId) {
+        stringRedisTemplate.opsForZSet().remove(DRONE_HEARTBEAT_ZSET, uavId);
     }
     
     /**

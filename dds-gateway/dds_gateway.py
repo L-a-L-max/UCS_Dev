@@ -568,9 +568,11 @@ class DDSGateway:
                 acks=1,
                 retries=3,
                 max_block_ms=5000,
+                linger_ms=0,      # Send immediately — no batching delay
+                batch_size=16384, # Small batch to avoid accumulation
             )
             self._kafka_enabled = True
-            logger.info("[Kafka] Producer initialized: %s", self._kafka_bootstrap)
+            logger.info("[Kafka] Producer initialized: %s (linger_ms=0 for real-time)", self._kafka_bootstrap)
         except ImportError:
             logger.warning("[Kafka] kafka-python not installed. pip install kafka-python")
         except Exception as e:
@@ -787,6 +789,10 @@ class DDSGateway:
 
         Timestamps are sent as epoch milliseconds (long) to match the
         TelemetryMessage DTO expected by all downstream Java microservices.
+
+        NOTE: No flush() call here — messages are sent asynchronously for
+        minimum latency. The KafkaProducer's internal linger.ms/batch.size
+        controls actual network sends (default linger.ms=0 → immediate).
         """
         if not self._kafka_enabled or not self._kafka_producer:
             return False
@@ -802,8 +808,8 @@ class DDSGateway:
                 msg['timestamp'] = timestamp_ms
                 msg['epoch'] = self._epoch_map.get(uav_id, 0)
                 # Key = uav_id -> same partition -> ordered
+                # No flush — async send for lowest latency
                 self._kafka_producer.send('telemetry.raw', key=uav_id, value=msg)
-            self._kafka_producer.flush(timeout=2)
             self._stats['kafka_success'] += 1
             return True
         except Exception as e:
@@ -859,6 +865,39 @@ class DDSGateway:
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "drones": drones
+        }
+
+    def build_telemetry_payload_single(self, uav_id: str) -> Optional[dict]:
+        """Build telemetry payload for a single drone (real-time per-drone send)."""
+        from datetime import datetime, timezone
+
+        with self._lock:
+            state = self.drone_states.get(uav_id)
+            if not state:
+                return None
+            drone_data = {
+                "uavId": state.uav_id,
+                "lat": state.lat,
+                "lon": state.lon,
+                "alt": state.alt,
+                "heading": state.heading,
+                "groundSpeed": state.ground_speed,
+                "verticalSpeed": state.vertical_speed,
+                "vx": state.vx,
+                "vy": state.vy,
+                "vz": state.vz,
+                "nedX": state.ned_x,
+                "nedY": state.ned_y,
+                "nedZ": state.ned_z,
+                "armed": state.armed,
+                "flightMode": state.flight_mode,
+                "batteryPercent": state.battery_percent,
+                "epoch": state.epoch,
+            }
+
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "drones": [drone_data]
         }
 
     def send_to_backend(self, payload: dict) -> bool:
@@ -986,11 +1025,16 @@ class DDSGateway:
         cycle = 0
         import rclpy
 
+        # Track per-drone last-sent timestamps for 10Hz throttle
+        _last_sent: Dict[str, float] = {}
+        SEND_INTERVAL = 0.1  # 10Hz per drone
+
         while self.running and rclpy.ok():
             try:
-                rclpy.spin_once(self._node, timeout_sec=0.1)
+                # Spin ROS2 — process all pending DDS callbacks (non-blocking)
+                rclpy.spin_once(self._node, timeout_sec=0.05)
 
-                if cycle % 10 == 0:
+                if cycle % 50 == 0:  # Discovery every ~5s (50 * 0.1s)
                     logger.info("[Discovery] Scanning topics (cycle %d)...", cycle)
                     new_drones = self.discover_drones_from_topics()
                     for uid in new_drones:
@@ -1010,27 +1054,26 @@ class DDSGateway:
                             "Check PX4 simulator and ROS_DOMAIN_ID."
                         )
 
+                # Real-time per-drone forwarding at 10Hz (no batch accumulation)
                 if self.drone_states:
                     now = time.time()
-                    active = sum(
-                        1 for s in self.drone_states.values()
-                        if now - s.last_update < 5
-                    )
-                    if active > 0:
-                        telemetry_payload = self.build_telemetry_payload()
-                        # Dual-write: Kafka (primary) + HTTP (fallback)
-                        kafka_ok = self.send_to_kafka(telemetry_payload)
-                        if not kafka_ok:
-                            self.send_to_backend(telemetry_payload)
-                    elif cycle % 10 == 0:
-                        logger.warning(
-                            "[Forward] %d drone(s) tracked but none active",
-                            len(self.drone_states)
-                        )
+                    for uid, state in list(self.drone_states.items()):
+                        if now - state.last_update > 5:
+                            continue  # Skip stale drones
+                        last = _last_sent.get(uid, 0)
+                        if now - last < SEND_INTERVAL:
+                            continue  # Throttle: 10Hz per drone
+                        _last_sent[uid] = now
+                        # Build single-drone payload and send immediately
+                        single_payload = self.build_telemetry_payload_single(uid)
+                        if single_payload:
+                            kafka_ok = self.send_to_kafka(single_payload)
+                            if not kafka_ok:
+                                self.send_to_backend(single_payload)
 
                 self.log_statistics()
                 cycle += 1
-                time.sleep(self.poll_interval)
+                # Tight loop — no sleep; spin_once timeout_sec=0.05 provides pacing
 
             except KeyboardInterrupt:
                 break
