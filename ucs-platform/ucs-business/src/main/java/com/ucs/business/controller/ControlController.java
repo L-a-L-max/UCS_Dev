@@ -70,20 +70,27 @@ public class ControlController {
             List<String> successList = new ArrayList<>();
             List<String> failedList = new ArrayList<>();
             
-            // Parse params for formation GOTO
+            // Parse formation parameters for GOTO / ORBIT / RTL
             String paramsStr = request.getParams();
-            boolean isFormationGoto = false;
+            String cmdType = request.getCommandType();
+            boolean isFormation = false;
             double baseLat = 0, baseLon = 0, baseAlt = 50;
+            double baseRadius = 5;
             double droneArea = 6.25; // 2.5m x 2.5m per drone
-            if ("GOTO".equalsIgnoreCase(request.getCommandType()) && paramsStr != null) {
+            boolean isGoto = "GOTO".equalsIgnoreCase(cmdType);
+            boolean isOrbit = "ORBIT".equalsIgnoreCase(cmdType);
+            boolean isRtl = "RTL".equalsIgnoreCase(cmdType);
+            
+            if ((isGoto || isOrbit || isRtl) && paramsStr != null) {
                 try {
                     var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
                     var json = mapper.readTree(paramsStr);
                     if (json.has("formation") && json.get("formation").asBoolean()) {
-                        isFormationGoto = true;
+                        isFormation = true;
                         baseLat = json.has("lat") ? json.get("lat").asDouble() : 0;
                         baseLon = json.has("lon") ? json.get("lon").asDouble() : 0;
                         baseAlt = json.has("alt") ? json.get("alt").asDouble() : 50;
+                        baseRadius = json.has("radius") ? json.get("radius").asDouble() : 5;
                         droneArea = json.has("droneArea") ? json.get("droneArea").asDouble() : 6.25;
                     }
                 } catch (Exception e) {
@@ -91,9 +98,9 @@ public class ControlController {
                 }
             }
             
-            // Calculate formation grid if needed
+            // Calculate formation grid offsets if needed (for GOTO / RTL with target point)
             double[][] offsets = null;
-            if (isFormationGoto) {
+            if (isFormation && (isGoto || isRtl)) {
                 int n = request.getUavIds().size();
                 double spacing = Math.sqrt(droneArea); // 2.5m for 6.25m²
                 int cols = (int) Math.ceil(Math.sqrt(n));
@@ -110,6 +117,10 @@ public class ControlController {
                 }
             }
             
+            // For ORBIT formation: each drone gets a different radius to avoid collision
+            // Drone 0 uses baseRadius, drone 1 uses baseRadius + spacing, etc.
+            double orbitSpacing = isFormation && isOrbit ? Math.sqrt(droneArea) : 0;
+            
             for (int i = 0; i < request.getUavIds().size(); i++) {
                 String uavId = request.getUavIds().get(i);
                 ControlCommandRequest singleRequest = new ControlCommandRequest();
@@ -117,13 +128,20 @@ public class ControlController {
                 singleRequest.setCommandType(request.getCommandType());
                 singleRequest.setConfirmed(request.getConfirmed());
                 
-                // For formation GOTO, calculate individual drone coordinates
-                if (isFormationGoto && offsets != null) {
+                if (isFormation && (isGoto || isRtl) && offsets != null) {
+                    // Formation GOTO / RTL: each drone gets offset coordinates in a grid
                     double droneLat = baseLat + offsets[i][0];
                     double droneLon = baseLon + offsets[i][1];
                     String droneParams = String.format(
                         "{\"lat\":%.8f,\"lon\":%.8f,\"alt\":%.1f}",
                         droneLat, droneLon, baseAlt);
+                    singleRequest.setParams(droneParams);
+                } else if (isFormation && isOrbit) {
+                    // Formation ORBIT: each drone gets a different radius (stacked orbits)
+                    double droneRadius = baseRadius + (i * orbitSpacing);
+                    String droneParams = String.format(
+                        "{\"lat\":%.8f,\"lon\":%.8f,\"radius\":%.2f,\"alt\":%.1f}",
+                        baseLat, baseLon, droneRadius, baseAlt);
                     singleRequest.setParams(droneParams);
                 } else {
                     singleRequest.setParams(request.getParams());

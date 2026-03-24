@@ -361,7 +361,8 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
 
   // Build command params based on commandType
   // coordOverrides: fresh lat/lon from map click (bypasses stale React state)
-  const buildCommandParams = (commandType: string, uavId: string, coordOverrides?: { lat: number; lon: number }): string => {
+  // isBatch: when true, injects formation=true for GOTO/ORBIT/RTL to avoid multi-drone collision
+  const buildCommandParams = (commandType: string, uavId: string, coordOverrides?: { lat: number; lon: number }, isBatch = false): string => {
     if (commandType === 'TAKEOFF') {
       return JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
     } else if (commandType === 'GOTO') {
@@ -370,11 +371,12 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
         lon: coordOverrides?.lon ?? (parseFloat(gotoLon) || 0),
         alt: parseFloat(gotoAlt) || 50,
         address: gotoAddress || undefined,
+        ...(isBatch ? { formation: true, droneArea: 6.25 } : {}),
       });
     } else if (commandType === 'RTL') {
       if (singleRtlMode === 'rally' && singleSelectedRallyId) {
         const rp = rallyPoints.find(r => r.id === singleSelectedRallyId);
-        if (rp) return JSON.stringify({ lat: rp.latitude, lon: rp.longitude });
+        if (rp) return JSON.stringify({ lat: rp.latitude, lon: rp.longitude, ...(isBatch ? { formation: true, droneArea: 6.25 } : {}) });
       }
       return '{}';
     } else if (commandType === 'ORBIT') {
@@ -384,6 +386,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
         lon: coordOverrides?.lon ?? (parseFloat(orbitLon) || 0),
         radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
         alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
+        ...(isBatch ? { formation: true, droneArea: 6.25 } : {}),
       });
     } else if (commandType === 'MARK_HOME') {
       const droneInfo = mapDrones.find(d => d.uavId === uavId);
@@ -421,8 +424,8 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
 
     try {
       if (targetUavIds.length > 1) {
-        // Multi-drone batch command
-        const params = buildCommandParams(commandType, uavId, coordOverrides);
+        // Multi-drone batch command — enable formation by default
+        const params = buildCommandParams(commandType, uavId, coordOverrides, true);
         const res = await sendBatchControlCommand(token, {
           uavIds: targetUavIds,
           commandType,
@@ -981,15 +984,14 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                       if (batchRtlMode === 'rally' && selectedRallyPointId) {
                         const rp = rallyPoints.find(r => r.id === selectedRallyPointId);
                         if (rp) {
-                          multiSelectedDrones.forEach(d => {
-                            const params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude });
-                            sendControlCommand(token, { uavId: d.uavId, commandType: 'RTL', params, confirmed: true });
-                          });
+                          const uavIds = multiSelectedDrones.map(d => d.uavId);
+                          const params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude, formation: true, droneArea: 6.25 });
+                          sendBatchControlCommand(token, { uavIds, commandType: 'RTL', params, confirmed: true });
                         }
                       } else {
-                        multiSelectedDrones.forEach(d => {
-                          sendControlCommand(token, { uavId: d.uavId, commandType: 'RTL', params: '{}', confirmed: true });
-                        });
+                        // Return to individual Home — no formation needed (each drone goes to its own Home)
+                        const uavIds = multiSelectedDrones.map(d => d.uavId);
+                        sendBatchControlCommand(token, { uavIds, commandType: 'RTL', params: '{}', confirmed: true });
                       }
                       setCommandFeedback({ uavId: `${multiSelectedDrones.length}\u67b6`, message: '\u8fd4\u822a\u6307\u4ee4\u5df2\u53d1\u9001', success: true });
                       setTimeout(() => setCommandFeedback(null), 3000);
@@ -1030,6 +1032,8 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                           lat: parseFloat(orbitLat) || 0,
                           lon: parseFloat(orbitLon) || 0,
                           radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
+                          formation: true,
+                          droneArea: 6.25,
                         });
                         sendBatchControlCommand(token, { uavIds, commandType: 'ORBIT', params, confirmed: true })
                           .then(res => { if (res.code === 0) setCommandFeedback({ uavId: `${uavIds.length}\u67b6`, message: '\u76d8\u65cb\u6307\u4ee4\u5df2\u53d1\u9001', success: true }); })

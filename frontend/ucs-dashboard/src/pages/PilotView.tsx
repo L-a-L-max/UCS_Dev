@@ -659,7 +659,6 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                         lon: parseFloat(gotoLon) || 0,
                         alt: parseFloat(gotoAlt) || 50,
                         formation: true,
-                        droneCount: uavIds.length,
                         droneArea: 6.25,
                       });
                       sendBatchControlCommand(token, { uavIds, commandType: 'GOTO', params, confirmed: true })
@@ -741,15 +740,14 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                       if (batchRtlMode === 'rally' && selectedRallyPointId) {
                         const rp = rallyPoints.find(r => r.id === selectedRallyPointId);
                         if (rp) {
-                          multiSelectedDronesList.forEach(d => {
-                            const params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude });
-                            sendControlCommand(token, { uavId: d.uavId, commandType: 'RTL', params, confirmed: true });
-                          });
+                          const uavIds = multiSelectedDronesList.map(d => d.uavId);
+                          const params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude, formation: true, droneArea: 6.25 });
+                          sendBatchControlCommand(token, { uavIds, commandType: 'RTL', params, confirmed: true });
                         }
                       } else {
-                        multiSelectedDronesList.forEach(d => {
-                          sendControlCommand(token, { uavId: d.uavId, commandType: 'RTL', params: '{}', confirmed: true });
-                        });
+                        // Return to individual Home — no formation needed (each drone goes to its own Home)
+                        const uavIds = multiSelectedDronesList.map(d => d.uavId);
+                        sendBatchControlCommand(token, { uavIds, commandType: 'RTL', params: '{}', confirmed: true });
                       }
                       setQuickFeedback({ uavId: `${multiSelectedDronesList.length}\u67b6`, message: '\u8fd4\u822a\u6307\u4ee4\u5df2\u53d1\u9001', success: true });
                       setTimeout(() => setQuickFeedback(null), 3000);
