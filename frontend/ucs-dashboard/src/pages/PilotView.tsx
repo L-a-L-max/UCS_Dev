@@ -289,7 +289,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   }, [drones, telemetryVersion]);
 
   // Unified command handler
-  const handleCommand = async (commandType: string, uavId?: string) => {
+  // coordOverrides: fresh lat/lon from map click (bypasses stale React state)
+  const handleCommand = async (commandType: string, uavId?: string, coordOverrides?: { lat: number; lon: number }) => {
     const targetUav = uavId || selectedDrone;
     if (!targetUav) return;
     // Command protection (Issue 5): check drone online/armed status
@@ -313,8 +314,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
       params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
     } else if (commandType === 'GOTO') {
       params = JSON.stringify({
-        lat: parseFloat(gotoLat) || 0,
-        lon: parseFloat(gotoLon) || 0,
+        lat: coordOverrides?.lat ?? (parseFloat(gotoLat) || 0),
+        lon: coordOverrides?.lon ?? (parseFloat(gotoLon) || 0),
         alt: parseFloat(gotoAlt) || 50,
         address: gotoAddress || undefined,
       });
@@ -331,8 +332,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
       // Include current drone altitude to prevent altitude loss during orbit
       const droneAlt = mapDrones.find(d => d.uavId === targetUav)?.altitude || 0;
       params = JSON.stringify({
-        lat: parseFloat(orbitLat) || 0,
-        lon: parseFloat(orbitLon) || 0,
+        lat: coordOverrides?.lat ?? (parseFloat(orbitLat) || 0),
+        lon: coordOverrides?.lon ?? (parseFloat(orbitLon) || 0),
         radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
         alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
       });
@@ -1021,14 +1022,16 @@ export default function PilotView({ token, username, partitions = [], onLogout }
             onMapClickCommand={(command, lat, lon) => {
               const targetUavId = selectedDrone || (selectedDrones.size === 1 ? Array.from(selectedDrones)[0] : null);
               if (!targetUavId) return;
+              // Pass fresh coordinates directly to avoid React setState race condition
+              const coords = { lat, lon };
               if (command === 'GOTO') {
                 setGotoLat(lat.toFixed(6));
                 setGotoLon(lon.toFixed(6));
-                handleCommand('GOTO', targetUavId);
+                handleCommand('GOTO', targetUavId, coords);
               } else if (command === 'ORBIT') {
                 setOrbitLat(lat.toFixed(6));
                 setOrbitLon(lon.toFixed(6));
-                handleCommand('ORBIT', targetUavId);
+                handleCommand('ORBIT', targetUavId, coords);
               } else if (command === 'MARK_HOME') {
                 handleCommand('MARK_HOME', targetUavId);
               }

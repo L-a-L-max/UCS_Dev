@@ -51,8 +51,6 @@ kafka:
     commands-ack: commands.ack
 
 dds:
-  simulator:
-    enabled: ${DDS_SIMULATOR_ENABLED:false}
   gateway:
     command-url: ${DDS_GATEWAY_COMMAND_URL:http://localhost:5050}
 

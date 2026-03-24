@@ -33,8 +33,8 @@ public class TelemetryPersistenceService {
     private final ConcurrentLinkedQueue<TelemetryRecord> buffer = new ConcurrentLinkedQueue<>();
 
     /**
-     * Accept telemetry data from the DDS simulator for persistence.
-     * Called by DDSSimulatorService for each telemetry cycle.
+     * Accept telemetry data for persistence.
+     * Called by Kafka consumer or other telemetry sources.
      */
     public void persistTelemetry(String uavId, double lat, double lon, double alt,
                                   double heading, double groundSpeed, double verticalSpeed,

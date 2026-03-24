@@ -360,13 +360,14 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   };
 
   // Build command params based on commandType
-  const buildCommandParams = (commandType: string, uavId: string): string => {
+  // coordOverrides: fresh lat/lon from map click (bypasses stale React state)
+  const buildCommandParams = (commandType: string, uavId: string, coordOverrides?: { lat: number; lon: number }): string => {
     if (commandType === 'TAKEOFF') {
       return JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
     } else if (commandType === 'GOTO') {
       return JSON.stringify({
-        lat: parseFloat(gotoLat) || 0,
-        lon: parseFloat(gotoLon) || 0,
+        lat: coordOverrides?.lat ?? (parseFloat(gotoLat) || 0),
+        lon: coordOverrides?.lon ?? (parseFloat(gotoLon) || 0),
         alt: parseFloat(gotoAlt) || 50,
         address: gotoAddress || undefined,
       });
@@ -379,8 +380,8 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     } else if (commandType === 'ORBIT') {
       const droneAlt = mapDrones.find(d => d.uavId === uavId)?.altitude || 0;
       return JSON.stringify({
-        lat: parseFloat(orbitLat) || 0,
-        lon: parseFloat(orbitLon) || 0,
+        lat: coordOverrides?.lat ?? (parseFloat(orbitLat) || 0),
+        lon: coordOverrides?.lon ?? (parseFloat(orbitLon) || 0),
         radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
         alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
       });
@@ -395,7 +396,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
 
   // Unified command handler with full param support
   // In multi-select mode, dispatches to ALL selected drones (not just the clicked one)
-  const handleQuickCommand = async (uavId: string, commandType: string) => {
+  const handleQuickCommand = async (uavId: string, commandType: string, coordOverrides?: { lat: number; lon: number }) => {
     setCommandFeedback(null);
 
     // Determine target drones: multi-select mode → all selected; single mode → just the clicked one
@@ -421,7 +422,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     try {
       if (targetUavIds.length > 1) {
         // Multi-drone batch command
-        const params = buildCommandParams(commandType, uavId);
+        const params = buildCommandParams(commandType, uavId, coordOverrides);
         const res = await sendBatchControlCommand(token, {
           uavIds: targetUavIds,
           commandType,
@@ -435,7 +436,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
         }
       } else {
         // Single drone command
-        const params = buildCommandParams(commandType, uavId);
+        const params = buildCommandParams(commandType, uavId, coordOverrides);
         const res = await sendControlCommand(token, { uavId, commandType, params, confirmed: true });
         if (res.code === 0) {
           setCommandFeedback({ uavId, message: `${commandType} 指令已发送`, success: true });
@@ -1301,14 +1302,17 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
               // In multi-select mode, use first selected drone as representative for command
               const targetUavId = selectedMapDrone || (selectedDrones.size >= 1 ? Array.from(selectedDrones)[0] : null);
               if (!targetUavId) return;
+              // Pass fresh coordinates directly to avoid React setState race condition
+              // (setState is async — gotoLat/gotoLon won't be updated yet when handleQuickCommand reads them)
+              const coords = { lat, lon };
               if (command === 'GOTO') {
                 setGotoLat(lat.toFixed(6));
                 setGotoLon(lon.toFixed(6));
-                handleQuickCommand(targetUavId, 'GOTO');
+                handleQuickCommand(targetUavId, 'GOTO', coords);
               } else if (command === 'ORBIT') {
                 setOrbitLat(lat.toFixed(6));
                 setOrbitLon(lon.toFixed(6));
-                handleQuickCommand(targetUavId, 'ORBIT');
+                handleQuickCommand(targetUavId, 'ORBIT', coords);
               } else if (command === 'MARK_HOME') {
                 handleQuickCommand(targetUavId, 'MARK_HOME');
               }
