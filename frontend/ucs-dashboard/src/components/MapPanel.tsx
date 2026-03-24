@@ -147,6 +147,8 @@ export default function MapPanel({
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const droneMarkersRef = useRef<Map<string, { marker: maplibregl.Marker; popup: maplibregl.Popup; element: HTMLDivElement }>>(new Map());
+  // Cumulative angle tracker per drone — avoids 359°→0° snap-back during orbiting
+  const cumulativeAngleRef = useRef<Map<string, number>>(new Map());
   const popupTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const rallyMarkersRef = useRef<Map<number, maplibregl.Marker>>(new Map());
 
@@ -393,6 +395,24 @@ export default function MapPanel({
     return { color, borderColor, isSelected };
   }
 
+  /**
+   * Compute cumulative rotation angle for a drone.
+   * Avoids the 359°→0° snap-back by tracking accumulated angle
+   * and always choosing the shortest rotational path.
+   */
+  function getCumulativeAngle(uavId: string, newHeading: number): number {
+    const prev = cumulativeAngleRef.current.get(uavId);
+    if (prev == null) {
+      cumulativeAngleRef.current.set(uavId, newHeading);
+      return newHeading;
+    }
+    // Compute shortest angular difference (-180 to +180)
+    let delta = ((newHeading - (prev % 360)) + 540) % 360 - 180;
+    const cumulative = prev + delta;
+    cumulativeAngleRef.current.set(uavId, cumulative);
+    return cumulative;
+  }
+
   /** Create marker DOM structure once (circle + svg + label) */
   function createMarkerElement(drone: MapDrone, isSelected: boolean): HTMLDivElement {
     const el = document.createElement('div');
@@ -408,14 +428,15 @@ export default function MapPanel({
     circle.style.cssText = `width:${size}px;height:${size}px;background:${color};border:3px solid ${borderColor};border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.3);transition:background 0.3s,border-color 0.3s,width 0.2s,height 0.2s;`;
     if (isSelected) circle.style.animation = 'pulse 1.5s infinite';
 
-    // SVG icon
+    // SVG icon — use cumulative angle for smooth orbiting
     const svgNS = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(svgNS, 'svg');
     svg.setAttribute('width', '16');
     svg.setAttribute('height', '16');
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('fill', 'white');
-    svg.style.cssText = `transform:rotate(${drone.heading ?? 0}deg);transition:transform 0.5s ease;`;
+    const cumAngle = getCumulativeAngle(drone.uavId, drone.heading ?? 0);
+    svg.style.cssText = `transform:rotate(${cumAngle}deg);transition:transform 0.3s linear;`;
     const path = document.createElementNS(svgNS, 'path');
     path.setAttribute('d', 'M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z');
     svg.appendChild(path);
@@ -445,10 +466,11 @@ export default function MapPanel({
       circle.style.borderColor = borderColor;
       circle.style.animation = isSelected ? 'pulse 1.5s infinite' : 'none';
 
-      // Update SVG rotation
+      // Update SVG rotation — use cumulative angle to prevent 359°→0° snap-back
       const svg = circle.querySelector('svg') as SVGElement | null;
       if (svg) {
-        svg.style.transform = `rotate(${drone.heading ?? 0}deg)`;
+        const cumAngle = getCumulativeAngle(drone.uavId, drone.heading ?? 0);
+        svg.style.transform = `rotate(${cumAngle}deg)`;
       }
     }
   }
@@ -477,8 +499,9 @@ export default function MapPanel({
         // DOM reuse: update position + style in-place (no innerHTML)
         existing.marker.setLngLat([drone.lng, drone.lat]);
         updateMarkerElement(existing.element, drone, isSelected);
-        // Only update popup content if it is open (avoid unnecessary DOM work)
+        // Update open popup: refresh content AND move to drone's current position
         if (existing.popup.isOpen()) {
+          existing.popup.setLngLat([drone.lng, drone.lat]);
           existing.popup.setHTML(createPopupHTML(drone));
         }
       } else {
