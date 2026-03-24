@@ -127,6 +127,7 @@ services:
   # ================================================================
 
   # ---- API 网关 (端口 8080) ----
+  # 最后启动：依赖所有下游微服务就绪
   ucs-api-gateway:
     build:
       context: ./ucs-platform/ucs-api-gateway
@@ -147,10 +148,23 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      ucs-business:
+        condition: service_started
+      ucs-telemetry-ingest:
+        condition: service_started
+      ucs-telemetry-store:
+        condition: service_started
+      ucs-realtime-push:
+        condition: service_started
+      ucs-command:
+        condition: service_started
+      ucs-drone-state:
+        condition: service_started
     networks:
       - ucs-net
 
   # ---- 遥测接入服务 (端口 8081) ----
+  # 依赖: kafka + redis 就绪后启动
   ucs-telemetry-ingest:
     build:
       context: ./ucs-platform/ucs-telemetry-ingest
@@ -167,10 +181,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: on-failure
     networks:
       - ucs-net
 
   # ---- 遥测存储服务 (端口 8082) ----
+  # 依赖: kafka + redis + timescaledb 就绪后启动
   ucs-telemetry-store:
     build:
       context: ./ucs-platform/ucs-telemetry-store
@@ -194,10 +210,12 @@ services:
         condition: service_healthy
       timescaledb:
         condition: service_healthy
+    restart: on-failure
     networks:
       - ucs-net
 
   # ---- 实时推送服务 (端口 8083) ----
+  # 依赖: kafka + redis 就绪后启动
   ucs-realtime-push:
     build:
       context: ./ucs-platform/ucs-realtime-push
@@ -214,10 +232,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: on-failure
     networks:
       - ucs-net
 
   # ---- 指令下发服务 (端口 8084) ----
+  # 依赖: kafka + redis 就绪后启动
   ucs-command:
     build:
       context: ./ucs-platform/ucs-command
@@ -234,10 +254,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: on-failure
     networks:
       - ucs-net
 
   # ---- 无人机状态服务 (端口 8085) ----
+  # 依赖: redis + postgres 就绪后启动
   ucs-drone-state:
     build:
       context: ./ucs-platform/ucs-drone-state
@@ -258,6 +280,7 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    restart: on-failure
     networks:
       - ucs-net
 
@@ -279,6 +302,8 @@ services:
       REDIS_PORT: 6379
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      # 禁用内置模拟器，使用 DDS Gateway 真实数据
+      DDS_SIMULATOR_ENABLED: "false"
       # DDS Gateway 通常运行在宿主机（带 ROS2/DDS 环境），使用 host.docker.internal 访问
       # Linux 下需要在 extra_hosts 中添加映射，或直接使用宿主机 IP
       DDS_GATEWAY_COMMAND_URL: ${DDS_GATEWAY_COMMAND_URL:-http://host.docker.internal:5050}
@@ -291,6 +316,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: on-failure
     networks:
       - ucs-net
 

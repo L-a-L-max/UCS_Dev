@@ -33,7 +33,7 @@ public class DDSSimulatorService {
     private final WebSocketGatewayService webSocketGatewayService;          // Gateway 3
     private final RedisService redisService;
 
-    @Value("${dds.simulator.enabled:true}")
+    @Value("${dds.simulator.enabled:false}")
     private boolean enabled;
 
     // Track simulated drone positions (uavId -> state)
