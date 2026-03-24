@@ -1042,8 +1042,6 @@ class DDSGateway:
                         if is_new:
                             logger.info("[Discovery] NEW drone: %s", uid)
                             self.subscribe_to_drone(uid)
-                            # Set default flight parameters (e.g. MPC_YAW_MODE=1)
-                            self._set_drone_default_params(uid)
                             # Increment epoch for new/reconnected drone
                             epoch = self._get_or_increment_epoch(uid, is_new=True)
                             self.drone_states[uid].epoch = epoch
@@ -1366,7 +1364,8 @@ class DDSGateway:
             logger.info("[Command] TAKEOFF (ARM+OFFBOARD): relative=%.1fm, NED_z=%.1f for %s",
                         relative_alt, target_z, uav_id)
 
-            # Step 0: Save home position + set home on flight controller (cmd 179)
+            # Step 0: Set flight parameters + save home position
+            self._set_drone_default_params(uav_id)  # MPC_YAW_MODE=1 (auto-yaw towards waypoint)
             self._save_home_position(uav_id)
             self.publish_vehicle_command(uav_id, command=179, param1=1.0)  # use current pos
 
