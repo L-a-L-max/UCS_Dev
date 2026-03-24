@@ -32,6 +32,7 @@ import {
   Locate,
   ChevronDown,
   Circle,
+  Navigation2,
 } from 'lucide-react';
 import {
   Dialog,
@@ -220,6 +221,11 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   const [detailPanelEnabled, setDetailPanelEnabled] = useState(true);
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [selectedDrones, setSelectedDrones] = useState<Set<string>>(new Set());
+  // 定位模式：一次性飞到无人机位置
+  const [locateDroneId, setLocateDroneId] = useState<string | null>(null);
+  const [locateDroneCounter, setLocateDroneCounter] = useState(0);
+  // 追随模式：视野跟随无人机移动
+  const [followDroneId, setFollowDroneId] = useState<string | null>(null);
 
   // Transfer state
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
@@ -353,10 +359,51 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     }
   };
 
+  // Build command params based on commandType
+  const buildCommandParams = (commandType: string, uavId: string): string => {
+    if (commandType === 'TAKEOFF') {
+      return JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
+    } else if (commandType === 'GOTO') {
+      return JSON.stringify({
+        lat: parseFloat(gotoLat) || 0,
+        lon: parseFloat(gotoLon) || 0,
+        alt: parseFloat(gotoAlt) || 50,
+        address: gotoAddress || undefined,
+      });
+    } else if (commandType === 'RTL') {
+      if (singleRtlMode === 'rally' && singleSelectedRallyId) {
+        const rp = rallyPoints.find(r => r.id === singleSelectedRallyId);
+        if (rp) return JSON.stringify({ lat: rp.latitude, lon: rp.longitude });
+      }
+      return '{}';
+    } else if (commandType === 'ORBIT') {
+      const droneAlt = mapDrones.find(d => d.uavId === uavId)?.altitude || 0;
+      return JSON.stringify({
+        lat: parseFloat(orbitLat) || 0,
+        lon: parseFloat(orbitLon) || 0,
+        radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
+        alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
+      });
+    } else if (commandType === 'MARK_HOME') {
+      const droneInfo = mapDrones.find(d => d.uavId === uavId);
+      if (droneInfo && droneInfo.lat && droneInfo.lng) {
+        return JSON.stringify({ lat: droneInfo.lat, lon: droneInfo.lng, alt: droneInfo.altitude || 0 });
+      }
+    }
+    return '{}';
+  };
+
   // Unified command handler with full param support
+  // In multi-select mode, dispatches to ALL selected drones (not just the clicked one)
   const handleQuickCommand = async (uavId: string, commandType: string) => {
     setCommandFeedback(null);
-    // Command protection (Issue 5): check drone online/armed status
+
+    // Determine target drones: multi-select mode → all selected; single mode → just the clicked one
+    const targetUavIds = (multiSelectMode && selectedDrones.size >= 2)
+      ? Array.from(selectedDrones)
+      : [uavId];
+
+    // Command protection: check first drone for basic validation
     const droneStatus = mapDrones.find(d => d.uavId === uavId);
     if (droneStatus) {
       if (!droneStatus.onlineStatus) {
@@ -370,65 +417,40 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
         return;
       }
     }
-    try {
-      let params = '{}';
-      if (commandType === 'TAKEOFF') {
-        params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
-      } else if (commandType === 'GOTO') {
-        params = JSON.stringify({
-          lat: parseFloat(gotoLat) || 0,
-          lon: parseFloat(gotoLon) || 0,
-          alt: parseFloat(gotoAlt) || 50,
-          address: gotoAddress || undefined,
-        });
-      } else if (commandType === 'RTL') {
-        // RTL uses rally point coordinates if in rally mode
-        if (singleRtlMode === 'rally' && singleSelectedRallyId) {
-          const rp = rallyPoints.find(r => r.id === singleSelectedRallyId);
-          if (rp) {
-            params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude });
-          }
-        }
-        // Home mode: no extra params, drone returns to its Home point
-      } else if (commandType === 'ORBIT') {
-        // Include current drone altitude to prevent altitude loss during orbit
-        const droneAlt = mapDrones.find(d => d.uavId === uavId)?.altitude || 0;
-        params = JSON.stringify({
-          lat: parseFloat(orbitLat) || 0,
-          lon: parseFloat(orbitLon) || 0,
-          radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
-          alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
-        });
-      } else if (commandType === 'MARK_HOME') {
-        const droneInfo = mapDrones.find(d => d.uavId === uavId);
-        if (droneInfo && droneInfo.lat && droneInfo.lng) {
-          params = JSON.stringify({
-            lat: droneInfo.lat,
-            lon: droneInfo.lng,
-            alt: droneInfo.altitude || 0,
-          });
-        }
-      }
 
-      const res = await sendControlCommand(token, {
-        uavId,
-        commandType,
-        params,
-        confirmed: true,
-      });
-      if (res.code === 0) {
-        setCommandFeedback({ uavId, message: `${commandType} \u6307\u4ee4\u5df2\u53d1\u9001`, success: true });
-        if (commandType === 'MARK_HOME' || commandType === 'TAKEOFF') {
-          const droneInfo = mapDrones.find(d => d.uavId === uavId);
-          if (droneInfo && droneInfo.lat && droneInfo.lng) {
-            setHomePosition({ lat: droneInfo.lat, lon: droneInfo.lng, alt: droneInfo.altitude || 0 });
-          }
+    try {
+      if (targetUavIds.length > 1) {
+        // Multi-drone batch command
+        const params = buildCommandParams(commandType, uavId);
+        const res = await sendBatchControlCommand(token, {
+          uavIds: targetUavIds,
+          commandType,
+          params,
+          confirmed: true,
+        });
+        if (res.code === 0) {
+          setCommandFeedback({ uavId: `${targetUavIds.length}架`, message: `${commandType} 指令已发送`, success: true });
+        } else {
+          setCommandFeedback({ uavId: `${targetUavIds.length}架`, message: res.msg || '指令发送失败', success: false });
         }
       } else {
-        setCommandFeedback({ uavId, message: res.msg || '\u6307\u4ee4\u53d1\u9001\u5931\u8d25', success: false });
+        // Single drone command
+        const params = buildCommandParams(commandType, uavId);
+        const res = await sendControlCommand(token, { uavId, commandType, params, confirmed: true });
+        if (res.code === 0) {
+          setCommandFeedback({ uavId, message: `${commandType} 指令已发送`, success: true });
+          if (commandType === 'MARK_HOME' || commandType === 'TAKEOFF') {
+            const droneInfo = mapDrones.find(d => d.uavId === uavId);
+            if (droneInfo && droneInfo.lat && droneInfo.lng) {
+              setHomePosition({ lat: droneInfo.lat, lon: droneInfo.lng, alt: droneInfo.altitude || 0 });
+            }
+          }
+        } else {
+          setCommandFeedback({ uavId, message: res.msg || '指令发送失败', success: false });
+        }
       }
     } catch {
-      setCommandFeedback({ uavId, message: '\u7f51\u7edc\u9519\u8bef', success: false });
+      setCommandFeedback({ uavId, message: '网络错误', success: false });
     }
     setTimeout(() => setCommandFeedback(null), 3000);
   };
@@ -676,6 +698,21 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                         <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
                         <span className="text-slate-500">{drone.teamName || ''}</span>
                       </div>
+                      {/* Locate + Follow buttons */}
+                      <div className="flex flex-wrap gap-0.5 mt-0.5">
+                        <Button size="sm" variant="outline"
+                          className="text-[9px] h-[18px] px-1.5 bg-sky-700/50 border-sky-600 text-sky-300 hover:bg-sky-600"
+                          onClick={e => { e.stopPropagation(); setFollowDroneId(null); setLocateDroneId(drone.uavId); setLocateDroneCounter(c => c + 1); }}
+                          title="定位无人机">
+                          <Locate className="w-2.5 h-2.5 mr-0.5" />{'定位'}
+                        </Button>
+                        <Button size="sm" variant="outline"
+                          className={`text-[9px] h-[18px] px-1.5 ${followDroneId === drone.uavId ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-emerald-700/50 border-emerald-600 text-emerald-300 hover:bg-emerald-600'}`}
+                          onClick={e => { e.stopPropagation(); setFollowDroneId(followDroneId === drone.uavId ? null : drone.uavId); }}
+                          title="追随无人机">
+                          <Navigation2 className="w-2.5 h-2.5 mr-0.5" />{followDroneId === drone.uavId ? '追随中' : '追随'}
+                        </Button>
+                      </div>
                       {/* Quick commands + transfer */}
                       <div className="flex flex-wrap gap-0.5 mt-0.5">
                         {COMMANDS.map(cmd => {
@@ -687,7 +724,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                               className={`text-[9px] h-[18px] px-1.5 ${shouldDisable ? 'bg-slate-800 border-slate-700 text-slate-600 cursor-not-allowed' : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'}`}
                               onClick={e => { e.stopPropagation(); if (!shouldDisable) handleQuickCommand(drone.uavId, cmd.type); }}
                               disabled={shouldDisable}
-                              title={shouldDisable ? (isOffline ? '无人机离线' : '无人机未解锁') : cmd.type}>
+                              title={shouldDisable ? (isOffline ? '无人机离线' : '无人机未解锁') : (multiSelectMode && selectedDrones.size >= 2 ? `${cmd.type}(多机)` : cmd.type)}>
                               {cmd.label}
                             </Button>
                           );
@@ -1254,8 +1291,15 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
             homeMarker={homeMarker}
             hasDroneSelected={!!selectedMapDrone || selectedDrones.size > 0}
             onMapClick={(lat, lon) => setMapClickCoords({ lat, lon })}
+            locateDroneId={locateDroneId}
+            locateDroneCounter={locateDroneCounter}
+            followDroneId={followDroneId}
+            onFollowExit={() => setFollowDroneId(null)}
             onMapClickCommand={(command, lat, lon) => {
-              const targetUavId = selectedMapDrone || (selectedDrones.size === 1 ? Array.from(selectedDrones)[0] : null);
+              // Exit follow mode on map click command
+              setFollowDroneId(null);
+              // In multi-select mode, use first selected drone as representative for command
+              const targetUavId = selectedMapDrone || (selectedDrones.size >= 1 ? Array.from(selectedDrones)[0] : null);
               if (!targetUavId) return;
               if (command === 'GOTO') {
                 setGotoLat(lat.toFixed(6));

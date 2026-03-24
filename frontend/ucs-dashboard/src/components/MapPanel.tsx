@@ -119,6 +119,13 @@ interface MapPanelProps {
   onMapClickCommand?: (command: string, lat: number, lon: number) => void;
   /** 是否有选中的无人机（控制地图点击菜单是否显示） */
   hasDroneSelected?: boolean;
+  /** 定位无人机：设置后地图飞到该无人机位置（一次性），改变值触发定位 */
+  locateDroneCounter?: number;
+  locateDroneId?: string | null;
+  /** 追随模式：持续跟踪该无人机，视野随其移动 */
+  followDroneId?: string | null;
+  /** 退出追随模式回调（用户拖拽/点击地图时触发） */
+  onFollowExit?: () => void;
   /** 额外的 CSS 类名 */
   className?: string;
   /** 是否显示无人机列表侧边栏 */
@@ -139,6 +146,10 @@ export default function MapPanel({
   onMapClick,
   onMapClickCommand,
   hasDroneSelected = false,
+  locateDroneCounter = 0,
+  locateDroneId,
+  followDroneId,
+  onFollowExit,
   className = '',
   showDroneList = true,
   showEventLog = false,
@@ -159,12 +170,14 @@ export default function MapPanel({
   const onMapClickRef = useRef(onMapClick);
   const onMapClickCommandRef = useRef(onMapClickCommand);
   const hasDroneSelectedRef = useRef(hasDroneSelected);
+  const onFollowExitRef = useRef(onFollowExit);
   useEffect(() => { onDroneClickRef.current = onDroneClick; }, [onDroneClick]);
   useEffect(() => { selectedDroneIdsRef.current = selectedDroneIds; }, [selectedDroneIds]);
   useEffect(() => { selectedDroneIdRef.current = selectedDroneId; }, [selectedDroneId]);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
   useEffect(() => { onMapClickCommandRef.current = onMapClickCommand; }, [onMapClickCommand]);
   useEffect(() => { hasDroneSelectedRef.current = hasDroneSelected; }, [hasDroneSelected]);
+  useEffect(() => { onFollowExitRef.current = onFollowExit; }, [onFollowExit]);
   const homeMarkerRef = useRef<maplibregl.Marker | null>(null);
   const mapClickPopupRef = useRef<maplibregl.Popup | null>(null);
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
@@ -399,6 +412,7 @@ export default function MapPanel({
    * Compute cumulative rotation angle for a drone.
    * Avoids the 359°→0° snap-back by tracking accumulated angle
    * and always choosing the shortest rotational path.
+   * Uses safe modulo to handle negative cumulative values correctly.
    */
   function getCumulativeAngle(uavId: string, newHeading: number): number {
     const prev = cumulativeAngleRef.current.get(uavId);
@@ -406,8 +420,10 @@ export default function MapPanel({
       cumulativeAngleRef.current.set(uavId, newHeading);
       return newHeading;
     }
+    // Safe modulo that always returns 0-360 (JS % can return negative for negative prev)
+    const prevNorm = ((prev % 360) + 360) % 360;
     // Compute shortest angular difference (-180 to +180)
-    let delta = ((newHeading - (prev % 360)) + 540) % 360 - 180;
+    let delta = ((newHeading - prevNorm) + 540) % 360 - 180;
     const cumulative = prev + delta;
     cumulativeAngleRef.current.set(uavId, cumulative);
     return cumulative;
@@ -436,7 +452,7 @@ export default function MapPanel({
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('fill', 'white');
     const cumAngle = getCumulativeAngle(drone.uavId, drone.heading ?? 0);
-    svg.style.cssText = `transform:rotate(${cumAngle}deg);transition:transform 0.3s linear;`;
+    svg.style.cssText = `transform:rotate(${cumAngle}deg);transition:transform 0.1s linear;will-change:transform;`;
     const path = document.createElementNS(svgNS, 'path');
     path.setAttribute('d', 'M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z');
     svg.appendChild(path);
@@ -471,6 +487,11 @@ export default function MapPanel({
       if (svg) {
         const cumAngle = getCumulativeAngle(drone.uavId, drone.heading ?? 0);
         svg.style.transform = `rotate(${cumAngle}deg)`;
+        // Ensure transition is always set (may be lost if browser resets inline styles)
+        if (!svg.style.transition) {
+          svg.style.transition = 'transform 0.1s linear';
+          svg.style.willChange = 'transform';
+        }
       }
     }
   }
@@ -607,7 +628,7 @@ export default function MapPanel({
     }
   }, [drones, selectedDroneId, selectedDroneIds, updateMarkers]);
 
-  // 当 selectedDroneId 从外部变化时（如左侧列表点击），自动打开该无人机的弹窗并飞行聚焦
+  // 当 selectedDroneId 从外部变化时（如左侧列表点击），自动打开该无人机的弹窗（不自动飞行聚焦，定位功能已独立为按钮）
   const prevSelectedRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     // 初始化时跳过
@@ -633,10 +654,33 @@ export default function MapPanel({
       entry.popup.addTo(map.current);
       entry.popup.setLngLat(entry.marker.getLngLat());
     }
-    // 飞行到该无人机
-    const lngLat = entry.marker.getLngLat();
-    map.current.flyTo({ center: [lngLat.lng, lngLat.lat], zoom: 14, duration: 800 });
   }, [selectedDroneId]);
+
+  // 定位模式：一次性飞到指定无人机位置（locateDroneCounter 变化时触发）
+  useEffect(() => {
+    if (!locateDroneId || !map.current || locateDroneCounter === 0) return;
+    const drone = drones.find(d => d.uavId === locateDroneId);
+    if (!drone || drone.lat == null || drone.lng == null) return;
+    map.current.flyTo({ center: [drone.lng, drone.lat], zoom: 14, duration: 800 });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locateDroneCounter, locateDroneId]);
+
+  // 追随模式：持续跟踪指定无人机，视野随其移动
+  useEffect(() => {
+    if (!followDroneId || !map.current) return;
+    const drone = drones.find(d => d.uavId === followDroneId);
+    if (!drone || drone.lat == null || drone.lng == null) return;
+    map.current.easeTo({ center: [drone.lng, drone.lat], duration: 300 });
+  }, [followDroneId, drones]);
+
+  // 用户拖拽/交互地图时退出追随模式
+  useEffect(() => {
+    if (!map.current) return;
+    const m = map.current;
+    const exitFollow = () => { onFollowExitRef.current?.(); };
+    m.on('dragstart', exitFollow);
+    return () => { m.off('dragstart', exitFollow); };
+  }, []);
 
   // resize 地图 - 响应面板折叠/展开
   useEffect(() => {
@@ -910,13 +954,9 @@ export default function MapPanel({
                     ? 'bg-blue-900/50 border border-blue-500'
                     : 'bg-slate-700/50 border border-slate-600 hover:border-slate-500'
                 }`}
-                onClick={() => {
-                  onDroneClick?.(drone.uavId);
-                  // 聚焦到该无人机
-                  if (map.current && drone.lat != null && drone.lng != null) {
-                    map.current.flyTo({ center: [drone.lng, drone.lat], zoom: 14, duration: 800 });
-                  }
-                }}
+                  onClick={() => {
+                    onDroneClick?.(drone.uavId);
+                  }}
               >
                 <div className="flex items-center justify-between mb-0.5">
                   <span className="font-bold text-white">{drone.uavId}</span>
