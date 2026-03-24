@@ -1467,17 +1467,15 @@ class DDSGateway:
                     lat, lon, home_alt + alt,
                     home_lat, home_lon, home_alt)
                 target_z = -alt  # NED: negative = up from home
-                # Calculate yaw: bearing from current position to target (NED frame)
-                # atan2(east, north) gives heading in radians, 0=North, pi/2=East
-                target_yaw = math.atan2(east, north) if (not math.isnan(east) and not math.isnan(north) and (abs(east) > 0.1 or abs(north) > 0.1)) else float('nan')
+                # Yaw is handled by MPC_YAW_MODE=1 (auto-yaw towards next waypoint)
+                # No need to calculate bearing here
                 logger.info(
-                    "[Command] GOTO: lat=%.6f lon=%.6f alt=%.1f -> NED [%.1f, %.1f, %.1f] yaw=%.2frad for %s",
-                    lat, lon, alt, north, east, target_z, target_yaw, uav_id)
-                # Update heartbeat setpoint with new target + yaw
+                    "[Command] GOTO: lat=%.6f lon=%.6f alt=%.1f -> NED [%.1f, %.1f, %.1f] for %s",
+                    lat, lon, alt, north, east, target_z, uav_id)
+                # Update heartbeat setpoint with new target (yaw=NaN, handled by PX4)
                 self.start_offboard_heartbeat(
                     uav_id, target_z=target_z,
-                    target_x=north, target_y=east,
-                    target_yaw=target_yaw)
+                    target_x=north, target_y=east)
                 # Ensure OFFBOARD mode
                 ok = self.publish_vehicle_command(
                     uav_id, command=176, param1=1.0, param2=6.0)
@@ -1753,14 +1751,10 @@ class DDSGateway:
                     target_n = center_n + radius * math.cos(angle)
                     target_e = center_e + radius * math.sin(angle)
 
-                    # Yaw towards center: atan2(east_to_center, north_to_center)
-                    dn = center_n - target_n
-                    de = center_e - target_e
-                    yaw = math.atan2(de, dn)  # 0=North, pi/2=East
-
+                    # Yaw is handled by MPC_YAW_MODE=1 (auto-yaw towards flight direction)
                     self.publish_offboard_control_mode(uav_id, position=True)
                     self.publish_trajectory_setpoint(
-                        uav_id, target_n, target_e, alt_ned, yaw=yaw, log=False)
+                        uav_id, target_n, target_e, alt_ned, log=False)
                 except Exception as e:
                     logger.error("[Orbit] Error for %s: %s", uav_id, e)
                 time.sleep(interval)
