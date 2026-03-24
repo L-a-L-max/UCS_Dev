@@ -1042,6 +1042,8 @@ class DDSGateway:
                         if is_new:
                             logger.info("[Discovery] NEW drone: %s", uid)
                             self.subscribe_to_drone(uid)
+                            # Set default flight parameters (e.g. MPC_YAW_MODE=1)
+                            self._set_drone_default_params(uid)
                             # Increment epoch for new/reconnected drone
                             epoch = self._get_or_increment_epoch(uid, is_new=True)
                             self.drone_states[uid].epoch = epoch
@@ -1103,6 +1105,55 @@ class DDSGateway:
     # ============================================================
     # Command Publishing (Backend -> DDS)
     # ============================================================
+
+    def _set_drone_default_params(self, uav_id: str):
+        """Set default PX4 parameters for a newly discovered drone.
+
+        Uses MAV_CMD_DO_SET_PARAMETER (command 180) via VehicleCommand topic:
+          param1 = parameter numeric index (unused by PX4, set to 0)
+          param2 = parameter value
+
+        PX4 also supports setting params via the ParameterSetValueRequest topic
+        if available. We try that first, then fall back to VehicleCommand.
+
+        Parameters set:
+          MPC_YAW_MODE = 1  (auto-yaw towards next waypoint / direction of travel)
+        """
+        if not self._rclpy_available or not self._px4_msgs_available or not self._node:
+            return
+
+        try:
+            import px4_msgs.msg as px4
+
+            # Try ParameterSetValueRequest if available (PX4 v1.14+)
+            if hasattr(px4, 'ParameterSetValueRequest'):
+                topic = f"/{uav_id}/fmu/in/parameter_set_value_request"
+                pub = self._get_or_create_publisher(topic, px4.ParameterSetValueRequest)
+                msg = px4.ParameterSetValueRequest()
+                # PX4 parameter name: MPC_YAW_MODE
+                param_name = 'MPC_YAW_MODE'
+                # ParameterSetValueRequest uses a char[17] array for param_id
+                msg.param_id = [0] * 16
+                for i, ch in enumerate(param_name[:16]):
+                    msg.param_id[i] = ord(ch)
+                msg.int_value = 1  # YAW towards next waypoint
+                msg.param_type = 6  # PARAM_TYPE_INT32
+                msg.timestamp = int(time.time() * 1e6)
+                pub.publish(msg)
+                logger.info("[Params] Set MPC_YAW_MODE=1 for %s via ParameterSetValueRequest", uav_id)
+            else:
+                # Fallback: MAV_CMD_DO_SET_PARAMETER (180)
+                # param1=0 (index not used), param2=1.0 (value)
+                # Note: This may not work for all PX4 versions
+                ok = self.publish_vehicle_command(
+                    uav_id, command=180, param1=0.0, param2=1.0
+                )
+                if ok:
+                    logger.info("[Params] Set MPC_YAW_MODE=1 for %s via VehicleCommand(180)", uav_id)
+                else:
+                    logger.warning("[Params] Failed to set MPC_YAW_MODE for %s", uav_id)
+        except Exception as e:
+            logger.warning("[Params] Error setting default params for %s: %s", uav_id, e)
 
     def _extract_system_id(self, uav_id: str) -> int:
         """Extract PX4 system ID from uav_id.
