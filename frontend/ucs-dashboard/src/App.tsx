@@ -10,7 +10,6 @@ import {
   ClipboardList, 
   Cloud, 
   AlertTriangle,
-  Battery,
   Activity,
   RefreshCw,
   LogIn,
@@ -42,12 +41,10 @@ import { GlassPanel } from './components/ui/GlassPanel';
 import { NeonButton } from './components/ui/NeonButton';
 import { NeonBadge } from './components/ui/NeonBadge';
 import { ConnectionStatus } from './components/ui/ConnectionStatus';
-// Phase 4/5 imports - will be integrated into observer dashboard
-// import { DroneStatusPie } from './components/charts/DroneStatusPie';
-// import { BatteryGauge } from './components/charts/BatteryGauge';
-// import { DroneLayer } from './components/map/DroneLayer';
-// import { useWebSocketResilience } from './hooks/useWebSocketResilience';
-// import { useEpochAwareness } from './hooks/useEpochAwareness';
+import { DroneStatusPie } from './components/charts/DroneStatusPie';
+import { BatteryGauge } from './components/charts/BatteryGauge';
+import { useWebSocketResilience } from './hooks/useWebSocketResilience';
+import { useEpochAwareness } from './hooks/useEpochAwareness';
 
 // Popup auto-close timing constants (watchdog mechanism)
 const POPUP_DEFAULT_TIMEOUT = 6000; // 6 seconds default
@@ -716,12 +713,41 @@ function App() {
     });
   }, [useLiveTelemetry]);
 
+  // Phase 5: WebSocket resilience - exponential backoff + epoch awareness
+  const wsResilience = useWebSocketResilience({
+    maxRetries: 10,
+    initialDelay: 1000,
+    maxDelay: 30000,
+    onStateChange: (state) => {
+      if (state === 'connected') setWsConnected(true);
+      else if (state === 'failed') setWsConnected(false);
+    },
+  });
+  const epochAwareness = useEpochAwareness({
+    staleDuration: 10000,
+    onEpochChange: (_old, _new) => {
+      // Epoch changed - data may be stale, trigger a full data refresh
+      fetchAllData();
+    },
+  });
+
   // WebSocket hook for real-time telemetry (only for OBSERVER role - other roles use their own view-level WS)
   const isObserverRole = !userRoles.some(r => ['COMMANDER', 'LEADER', 'PILOT', 'OPERATOR'].includes(r.toUpperCase()));
   const { connected: _telemetryConnected } = useTelemetryWebSocket({
     enabled: isLoggedIn && useLiveTelemetry && isObserverRole,
-    onTelemetryReceived: handleTelemetryReceived,
-    onConnectionChange: setWsConnected,
+    onTelemetryReceived: (batch) => {
+      handleTelemetryReceived(batch);
+      // Record successful connection for resilience tracking
+      wsResilience.recordSuccess();
+    },
+    onConnectionChange: (connected) => {
+      setWsConnected(connected);
+      if (connected) {
+        wsResilience.recordSuccess();
+      } else {
+        wsResilience.recordFailure();
+      }
+    },
   });
 
   const getCurrentLocation = (flyToLocation = true) => {
@@ -2010,7 +2036,10 @@ function App() {
           <span className="bg-gradient-to-r from-neon-cyan to-neon-aqua bg-clip-text text-transparent">{zhCN.dashboardTitle}</span>
         </h1>
         <div className="flex items-center gap-3">
-          <ConnectionStatus state={_wsConnected ? 'connected' : 'reconnecting'} />
+          <ConnectionStatus state={wsResilience.connectionState} />
+          {epochAwareness.epochInfo.isStale && (
+            <NeonBadge variant="amber" className="animate-pulse text-[10px]">数据同步中...</NeonBadge>
+          )}
           <NeonBadge variant="cyan">{username}</NeonBadge>
           <NeonButton variant="ghost" size="sm" onClick={fetchAllData} disabled={loading}>
             <RefreshCw className={`w-3.5 h-3.5 mr-1 ${loading ? 'animate-spin' : ''}`} />{zhCN.refresh}
@@ -2058,41 +2087,17 @@ function App() {
               )}
               {taskSummary && taskChartType === 'pie' && (
                 <div className="flex items-center justify-center py-2">
-                  <svg viewBox="0 0 100 100" className="w-32 h-32">
-                    {(() => {
-                      const total = taskSummary.executing + taskSummary.completed + taskSummary.abnormal;
-                      if (total === 0) return <circle cx="50" cy="50" r="40" fill="#475569" />;
-                      const executingAngle = (taskSummary.executing / total) * 360;
-                      const completedAngle = (taskSummary.completed / total) * 360;
-                      const abnormalAngle = (taskSummary.abnormal / total) * 360;
-                      let currentAngle = 0;
-                      const createArc = (angle: number, color: string) => {
-                        if (angle === 0) return null;
-                        const startAngle = currentAngle;
-                        const endAngle = currentAngle + angle;
-                        currentAngle = endAngle;
-                        const startRad = (startAngle - 90) * Math.PI / 180;
-                        const endRad = (endAngle - 90) * Math.PI / 180;
-                        const x1 = 50 + 40 * Math.cos(startRad);
-                        const y1 = 50 + 40 * Math.sin(startRad);
-                        const x2 = 50 + 40 * Math.cos(endRad);
-                        const y2 = 50 + 40 * Math.sin(endRad);
-                        const largeArc = angle > 180 ? 1 : 0;
-                        return <path d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`} fill={color} />;
-                      };
-                      return (
-                        <>
-                          {createArc(executingAngle, '#22c55e')}
-                          {createArc(completedAngle, '#94a3b8')}
-                          {createArc(abnormalAngle, '#ef4444')}
-                        </>
-                      );
-                    })()}
-                  </svg>
+                  <DroneStatusPie
+                    flying={taskSummary.executing}
+                    idle={taskSummary.completed}
+                    offline={0}
+                    lowBattery={taskSummary.abnormal}
+                    className="w-32 h-32"
+                  />
                   <div className="ml-3 space-y-1 text-xs">
-                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-green-500"></div>{zhCN.active}: {taskSummary.executing}</div>
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-[#00F0FF]"></div>{zhCN.active}: {taskSummary.executing}</div>
                     <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-slate-400"></div>{zhCN.done}: {taskSummary.completed}</div>
-                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-red-500"></div>{zhCN.error}: {taskSummary.abnormal}</div>
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-[#FF3B5C]"></div>{zhCN.error}: {taskSummary.abnormal}</div>
                   </div>
                 </div>
               )}
@@ -2178,49 +2183,16 @@ function App() {
               )}
               {statsChartType === 'pie' && (
                 <div className="flex items-center justify-center py-2">
-                  <svg viewBox="0 0 100 100" className="w-32 h-32">
-                    {(() => {
-                      const flyingCount = drones.filter(d => d.flightStatus === 'FLYING').length;
-                      const idleCount = drones.filter(d => d.flightStatus !== 'FLYING').length;
-                      const total = flyingCount + idleCount;
-                      if (total === 0) return <circle cx="50" cy="50" r="40" fill="#475569" />;
-                      
-                      // Handle 100% cases - when one category is 100%, draw a full circle
-                      if (flyingCount === total) {
-                        return <circle cx="50" cy="50" r="40" fill="#22c55e" />;
-                      }
-                      if (idleCount === total) {
-                        return <circle cx="50" cy="50" r="40" fill="#6b7280" />;
-                      }
-                      
-                      const flyingAngle = (flyingCount / total) * 360;
-                      const idleAngle = (idleCount / total) * 360;
-                      let currentAngle = 0;
-                      const createArc = (angle: number, color: string, key: string) => {
-                        if (angle === 0) return null;
-                        const startAngle = currentAngle;
-                        const endAngle = currentAngle + angle;
-                        currentAngle = endAngle;
-                        const startRad = (startAngle - 90) * Math.PI / 180;
-                        const endRad = (endAngle - 90) * Math.PI / 180;
-                        const x1 = 50 + 40 * Math.cos(startRad);
-                        const y1 = 50 + 40 * Math.sin(startRad);
-                        const x2 = 50 + 40 * Math.cos(endRad);
-                        const y2 = 50 + 40 * Math.sin(endRad);
-                        const largeArc = angle > 180 ? 1 : 0;
-                        return <path key={key} d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`} fill={color} />;
-                      };
-                      return (
-                        <>
-                          {createArc(flyingAngle, '#22c55e', 'flying')}
-                          {createArc(idleAngle, '#6b7280', 'idle')}
-                        </>
-                      );
-                    })()}
-                  </svg>
+                  <DroneStatusPie
+                    flying={drones.filter(d => d.flightStatus === 'FLYING').length}
+                    idle={drones.filter(d => d.flightStatus !== 'FLYING').length}
+                    offline={0}
+                    lowBattery={drones.filter(d => d.battery < 30).length}
+                    className="w-32 h-32"
+                  />
                   <div className="ml-3 space-y-1 text-xs">
-                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-green-500"></div>{zhCN.flying}: {drones.filter(d => d.flightStatus === 'FLYING').length}</div>
-                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-gray-500"></div>{zhCN.idleStatus}: {drones.filter(d => d.flightStatus !== 'FLYING').length}</div>
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-[#00F0FF]"></div>{zhCN.flying}: {drones.filter(d => d.flightStatus === 'FLYING').length}</div>
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-slate-400"></div>{zhCN.idleStatus}: {drones.filter(d => d.flightStatus !== 'FLYING').length}</div>
                   </div>
                 </div>
               )}
@@ -2696,12 +2668,10 @@ function App() {
                       </Badge>
                     </div>
                     <div className="flex justify-between mt-1 text-xs">
-                      {drone.battery != null && (
-                        <span className={`flex items-center gap-1 ${drone.battery > 50 ? 'text-green-400' : drone.battery > 20 ? 'text-yellow-400' : 'text-red-400'}`}>
-                          <Battery className="w-3 h-3" />{drone.battery?.toFixed(0)}%
-                        </span>
-                      )}
-                      <span className="text-slate-400">{drone.altitude?.toFixed(0)}m</span>
+                        {drone.battery != null && (
+                          <BatteryGauge percent={drone.battery} size="sm" />
+                        )}
+                        <span className="text-slate-400">{drone.altitude?.toFixed(0)}m</span>
                     </div>
                   </div>
                 ))}
