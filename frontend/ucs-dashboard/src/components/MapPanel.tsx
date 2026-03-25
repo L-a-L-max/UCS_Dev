@@ -24,6 +24,7 @@ import {
   Map as MapIcon,
 } from 'lucide-react';
 import { DroneLayer, type DroneFeature } from './map/DroneLayer';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 const getApiBase = () => {
   if (import.meta.env.VITE_API_URL) {
@@ -137,6 +138,77 @@ interface MapPanelProps {
   eventLogs?: Array<{ id: number; time: string; detail: string; result?: string }>;
   /** Phase 2: 使用 GPU Symbol Layer 渲染无人机（高性能模式，支持10万+） */
   useSymbolLayer?: boolean;
+}
+
+/** Phase 3: Virtualized drone list using TanStack Virtual for 10k+ drone support */
+function VirtualDroneList({ drones, selectedDroneId, onDroneClick }: {
+  drones: MapDrone[];
+  selectedDroneId?: string | null;
+  onDroneClick?: (uavId: string) => void;
+}) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: drones.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 52,
+    overscan: 5,
+  });
+
+  if (drones.length === 0) {
+    return <div className="text-center text-slate-500 py-4 text-xs">暂无无人机数据</div>;
+  }
+
+  return (
+    <div ref={parentRef} className="flex-1 overflow-y-auto p-1.5" style={{ contain: 'strict' }}>
+      <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
+        {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+          const drone = drones[virtualRow.index];
+          return (
+            <div
+              key={drone.uavId}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: `${virtualRow.size}px`,
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              <div
+                className={`p-2 rounded cursor-pointer transition-all text-xs mb-1 ${
+                  selectedDroneId === drone.uavId
+                    ? 'bg-blue-900/50 border border-blue-500'
+                    : 'bg-slate-700/50 border border-slate-600 hover:border-slate-500'
+                }`}
+                onClick={() => onDroneClick?.(drone.uavId)}
+              >
+                <div className="flex items-center justify-between mb-0.5">
+                  <span className="font-bold text-white">{drone.uavId}</span>
+                  <Badge className={`text-[10px] px-1 py-0 ${
+                    !drone.onlineStatus
+                      ? 'bg-slate-600'
+                      : drone.armed === true
+                        ? 'bg-green-600'
+                        : 'bg-blue-600'
+                  }`}>
+                    {!drone.onlineStatus ? '离线' : drone.armed === true ? '已解锁' : '未解锁'}
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-2 text-slate-400">
+                  <span className="flex items-center gap-0.5">
+                    <Battery className="w-2.5 h-2.5" />
+                    {drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}
+                  </span>
+                  <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export default function MapPanel({
@@ -970,44 +1042,11 @@ export default function MapPanel({
               {droneListCollapsed ? '展开' : '收起'}
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto p-1.5 space-y-1">
-            {sortedDrones.map(drone => (
-              <div
-                key={drone.uavId}
-                className={`p-2 rounded cursor-pointer transition-all text-xs ${
-                  selectedDroneId === drone.uavId
-                    ? 'bg-blue-900/50 border border-blue-500'
-                    : 'bg-slate-700/50 border border-slate-600 hover:border-slate-500'
-                }`}
-                  onClick={() => {
-                    onDroneClick?.(drone.uavId);
-                  }}
-              >
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="font-bold text-white">{drone.uavId}</span>
-                  <Badge className={`text-[10px] px-1 py-0 ${
-                    !drone.onlineStatus
-                      ? 'bg-slate-600'
-                      : drone.armed === true
-                        ? 'bg-green-600'
-                        : 'bg-blue-600'
-                  }`}>
-                    {!drone.onlineStatus ? '离线' : drone.armed === true ? '已解锁' : '未解锁'}
-                  </Badge>
-                </div>
-                <div className="flex items-center gap-2 text-slate-400">
-                  <span className="flex items-center gap-0.5">
-                    <Battery className="w-2.5 h-2.5" />
-                    {drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}
-                  </span>
-                  <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
-                </div>
-              </div>
-            ))}
-            {drones.length === 0 && (
-              <div className="text-center text-slate-500 py-4 text-xs">暂无无人机数据</div>
-            )}
-          </div>
+          <VirtualDroneList
+            drones={sortedDrones}
+            selectedDroneId={selectedDroneId}
+            onDroneClick={onDroneClick}
+          />
 
           {/* 事件日志滚动区域 */}
           {showEventLog && eventLogs.length > 0 && (
