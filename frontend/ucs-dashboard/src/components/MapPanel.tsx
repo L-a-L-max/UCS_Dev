@@ -25,6 +25,10 @@ import {
 } from 'lucide-react';
 import { DroneLayer, type DroneFeature } from './map/DroneLayer';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { lazy, Suspense } from 'react';
+
+// Lazy load AMap 3D panel to avoid loading Three.js + AMap SDK when not needed
+const AMap3DPanel = lazy(() => import('./map/AMap3DPanel'));
 
 const getApiBase = () => {
   if (import.meta.env.VITE_API_URL) {
@@ -261,7 +265,7 @@ export default function MapPanel({
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
-  // 3D map toggle - uses MapLibre GL terrain (no external API key needed)
+  // 3D map toggle - switches between MapLibre 2D and AMap 3D
   const [is3DMode, setIs3DMode] = useState(false);
 
   // 弹窗自动关闭逻辑 - 默认5秒后关闭，鼠标移入保持，移出后倒计时关闭
@@ -903,27 +907,13 @@ export default function MapPanel({
     return () => observer.disconnect();
   }, []);
 
-  // 3D terrain toggle - uses MapLibre GL built-in terrain with open DEM tiles
+  // When switching back from 3D to 2D, re-initialize the MapLibre map
   useEffect(() => {
-    if (!map.current) return;
-    const m = map.current;
-    if (is3DMode) {
-      // Add terrain source if not present
-      if (!m.getSource('terrain-dem')) {
-        m.addSource('terrain-dem', {
-          type: 'raster-dem',
-          tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
-          tileSize: 256,
-          encoding: 'terrarium',
-          maxzoom: 15,
-        });
-      }
-      m.setTerrain({ source: 'terrain-dem', exaggeration: 1.5 });
-      m.easeTo({ pitch: 60, duration: 800 });
-    } else {
-      m.setTerrain(undefined as unknown as maplibregl.TerrainSpecification);
-      m.easeTo({ pitch: 0, duration: 800 });
+    if (!is3DMode) {
+      // Re-init MapLibre map when switching back to 2D
+      initMap(tileSource);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [is3DMode]);
 
   // 对无人机排序：在线优先
@@ -940,10 +930,33 @@ export default function MapPanel({
     <div className={`flex h-full ${className}`}>
       {/* 地图区域 */}
       <div className="flex-1 relative">
-        <div ref={mapContainer} className="absolute inset-0 w-full h-full" style={{ minHeight: '100%' }} />
+        {/* AMap 3D mode */}
+        {is3DMode && (
+          <Suspense fallback={
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-900 text-slate-400 text-sm">
+              加载3D地图中...
+            </div>
+          }>
+            <AMap3DPanel
+              drones={drones}
+              selectedDroneId={selectedDroneId}
+              selectedDroneIds={selectedDroneIds}
+              onDroneClick={onDroneClick}
+              onMapClick={onMapClick}
+              className="absolute inset-0"
+            />
+          </Suspense>
+        )}
+
+        {/* MapLibre 2D mode */}
+        <div
+          ref={mapContainer}
+          className="absolute inset-0 w-full h-full"
+          style={{ minHeight: '100%', display: is3DMode ? 'none' : 'block' }}
+        />
 
         {/* 地图错误提示（参考 Observer 视图） */}
-        {mapError && (
+        {!is3DMode && mapError && (
           <div className="absolute top-12 left-1/2 -translate-x-1/2 z-20 bg-red-900/90 backdrop-blur-sm rounded-lg px-4 py-2 text-white text-xs flex items-center gap-2 max-w-xs shadow-lg border border-red-700">
             <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
             <div>
@@ -952,8 +965,6 @@ export default function MapPanel({
             </div>
           </div>
         )}
-        
-        {/* 3D terrain is rendered on the same MapLibre canvas via terrain API */}
 
         {/* 地图控制按钮 */}
         <div className="absolute top-2 left-2 z-10 flex flex-col gap-1" style={{ zIndex: 15 }}>
@@ -965,14 +976,14 @@ export default function MapPanel({
           >
             <Locate className="w-3 h-3 mr-1" />聚焦无人机
           </Button>
-          {/* 2D/3D toggle (Issue 7) */}
+          {/* 2D/3D toggle - switches to AMap 3D map */}
           <Button
             size="sm"
             variant="outline"
             className={`border-slate-600 text-white hover:bg-slate-700/80 text-xs ${is3DMode ? 'bg-indigo-700/80 border-indigo-500' : 'bg-slate-800/80'}`}
             onClick={() => setIs3DMode(!is3DMode)}
           >
-            {is3DMode ? <><MapIcon className="w-3 h-3 mr-1" />二维地图</> : <><Globe className="w-3 h-3 mr-1" />三维地图</>}
+            {is3DMode ? <><MapIcon className="w-3 h-3 mr-1" />二维地图</> : <><Globe className="w-3 h-3 mr-1" />高德3D</>}
           </Button>
           <div className="relative">
             <Button
@@ -1001,8 +1012,8 @@ export default function MapPanel({
           </div>
         </div>
 
-        {/* Phase 2: GPU Symbol Layer for high-performance drone rendering */}
-        {useSymbolLayer && (
+        {/* Phase 2: GPU Symbol Layer for high-performance drone rendering (2D mode only) */}
+        {!is3DMode && useSymbolLayer && (
           <DroneLayer
             map={map.current}
             drones={drones.filter((d): d is MapDrone & DroneFeature => d.lat != null && d.lng != null).map(d => ({
@@ -1022,10 +1033,12 @@ export default function MapPanel({
           />
         )}
 
-        {/* 统计信息 */}
-        <div className="absolute bottom-6 left-2 z-10 bg-slate-800/80 rounded px-2 py-1 text-xs text-slate-300">
-          共 {drones.length} 架 | 在线 {drones.filter(d => d.onlineStatus === true).length} | 飞行中 {drones.filter(d => d.flightStatus === 'FLYING').length}
-        </div>
+        {/* 统计信息 (2D mode only, 3D has its own stats) */}
+        {!is3DMode && (
+          <div className="absolute bottom-6 left-2 z-10 bg-slate-800/80 rounded px-2 py-1 text-xs text-slate-300">
+            共 {drones.length} 架 | 在线 {drones.filter(d => d.onlineStatus === true).length} | 飞行中 {drones.filter(d => d.flightStatus === 'FLYING').length}
+          </div>
+        )}
       </div>
 
       {/* 无人机列表侧边栏 */}
