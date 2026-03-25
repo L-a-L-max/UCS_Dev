@@ -87,6 +87,40 @@ public class WebSocketGatewayService {
     }
 
     /**
+     * Broadcast gateway/drone offline status to all connected frontend clients.
+     *
+     * Called by GatewayHealthMonitor when it detects that:
+     *   - No drone heartbeat keys exist in Redis (all TTLs expired)
+     *   - This persists for > 60 seconds (confirming gateway is truly down, not transient)
+     *
+     * Frontend should listen on /topic/drone-status to detect offline events
+     * and display appropriate UI warnings (e.g., "Gateway offline - all drones unreachable").
+     *
+     * @param offlineDroneIds Set of drone IDs that went offline
+     * @param reason          Human-readable reason for the offline event
+     */
+    public void broadcastOfflineStatus(Set<String> offlineDroneIds, String reason) {
+        Map<String, Object> message = new LinkedHashMap<>();
+        message.put("type", "gateway_offline");
+        message.put("timestamp", Instant.now().toString());
+        message.put("reason", reason);
+        message.put("offlineDrones", offlineDroneIds);
+        message.put("droneCount", offlineDroneIds.size());
+
+        // Send to dedicated drone-status topic
+        messagingTemplate.convertAndSend("/topic/drone-status", message);
+
+        // Also send to each partition so partition-specific UIs get notified
+        for (String droneId : offlineDroneIds) {
+            // Notify via existing partition topics that these drones are removed
+            notifyDroneRemoved(droneId, Set.of("__all__"));
+        }
+
+        log.warn("[WebSocket] Broadcast GATEWAY_OFFLINE: {} drone(s) affected, reason={}",
+                offlineDroneIds.size(), reason);
+    }
+
+    /**
      * Broadcast all telemetry data to the global topic (for monitoring/persistence).
      *
      * @param allTelemetry List of all drone telemetry messages

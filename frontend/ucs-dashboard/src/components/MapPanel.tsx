@@ -119,6 +119,13 @@ interface MapPanelProps {
   onMapClickCommand?: (command: string, lat: number, lon: number) => void;
   /** 是否有选中的无人机（控制地图点击菜单是否显示） */
   hasDroneSelected?: boolean;
+  /** 定位无人机：设置后地图飞到该无人机位置（一次性），改变值触发定位 */
+  locateDroneCounter?: number;
+  locateDroneId?: string | null;
+  /** 追随模式：持续跟踪该无人机，视野随其移动 */
+  followDroneId?: string | null;
+  /** 退出追随模式回调（用户拖拽/点击地图时触发） */
+  onFollowExit?: () => void;
   /** 额外的 CSS 类名 */
   className?: string;
   /** 是否显示无人机列表侧边栏 */
@@ -139,6 +146,10 @@ export default function MapPanel({
   onMapClick,
   onMapClickCommand,
   hasDroneSelected = false,
+  locateDroneCounter = 0,
+  locateDroneId,
+  followDroneId,
+  onFollowExit,
   className = '',
   showDroneList = true,
   showEventLog = false,
@@ -147,6 +158,8 @@ export default function MapPanel({
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const droneMarkersRef = useRef<Map<string, { marker: maplibregl.Marker; popup: maplibregl.Popup; element: HTMLDivElement }>>(new Map());
+  // Cumulative angle tracker per drone — avoids 359°→0° snap-back during orbiting
+  const cumulativeAngleRef = useRef<Map<string, number>>(new Map());
   const popupTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const rallyMarkersRef = useRef<Map<number, maplibregl.Marker>>(new Map());
 
@@ -157,12 +170,14 @@ export default function MapPanel({
   const onMapClickRef = useRef(onMapClick);
   const onMapClickCommandRef = useRef(onMapClickCommand);
   const hasDroneSelectedRef = useRef(hasDroneSelected);
+  const onFollowExitRef = useRef(onFollowExit);
   useEffect(() => { onDroneClickRef.current = onDroneClick; }, [onDroneClick]);
   useEffect(() => { selectedDroneIdsRef.current = selectedDroneIds; }, [selectedDroneIds]);
   useEffect(() => { selectedDroneIdRef.current = selectedDroneId; }, [selectedDroneId]);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
   useEffect(() => { onMapClickCommandRef.current = onMapClickCommand; }, [onMapClickCommand]);
   useEffect(() => { hasDroneSelectedRef.current = hasDroneSelected; }, [hasDroneSelected]);
+  useEffect(() => { onFollowExitRef.current = onFollowExit; }, [onFollowExit]);
   const homeMarkerRef = useRef<maplibregl.Marker | null>(null);
   const mapClickPopupRef = useRef<maplibregl.Popup | null>(null);
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
@@ -379,7 +394,108 @@ export default function MapPanel({
     }
   }, [drones]);
 
-  // 更新无人机标记
+  // ==================== DOM Reuse Marker Update ====================
+  // Instead of innerHTML replacement (which destroys and recreates all DOM nodes,
+  // causing visible flicker), we create the marker DOM structure once and only
+  // update style properties, transforms, and textContent on subsequent updates.
+
+  /** Compute marker color based on drone state */
+  function getMarkerColors(drone: MapDrone, isSelected: boolean) {
+    const isOnline = drone.onlineStatus === true;
+    const isArmed = drone.armed === true;
+    const color = !isOnline ? '#64748b' : isArmed ? '#22c55e' : '#3b82f6';
+    const borderColor = isSelected ? '#f59e0b' : color;
+    return { color, borderColor, isSelected };
+  }
+
+  /**
+   * Compute cumulative rotation angle for a drone.
+   * Avoids the 359°→0° snap-back by tracking accumulated angle
+   * and always choosing the shortest rotational path.
+   * Uses safe modulo to handle negative cumulative values correctly.
+   */
+  function getCumulativeAngle(uavId: string, newHeading: number): number {
+    const prev = cumulativeAngleRef.current.get(uavId);
+    if (prev == null) {
+      cumulativeAngleRef.current.set(uavId, newHeading);
+      return newHeading;
+    }
+    // Safe modulo that always returns 0-360 (JS % can return negative for negative prev)
+    const prevNorm = ((prev % 360) + 360) % 360;
+    // Compute shortest angular difference (-180 to +180)
+    let delta = ((newHeading - prevNorm) + 540) % 360 - 180;
+    const cumulative = prev + delta;
+    cumulativeAngleRef.current.set(uavId, cumulative);
+    return cumulative;
+  }
+
+  /** Create marker DOM structure once (circle + svg + label) */
+  function createMarkerElement(drone: MapDrone, isSelected: boolean): HTMLDivElement {
+    const el = document.createElement('div');
+    el.className = 'drone-marker';
+    el.style.cursor = 'pointer';
+
+    const { color, borderColor } = getMarkerColors(drone, isSelected);
+    const size = isSelected ? 40 : 32;
+
+    // Circle container
+    const circle = document.createElement('div');
+    circle.className = 'drone-marker-circle';
+    circle.style.cssText = `width:${size}px;height:${size}px;background:${color};border:3px solid ${borderColor};border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.3);transition:background 0.3s,border-color 0.3s,width 0.2s,height 0.2s;`;
+    if (isSelected) circle.style.animation = 'pulse 1.5s infinite';
+
+    // SVG icon — use cumulative angle for smooth orbiting
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('width', '16');
+    svg.setAttribute('height', '16');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'white');
+    const cumAngle = getCumulativeAngle(drone.uavId, drone.heading ?? 0);
+    svg.style.cssText = `transform:rotate(${cumAngle}deg);transition:transform 0.1s linear;will-change:transform;`;
+    const path = document.createElementNS(svgNS, 'path');
+    path.setAttribute('d', 'M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z');
+    svg.appendChild(path);
+    circle.appendChild(svg);
+
+    // Label
+    const label = document.createElement('div');
+    label.className = 'drone-marker-label';
+    label.style.cssText = 'text-align:center;font-size:10px;font-weight:bold;color:white;text-shadow:0 1px 3px rgba(0,0,0,0.8);margin-top:2px;';
+    label.textContent = drone.uavId;
+
+    el.appendChild(circle);
+    el.appendChild(label);
+    return el;
+  }
+
+  /** Update existing marker DOM in-place — no innerHTML, only style/transform changes */
+  function updateMarkerElement(el: HTMLDivElement, drone: MapDrone, isSelected: boolean) {
+    const { color, borderColor } = getMarkerColors(drone, isSelected);
+    const size = isSelected ? 40 : 32;
+
+    const circle = el.querySelector('.drone-marker-circle') as HTMLDivElement | null;
+    if (circle) {
+      circle.style.width = `${size}px`;
+      circle.style.height = `${size}px`;
+      circle.style.background = color;
+      circle.style.borderColor = borderColor;
+      circle.style.animation = isSelected ? 'pulse 1.5s infinite' : 'none';
+
+      // Update SVG rotation — use cumulative angle to prevent 359°→0° snap-back
+      const svg = circle.querySelector('svg') as SVGElement | null;
+      if (svg) {
+        const cumAngle = getCumulativeAngle(drone.uavId, drone.heading ?? 0);
+        svg.style.transform = `rotate(${cumAngle}deg)`;
+        // Ensure transition is always set (may be lost if browser resets inline styles)
+        if (!svg.style.transition) {
+          svg.style.transition = 'transform 0.1s linear';
+          svg.style.willChange = 'transform';
+        }
+      }
+    }
+  }
+
   const updateMarkers = useCallback(() => {
     if (!map.current) return;
 
@@ -395,28 +511,23 @@ export default function MapPanel({
 
     // 添加/更新标记
     drones.forEach(drone => {
-      // Use explicit null/undefined check instead of falsy check
-      // so that lat=0, lng=0 (default PX4 position before GPS lock) is not filtered out
       if (drone.lat == null || drone.lng == null) return;
 
-      // 支持多选高亮：如果有 selectedDroneIds 则检查是否在集合中，否则用单选 selectedDroneId
       const isSelected = selectedDroneIds ? selectedDroneIds.has(drone.uavId) : drone.uavId === selectedDroneId;
-
       const existing = droneMarkersRef.current.get(drone.uavId);
 
       if (existing) {
-        // 更新位置
+        // DOM reuse: update position + style in-place (no innerHTML)
         existing.marker.setLngLat([drone.lng, drone.lat]);
-        // 更新样式
-        existing.element.innerHTML = createMarkerHTML(drone, isSelected);
-        // 更新弹出内容
-        existing.popup.setHTML(createPopupHTML(drone));
+        updateMarkerElement(existing.element, drone, isSelected);
+        // Update open popup: refresh content AND move to drone's current position
+        if (existing.popup.isOpen()) {
+          existing.popup.setLngLat([drone.lng, drone.lat]);
+          existing.popup.setHTML(createPopupHTML(drone));
+        }
       } else {
-        // 创建新标记
-        const el = document.createElement('div');
-        el.className = 'drone-marker';
-        el.style.cursor = 'pointer';
-        el.innerHTML = createMarkerHTML(drone, isSelected);
+        // Create new marker with structured DOM
+        const el = createMarkerElement(drone, isSelected);
 
         const popup = new maplibregl.Popup({
           offset: 25,
@@ -425,10 +536,8 @@ export default function MapPanel({
           maxWidth: '280px',
         }).setHTML(createPopupHTML(drone));
 
-        // Fix 6: 弹窗打开时启动自动关闭定时器，鼠标移入时暂停，移出时重启
         popup.on('open', () => {
           startPopupAutoClose(drone.uavId);
-          // 添加鼠标事件监听
           setTimeout(() => {
             const popupEl = popup.getElement();
             if (popupEl) {
@@ -442,8 +551,6 @@ export default function MapPanel({
           .setLngLat([drone.lng, drone.lat])
           .addTo(map.current!);
 
-        // 不使用 marker.setPopup() 避免 MapLibre 自动 toggle popup 行为
-        // 改为完全手动控制 popup 显示/隐藏
         el.addEventListener('click', (e) => {
           e.stopPropagation();
           const currentSelectedIds = selectedDroneIdsRef.current;
@@ -451,21 +558,16 @@ export default function MapPanel({
           const isMultiSelect = !!currentSelectedIds;
 
           if (isMultiSelect) {
-            // 多选模式：不显示弹窗，关闭已打开的弹窗
             popup.remove();
           } else {
-            // 单选模式：判断是否点击的是当前已选中的无人机
             if (currentSelectedId === drone.uavId) {
-              // 再次点击同一个 -> 取消选中，关闭弹窗
               popup.remove();
             } else {
-              // 点击新的无人机 -> 关闭所有其他弹窗，打开当前弹窗
               droneMarkersRef.current.forEach((entry, id) => {
                 if (id !== drone.uavId && entry.popup.isOpen()) {
                   entry.popup.remove();
                 }
               });
-              // 显示基本信息弹窗
               if (map.current && !popup.isOpen()) {
                 popup.addTo(map.current);
                 popup.setLngLat([drone.lng, drone.lat]);
@@ -479,37 +581,6 @@ export default function MapPanel({
       }
     });
   }, [drones, selectedDroneId, selectedDroneIds, startPopupAutoClose, clearPopupAutoClose]);
-
-  function createMarkerHTML(drone: MapDrone, isSelected: boolean): string {
-    const isOnline = drone.onlineStatus === true;
-    const isArmed = drone.armed === true;
-    // Three states: armed (green), disarmed/online (blue), offline (gray)
-    const color = !isOnline ? '#64748b' : isArmed ? '#22c55e' : '#3b82f6';
-    const borderColor = isSelected ? '#f59e0b' : color;
-    const size = isSelected ? 40 : 32;
-
-    return `
-      <div style="
-        width: ${size}px; height: ${size}px;
-        background: ${color};
-        border: 3px solid ${borderColor};
-        border-radius: 50%;
-        display: flex; align-items: center; justify-content: center;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        transition: all 0.2s;
-        ${isSelected ? 'animation: pulse 1.5s infinite;' : ''}
-      ">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="white" style="transform: rotate(${drone.heading != null ? drone.heading : 0}deg); transition: transform 0.5s ease;">
-          <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/>
-        </svg>
-      </div>
-      <div style="
-        text-align: center; font-size: 10px; font-weight: bold;
-        color: white; text-shadow: 0 1px 3px rgba(0,0,0,0.8);
-        margin-top: 2px;
-      ">${drone.uavId}</div>
-    `;
-  }
 
   function createPopupHTML(drone: MapDrone): string {
     const isOnline = drone.onlineStatus === true;
@@ -557,7 +628,7 @@ export default function MapPanel({
     }
   }, [drones, selectedDroneId, selectedDroneIds, updateMarkers]);
 
-  // 当 selectedDroneId 从外部变化时（如左侧列表点击），自动打开该无人机的弹窗并飞行聚焦
+  // 当 selectedDroneId 从外部变化时（如左侧列表点击），自动打开该无人机的弹窗（不自动飞行聚焦，定位功能已独立为按钮）
   const prevSelectedRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     // 初始化时跳过
@@ -583,10 +654,33 @@ export default function MapPanel({
       entry.popup.addTo(map.current);
       entry.popup.setLngLat(entry.marker.getLngLat());
     }
-    // 飞行到该无人机
-    const lngLat = entry.marker.getLngLat();
-    map.current.flyTo({ center: [lngLat.lng, lngLat.lat], zoom: 14, duration: 800 });
   }, [selectedDroneId]);
+
+  // 定位模式：一次性飞到指定无人机位置（locateDroneCounter 变化时触发）
+  useEffect(() => {
+    if (!locateDroneId || !map.current || locateDroneCounter === 0) return;
+    const drone = drones.find(d => d.uavId === locateDroneId);
+    if (!drone || drone.lat == null || drone.lng == null) return;
+    map.current.flyTo({ center: [drone.lng, drone.lat], zoom: 14, duration: 800 });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locateDroneCounter, locateDroneId]);
+
+  // 追随模式：持续跟踪指定无人机，视野随其移动
+  useEffect(() => {
+    if (!followDroneId || !map.current) return;
+    const drone = drones.find(d => d.uavId === followDroneId);
+    if (!drone || drone.lat == null || drone.lng == null) return;
+    map.current.easeTo({ center: [drone.lng, drone.lat], duration: 300 });
+  }, [followDroneId, drones]);
+
+  // 用户拖拽/交互地图时退出追随模式
+  useEffect(() => {
+    if (!map.current) return;
+    const m = map.current;
+    const exitFollow = () => { onFollowExitRef.current?.(); };
+    m.on('dragstart', exitFollow);
+    return () => { m.off('dragstart', exitFollow); };
+  }, []);
 
   // resize 地图 - 响应面板折叠/展开
   useEffect(() => {
@@ -860,13 +954,9 @@ export default function MapPanel({
                     ? 'bg-blue-900/50 border border-blue-500'
                     : 'bg-slate-700/50 border border-slate-600 hover:border-slate-500'
                 }`}
-                onClick={() => {
-                  onDroneClick?.(drone.uavId);
-                  // 聚焦到该无人机
-                  if (map.current && drone.lat != null && drone.lng != null) {
-                    map.current.flyTo({ center: [drone.lng, drone.lat], zoom: 14, duration: 800 });
-                  }
-                }}
+                  onClick={() => {
+                    onDroneClick?.(drone.uavId);
+                  }}
               >
                 <div className="flex items-center justify-between mb-0.5">
                   <span className="font-bold text-white">{drone.uavId}</span>

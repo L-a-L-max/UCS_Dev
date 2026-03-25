@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -128,36 +128,39 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   const [selectedRallyPointId, setSelectedRallyPointId] = useState<number | null>(null);
   const [rallySearchKeyword, setRallySearchKeyword] = useState('');
 
-  // Real-time telemetry from WebSocket
-  const [telemetryDrones, setTelemetryDrones] = useState<Map<string, MapDrone>>(new Map());
+  // ==================== Telemetry Buffer (no-flicker) ====================
+  const telemetryBufferRef = useRef<Map<string, MapDrone>>(new Map());
+  const [telemetryVersion, setTelemetryVersion] = useState(0);
 
   const handlePartitionData = useCallback((data: PartitionTelemetryMessage) => {
     if (!data.drones || data.drones.length === 0) return;
-    setTelemetryDrones(prev => {
-      const next = new Map(prev);
-      data.drones.forEach(uav => {
-        next.set(uav.uavId, {
-          uavId: uav.uavId,
-          lat: uav.lat,
-          lng: uav.lon,
-          altitude: uav.alt,
+    const buf = telemetryBufferRef.current;
+    data.drones.forEach(uav => {
+      const existing = buf.get(uav.uavId);
+      if (existing) {
+        existing.lat = uav.lat;
+        existing.lng = uav.lon;
+        existing.altitude = uav.alt;
+        existing.onlineStatus = true;
+        existing.armed = uav.armed ?? uav.isActive ?? false;
+        existing.flightStatus = existing.armed ? 'FLYING' : 'IDLE';
+        existing.heading = uav.heading;
+        if (uav.batteryPercent != null && uav.batteryPercent >= 0) existing.battery = uav.batteryPercent;
+      } else {
+        buf.set(uav.uavId, {
+          uavId: uav.uavId, lat: uav.lat, lng: uav.lon, altitude: uav.alt,
           battery: uav.batteryPercent != null && uav.batteryPercent >= 0 ? uav.batteryPercent : undefined,
-          flightStatus: uav.armed ? 'FLYING' : 'IDLE',
-          onlineStatus: true,
-          armed: uav.armed ?? uav.isActive ?? false,
-          heading: uav.heading,
+          flightStatus: uav.armed ? 'FLYING' : 'IDLE', onlineStatus: true,
+          armed: uav.armed ?? uav.isActive ?? false, heading: uav.heading,
         });
-      });
-      return next;
+      }
     });
+    setTelemetryVersion(v => v + 1);
   }, []);
 
   const handleDroneRemoved = useCallback((removedUavIds: string[]) => {
-    setTelemetryDrones(prev => {
-      const next = new Map(prev);
-      removedUavIds.forEach(id => next.delete(id));
-      return next;
-    });
+    removedUavIds.forEach(id => telemetryBufferRef.current.delete(id));
+    setTelemetryVersion(v => v + 1);
     setSelectedDrone(prev => {
       if (prev && removedUavIds.includes(prev)) return null;
       return prev;
@@ -255,8 +258,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     })();
   }, [selectedDrone, token]);
 
-  // Merge API drones with WebSocket telemetry
-  const mapDrones: MapDrone[] = (() => {
+  // Merge API drones with WebSocket telemetry (memoized, no-flicker)
+  const mapDrones: MapDrone[] = useMemo(() => {
     const droneMap = new Map<string, MapDrone>();
     drones.forEach(d => {
       droneMap.set(d.uavId, {
@@ -265,7 +268,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
         model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
       });
     });
-    telemetryDrones.forEach((td, uavId) => {
+    const telBuf = telemetryBufferRef.current;
+    telBuf.forEach((td, uavId) => {
       const existing = droneMap.get(uavId);
       if (existing) {
         existing.lat = td.lat;
@@ -277,14 +281,16 @@ export default function PilotView({ token, username, partitions = [], onLogout }
         if (td.flightStatus) existing.flightStatus = td.flightStatus;
         if (td.heading != null) existing.heading = td.heading;
       } else {
-        droneMap.set(uavId, td);
+        droneMap.set(uavId, { ...td });
       }
     });
-    return Array.from(droneMap.values());
-  })();
+    return Array.from(droneMap.values()).sort((a, b) => a.uavId.localeCompare(b.uavId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drones, telemetryVersion]);
 
   // Unified command handler
-  const handleCommand = async (commandType: string, uavId?: string) => {
+  // coordOverrides: fresh lat/lon from map click (bypasses stale React state)
+  const handleCommand = async (commandType: string, uavId?: string, coordOverrides?: { lat: number; lon: number }) => {
     const targetUav = uavId || selectedDrone;
     if (!targetUav) return;
     // Command protection (Issue 5): check drone online/armed status
@@ -308,8 +314,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
       params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
     } else if (commandType === 'GOTO') {
       params = JSON.stringify({
-        lat: parseFloat(gotoLat) || 0,
-        lon: parseFloat(gotoLon) || 0,
+        lat: coordOverrides?.lat ?? (parseFloat(gotoLat) || 0),
+        lon: coordOverrides?.lon ?? (parseFloat(gotoLon) || 0),
         alt: parseFloat(gotoAlt) || 50,
         address: gotoAddress || undefined,
       });
@@ -326,8 +332,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
       // Include current drone altitude to prevent altitude loss during orbit
       const droneAlt = mapDrones.find(d => d.uavId === targetUav)?.altitude || 0;
       params = JSON.stringify({
-        lat: parseFloat(orbitLat) || 0,
-        lon: parseFloat(orbitLon) || 0,
+        lat: coordOverrides?.lat ?? (parseFloat(orbitLat) || 0),
+        lon: coordOverrides?.lon ?? (parseFloat(orbitLon) || 0),
         radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
         alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
       });
@@ -603,14 +609,12 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                                 if (res.code === 0) {
                                   setQuickFeedback({ uavId: `${uavIds.length}\u67b6`, message: `${cmd.label}\u6307\u4ee4\u5df2\u53d1\u9001`, success: true });
                                   if (cmd.type === 'TAKEOFF') {
-                                    setTelemetryDrones(prev => {
-                                      const next = new Map(prev);
-                                      uavIds.forEach(id => {
-                                        const existing = next.get(id);
-                                        if (existing) { next.set(id, { ...existing, armed: true, flightStatus: 'FLYING' }); }
-                                      });
-                                      return next;
+                                    const buf = telemetryBufferRef.current;
+                                    uavIds.forEach(id => {
+                                      const existing = buf.get(id);
+                                      if (existing) { existing.armed = true; existing.flightStatus = 'FLYING'; }
                                     });
+                                    setTelemetryVersion(v => v + 1);
                                   }
                                 }
                               })
@@ -655,7 +659,6 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                         lon: parseFloat(gotoLon) || 0,
                         alt: parseFloat(gotoAlt) || 50,
                         formation: true,
-                        droneCount: uavIds.length,
                         droneArea: 6.25,
                       });
                       sendBatchControlCommand(token, { uavIds, commandType: 'GOTO', params, confirmed: true })
@@ -737,15 +740,14 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                       if (batchRtlMode === 'rally' && selectedRallyPointId) {
                         const rp = rallyPoints.find(r => r.id === selectedRallyPointId);
                         if (rp) {
-                          multiSelectedDronesList.forEach(d => {
-                            const params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude });
-                            sendControlCommand(token, { uavId: d.uavId, commandType: 'RTL', params, confirmed: true });
-                          });
+                          const uavIds = multiSelectedDronesList.map(d => d.uavId);
+                          const params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude, formation: true, droneArea: 6.25 });
+                          sendBatchControlCommand(token, { uavIds, commandType: 'RTL', params, confirmed: true });
                         }
                       } else {
-                        multiSelectedDronesList.forEach(d => {
-                          sendControlCommand(token, { uavId: d.uavId, commandType: 'RTL', params: '{}', confirmed: true });
-                        });
+                        // Return to individual Home — no formation needed (each drone goes to its own Home)
+                        const uavIds = multiSelectedDronesList.map(d => d.uavId);
+                        sendBatchControlCommand(token, { uavIds, commandType: 'RTL', params: '{}', confirmed: true });
                       }
                       setQuickFeedback({ uavId: `${multiSelectedDronesList.length}\u67b6`, message: '\u8fd4\u822a\u6307\u4ee4\u5df2\u53d1\u9001', success: true });
                       setTimeout(() => setQuickFeedback(null), 3000);
@@ -1018,14 +1020,16 @@ export default function PilotView({ token, username, partitions = [], onLogout }
             onMapClickCommand={(command, lat, lon) => {
               const targetUavId = selectedDrone || (selectedDrones.size === 1 ? Array.from(selectedDrones)[0] : null);
               if (!targetUavId) return;
+              // Pass fresh coordinates directly to avoid React setState race condition
+              const coords = { lat, lon };
               if (command === 'GOTO') {
                 setGotoLat(lat.toFixed(6));
                 setGotoLon(lon.toFixed(6));
-                handleCommand('GOTO', targetUavId);
+                handleCommand('GOTO', targetUavId, coords);
               } else if (command === 'ORBIT') {
                 setOrbitLat(lat.toFixed(6));
                 setOrbitLon(lon.toFixed(6));
-                handleCommand('ORBIT', targetUavId);
+                handleCommand('ORBIT', targetUavId, coords);
               } else if (command === 'MARK_HOME') {
                 handleCommand('MARK_HOME', targetUavId);
               }

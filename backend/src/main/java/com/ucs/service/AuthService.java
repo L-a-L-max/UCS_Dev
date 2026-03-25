@@ -59,10 +59,13 @@ public class AuthService {
                 .map(urm -> urm.getRole().getRoleName())
                 .collect(Collectors.toList());
         
-        String token = jwtUtil.generateToken(user.getId(), user.getUsername(), roles);
+        // 双 Token：生成 Access Token（短命）+ Refresh Token（长命）
+        String accessToken = jwtUtil.generateAccessToken(user.getId(), user.getUsername(), roles);
+        String refreshToken = jwtUtil.generateRefreshToken(user.getId(), user.getUsername(), roles);
         
         LoginResponse response = new LoginResponse();
-        response.setToken(token);
+        response.setToken(accessToken);
+        response.setRefreshToken(refreshToken);
         response.setUserId(user.getId());
         response.setUsername(user.getUsername());
         response.setRealName(user.getRealName());

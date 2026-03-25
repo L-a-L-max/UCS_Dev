@@ -4,11 +4,13 @@ import com.ucs.dto.ControlCommandRequest;
 import com.ucs.dto.ControlCommandResponse;
 import com.ucs.entity.CommandLog;
 import com.ucs.entity.Drone;
+import com.ucs.kafka.CommandKafkaProducer;
 import com.ucs.repository.CommandLogRepository;
 import com.ucs.repository.DroneOwnershipRepository;
 import com.ucs.repository.DroneRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,17 +19,18 @@ import java.util.Optional;
 
 /**
  * Service for handling drone control commands.
- * Validates permissions, publishes to DDS via gateway, and logs operations.
+ * Validates permissions, publishes commands via Kafka, and logs operations.
  * 
- * Control flow:
+ * [Phase 1] Control flow (Kafka-first with HTTP fallback):
  * 1. Validate user has control permission for the drone (via DroneOwnership)
  * 2. Check drone is online (via Redis heartbeat)
- * 3. Publish command to DDS gateway (which forwards to PX4 via ROS2)
+ * 3. Send command to Kafka commands.down topic (primary path)
+ *    - Gateway consumes from commands.down and forwards to PX4 via DDS
+ *    - If Kafka unavailable, falls back to direct HTTP call to Gateway
  * 4. Log command to command_log table
  * 5. Log operation to operation_log table
  * 
- * DDS command publishing is handled by the DDS gateway (Python/rclpy) which
- * exposes a REST API on port 5050 for receiving commands from this service.
+ * Command acknowledgments flow: PX4 -> Gateway -> Kafka(commands.ack) -> CommandKafkaConsumer -> WebSocket
  */
 @Slf4j
 @Service
@@ -41,6 +44,10 @@ public class ControlService {
     private final OperationLogService operationLogService;
     private final DdsCommandService ddsCommandService;
     private final DDSSimulatorService ddsSimulatorService;
+
+    /** Kafka 指令生产者（可选，Kafka 未启用时为 null） */
+    @Autowired(required = false)
+    private CommandKafkaProducer commandKafkaProducer;
     
     /**
      * Send a control command to a drone.
@@ -89,8 +96,9 @@ public class ControlService {
         cmdLog.setStatus("PENDING");
         commandLogRepository.save(cmdLog);
         
-        // 5. Publish command to DDS gateway
-        boolean published = ddsCommandService.sendCommand(uavId, commandType, request.getParams());
+        // 5. Publish command: Kafka (primary) -> HTTP fallback
+        boolean published = sendCommandViaKafkaOrHttp(uavId, commandType, request.getParams(),
+                userId, cmdLog.getId());
         
         if (published) {
             cmdLog.setStatus("SENT");
@@ -166,6 +174,27 @@ public class ControlService {
                 null, detail, result, errorMsg, null);
         log.info("Batch {} logged: {} total, {} success, {} failed",
                 commandType, allUavIds.size(), successIds.size(), failedIds.size());
+    }
+
+    /**
+     * Send command via Kafka (primary) with HTTP fallback.
+     * If CommandKafkaProducer is available, sends to commands.down topic.
+     * Otherwise, falls back to direct HTTP call to Gateway.
+     */
+    private boolean sendCommandViaKafkaOrHttp(String uavId, String commandType,
+                                               String params, Long userId, Long commandLogId) {
+        // Try Kafka first
+        if (commandKafkaProducer != null) {
+            try {
+                commandKafkaProducer.sendCommand(uavId, commandType, params, userId, commandLogId);
+                log.info("[Command] Sent via Kafka: {} -> {} (cmdLogId={})", commandType, uavId, commandLogId);
+                return true;
+            } catch (Exception e) {
+                log.warn("[Command] Kafka send failed, falling back to HTTP: {}", e.getMessage());
+            }
+        }
+        // Fallback to direct HTTP
+        return ddsCommandService.sendCommand(uavId, commandType, params);
     }
 
     /**

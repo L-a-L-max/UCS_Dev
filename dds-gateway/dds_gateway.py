@@ -94,6 +94,8 @@ class DroneState:
     home_lat: float = 0.0
     home_lon: float = 0.0
     home_alt: float = 0.0
+    # Epoch (generation ID) - incremented on each reconnection
+    epoch: int = 0
 
 
 def _latlon_to_ned(lat: float, lon: float, alt: float,
@@ -130,6 +132,15 @@ class DDSGateway:
         self._lock = threading.Lock()
         self._stats = defaultdict(int)
         self._last_stats_time = time.time()
+
+        # Epoch map: uav_id -> epoch (generation ID)
+        self._epoch_map: Dict[str, int] = {}
+
+        # Kafka producer (optional, for dual-write mode)
+        self._kafka_producer = None
+        self._kafka_enabled = False
+        self._kafka_bootstrap = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+        self._init_kafka()
 
         # Persistent HTTP session for ack forwarding (reuses TCP connections)
         self._ack_session = requests.Session()
@@ -178,19 +189,35 @@ class DDSGateway:
             return False
 
     def check_backend_health(self) -> bool:
-        """Verify backend is reachable."""
-        try:
-            resp = requests.get(
-                f"{self.backend_url}/api/v1/dds-gateway/health", timeout=5
-            )
-            if resp.status_code == 200:
-                logger.info("[Backend] Health check passed: %s", resp.json())
-                return True
-            logger.error("[Backend] Health check failed: HTTP %d", resp.status_code)
-            return False
-        except requests.exceptions.ConnectionError:
-            logger.error("[Backend] Cannot connect to %s", self.backend_url)
-            return False
+        """Verify backend is reachable.
+
+        Tries multiple health check endpoints for compatibility with both
+        the legacy monolithic backend and the new microservice architecture:
+          1. /api/v1/dds-gateway/health  (API Gateway local endpoint or legacy backend)
+          2. /actuator/health            (Spring Boot Actuator, available on all services)
+        """
+        endpoints = [
+            "/api/v1/dds-gateway/health",
+            "/actuator/health",
+        ]
+        for endpoint in endpoints:
+            try:
+                resp = requests.get(
+                    f"{self.backend_url}{endpoint}", timeout=5
+                )
+                if resp.status_code == 200:
+                    logger.info("[Backend] Health check passed via %s: %s",
+                                endpoint, resp.json())
+                    return True
+                logger.debug("[Backend] %s returned HTTP %d", endpoint, resp.status_code)
+            except requests.exceptions.ConnectionError:
+                logger.debug("[Backend] Cannot connect to %s%s",
+                             self.backend_url, endpoint)
+            except Exception as e:
+                logger.debug("[Backend] Health check %s failed: %s", endpoint, e)
+
+        logger.error("[Backend] All health check endpoints failed on %s", self.backend_url)
+        return False
 
     def discover_drones_from_topics(self) -> Set[str]:
         """
@@ -476,29 +503,45 @@ class DDSGateway:
                 'command': int(command),
                 'result': int(result),
                 'timestamp': now,
+                'epoch': self._epoch_map.get(uav_id, 0),
             }
             self._ack_executor.submit(self._forward_command_ack, ack_payload)
         except Exception as e:
             logger.error("[CommandAck] Failed to forward ack: %s", e)
 
     def _forward_command_ack(self, ack_payload: dict):
-        """Forward a command ack to the backend REST API.
+        """Forward a command ack to Kafka commands.ack topic (primary) and HTTP (fallback).
 
-        Uses persistent HTTP session for low-latency forwarding.
-        Timeout reduced to 3s since ack delivery is time-sensitive.
+        [Phase 1] Dual-write: Kafka + HTTP for backward compatibility.
+        The backend's CommandKafkaConsumer processes acks from Kafka,
+        while DDSGatewayController handles HTTP acks as fallback.
         """
-        try:
-            resp = self._ack_session.post(
-                f"{self.backend_url}/api/v1/dds-gateway/command-ack",
-                json=ack_payload,
-                timeout=3,
-            )
-            if resp.status_code == 200:
-                logger.info("[CommandAck] Forwarded ack to backend: %s", ack_payload)
-            else:
-                logger.warning("[CommandAck] Backend returned %d: %s", resp.status_code, resp.text[:200])
-        except Exception as e:
-            logger.error("[CommandAck] Forward failed: %s", e)
+        # Primary: send to Kafka commands.ack topic
+        kafka_ok = False
+        if self._kafka_enabled and self._kafka_producer:
+            try:
+                uav_id = ack_payload.get('uavId', '')
+                self._kafka_producer.send('commands.ack', key=uav_id, value=ack_payload)
+                self._kafka_producer.flush(timeout=2)
+                kafka_ok = True
+                logger.info("[CommandAck] Sent to Kafka commands.ack: %s", ack_payload)
+            except Exception as e:
+                logger.warning("[CommandAck] Kafka send failed, falling back to HTTP: %s", e)
+
+        # Fallback: forward via HTTP if Kafka failed
+        if not kafka_ok:
+            try:
+                resp = self._ack_session.post(
+                    f"{self.backend_url}/api/v1/dds-gateway/command-ack",
+                    json=ack_payload,
+                    timeout=3,
+                )
+                if resp.status_code == 200:
+                    logger.info("[CommandAck] Forwarded ack to backend via HTTP: %s", ack_payload)
+                else:
+                    logger.warning("[CommandAck] Backend returned %d: %s", resp.status_code, resp.text[:200])
+            except Exception as e:
+                logger.error("[CommandAck] HTTP forward failed: %s", e)
 
     @staticmethod
     def _nav_state_to_mode(nav_state: int) -> str:
@@ -513,6 +556,284 @@ class DDSGateway:
     # ============================================================
     # Data Forwarding
     # ============================================================
+
+    def _init_kafka(self):
+        """Initialize Kafka producer and consumer for dual-write mode."""
+        try:
+            from kafka import KafkaProducer
+            self._kafka_producer = KafkaProducer(
+                bootstrap_servers=self._kafka_bootstrap,
+                key_serializer=lambda k: k.encode('utf-8') if k else None,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+                acks=1,
+                retries=3,
+                max_block_ms=5000,
+                linger_ms=0,      # Send immediately — no batching delay
+                batch_size=16384, # Small batch to avoid accumulation
+            )
+            self._kafka_enabled = True
+            logger.info("[Kafka] Producer initialized: %s (linger_ms=0 for real-time)", self._kafka_bootstrap)
+        except ImportError:
+            logger.warning("[Kafka] kafka-python not installed. pip install kafka-python")
+        except Exception as e:
+            logger.warning("[Kafka] Producer init failed (will use HTTP only): %s", e)
+
+    def _start_kafka_command_consumer(self):
+        """Start a background thread that consumes commands from Kafka commands.down topic.
+
+        This replaces the HTTP-only command path. The backend publishes commands
+        to commands.down via CommandKafkaProducer; the Gateway consumes them here
+        and forwards to PX4 via DDS.
+
+        Message format (JSON):
+        {
+            "uavId": "px4_1",
+            "commandType": "TAKEOFF",
+            "params": "{}",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "userId": 1,
+            "commandLogId": 123,
+            "epoch": 3
+        }
+
+        Epoch validation: commands with epoch < current drone epoch are
+        discarded as stale (e.g. sent before drone restart but arriving after).
+        Timestamp validation: commands older than 60s are discarded.
+        """
+        if not self._kafka_enabled:
+            logger.info("[KafkaCmd] Kafka not enabled, skipping command consumer")
+            return
+        try:
+            from kafka import KafkaConsumer as _KafkaConsumer
+            consumer = _KafkaConsumer(
+                'commands.down',
+                bootstrap_servers=self._kafka_bootstrap,
+                group_id='dds-gateway-command-consumer',
+                value_deserializer=lambda v: json.loads(v.decode('utf-8')),
+                auto_offset_reset='latest',
+                enable_auto_commit=True,
+                consumer_timeout_ms=1000,  # poll returns after 1s if no messages
+            )
+            logger.info("[KafkaCmd] Consumer initialized for commands.down")
+        except Exception as e:
+            logger.warning("[KafkaCmd] Failed to create consumer: %s", e)
+            return
+
+        def _consume_loop():
+            logger.info("[KafkaCmd] Consumer thread started")
+            while self.running:
+                try:
+                    records = consumer.poll(timeout_ms=1000)
+                    for tp, messages in records.items():
+                        for msg in messages:
+                            try:
+                                data = msg.value
+                                uav_id = data.get('uavId', '')
+                                command_type = data.get('commandType', '')
+                                params_raw = data.get('params', '{}')
+                                if isinstance(params_raw, str):
+                                    params = json.loads(params_raw) if params_raw else {}
+                                else:
+                                    params = params_raw
+
+                                # --- Epoch validation: discard stale commands ---
+                                msg_epoch = data.get('epoch', 0)
+                                current_epoch = self._epoch_map.get(uav_id, 0)
+                                if current_epoch > 0 and msg_epoch < current_epoch:
+                                    logger.warn(
+                                        "[KafkaCmd] Stale command discarded: %s -> %s "
+                                        "msgEpoch=%d < currentEpoch=%d",
+                                        command_type, uav_id, msg_epoch, current_epoch)
+                                    self._stats['kafka_commands_stale'] = \
+                                        self._stats.get('kafka_commands_stale', 0) + 1
+                                    continue
+
+                                # --- Timestamp validation: discard commands older than 60s ---
+                                ts_str = data.get('timestamp', '')
+                                if ts_str:
+                                    from datetime import datetime, timezone
+                                    try:
+                                        msg_time = datetime.fromisoformat(
+                                            ts_str.replace('Z', '+00:00'))
+                                        age_s = (datetime.now(timezone.utc)
+                                                 - msg_time).total_seconds()
+                                        if age_s > 60:
+                                            logger.warn(
+                                                "[KafkaCmd] Expired command discarded: "
+                                                "%s -> %s age=%.1fs",
+                                                command_type, uav_id, age_s)
+                                            self._stats['kafka_commands_expired'] = \
+                                                self._stats.get('kafka_commands_expired', 0) + 1
+                                            continue
+                                    except Exception:
+                                        pass  # If timestamp parsing fails, proceed anyway
+
+                                logger.info("[KafkaCmd] Received: %s -> %s epoch=%d params=%s",
+                                            command_type, uav_id, msg_epoch, params)
+                                result = self.handle_command(uav_id, command_type, params)
+                                logger.info("[KafkaCmd] Result: %s -> %s: %s",
+                                            command_type, uav_id, result)
+                                self._stats['kafka_commands_consumed'] = \
+                                    self._stats.get('kafka_commands_consumed', 0) + 1
+
+                                # Send ACK to commands.ack topic
+                                self._send_command_ack(
+                                    uav_id, command_type, msg_epoch,
+                                    data.get('commandLogId'),
+                                    result)
+                            except Exception as e:
+                                logger.error("[KafkaCmd] Failed to process command: %s", e)
+                except Exception as e:
+                    if self.running:
+                        logger.error("[KafkaCmd] Poll error: %s", e)
+                        time.sleep(1)
+            try:
+                consumer.close()
+            except Exception:
+                pass
+            logger.info("[KafkaCmd] Consumer thread stopped")
+
+        t = threading.Thread(target=_consume_loop, daemon=True, name='kafka-cmd-consumer')
+        t.start()
+        logger.info("[KafkaCmd] Consumer thread launched")
+
+    def _send_command_ack(self, uav_id: str, command_type: str, epoch: int,
+                          command_log_id, result: dict):
+        """Send command execution ACK to commands.ack Kafka topic.
+
+        This ensures the commands.ack topic is created and downstream services
+        (e.g., ucs-command CommandAckConsumer) can track command outcomes.
+        """
+        if not self._kafka_enabled or not self._kafka_producer:
+            return
+        try:
+            from datetime import datetime, timezone
+            success = result.get('success', False) if isinstance(result, dict) else False
+            detail = result.get('message', '') if isinstance(result, dict) else str(result)
+            ack = {
+                'uavId': uav_id,
+                'command': command_type,
+                'success': success,
+                'detail': detail,
+                'epoch': epoch,
+                'commandId': command_log_id,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+            self._kafka_producer.send('commands.ack', key=uav_id, value=ack)
+            logger.info("[KafkaCmd] ACK sent: %s -> %s success=%s", command_type, uav_id, success)
+        except Exception as e:
+            logger.error("[KafkaCmd] ACK send failed: %s", e)
+
+    def _get_or_increment_epoch(self, uav_id: str, is_new: bool = False) -> int:
+        """Get current epoch for a drone, incrementing on reconnection."""
+        if uav_id not in self._epoch_map:
+            self._epoch_map[uav_id] = 1
+            logger.info("[Epoch] New drone %s, epoch=1", uav_id)
+        elif is_new:
+            self._epoch_map[uav_id] += 1
+            logger.info("[Epoch] Drone %s reconnected, epoch=%d", uav_id, self._epoch_map[uav_id])
+        return self._epoch_map[uav_id]
+
+    def _start_epoch_maintenance(self):
+        """Start a background thread for periodic epoch maintenance.
+
+        Every 6 hours, scan the epoch map:
+          - Normalize: epoch > 10000 → reset to 1
+          - Evict: drones not seen for > 24 hours → remove from map
+
+        This prevents epoch values from growing unbounded over long runtimes.
+        """
+        EPOCH_SOFT_LIMIT = 10000
+        MAX_IDLE_SECONDS = 24 * 3600  # 24 hours
+        MAINTENANCE_INTERVAL = 6 * 3600  # 6 hours
+
+        def _maintenance_loop():
+            logger.info("[EpochMaint] Maintenance thread started (interval=%ds)", MAINTENANCE_INTERVAL)
+            while self.running:
+                time.sleep(MAINTENANCE_INTERVAL)
+                if not self.running:
+                    break
+                now = time.time()
+                normalized = 0
+                evicted = 0
+                uav_ids = list(self._epoch_map.keys())
+                for uav_id in uav_ids:
+                    state = self.drone_states.get(uav_id)
+                    idle_s = (now - state.last_update) if (state and state.last_update > 0) else float('inf')
+
+                    # Evict stale drones
+                    if idle_s > MAX_IDLE_SECONDS:
+                        self._epoch_map.pop(uav_id, None)
+                        evicted += 1
+                        continue
+
+                    # Normalize large epochs
+                    epoch = self._epoch_map.get(uav_id, 0)
+                    if epoch > EPOCH_SOFT_LIMIT:
+                        self._epoch_map[uav_id] = 1
+                        normalized += 1
+                        logger.info("[EpochMaint] Normalized drone %s epoch: %d -> 1", uav_id, epoch)
+
+                if normalized > 0 or evicted > 0:
+                    logger.info("[EpochMaint] Maintenance: normalized=%d, evicted=%d, remaining=%d",
+                                normalized, evicted, len(self._epoch_map))
+
+            logger.info("[EpochMaint] Maintenance thread stopped")
+
+        t = threading.Thread(target=_maintenance_loop, daemon=True, name='epoch-maintenance')
+        t.start()
+        logger.info("[EpochMaint] Maintenance thread launched")
+
+    def send_to_kafka(self, payload: dict) -> bool:
+        """Send telemetry to Kafka (per-drone messages with uav_id as key).
+
+        Timestamps are sent as epoch milliseconds (long) to match the
+        TelemetryMessage DTO expected by all downstream Java microservices.
+
+        NOTE: No flush() call here — messages are sent asynchronously for
+        minimum latency. The KafkaProducer's internal linger.ms/batch.size
+        controls actual network sends (default linger.ms=0 → immediate).
+        """
+        if not self._kafka_enabled or not self._kafka_producer:
+            return False
+        try:
+            # Use epoch millis — matches TelemetryMessage.timestamp (long) in Java services
+            timestamp_ms = int(time.time() * 1000)
+            drones = payload.get('drones', [])
+            for drone_data in drones:
+                uav_id = drone_data.get('uavId', '')
+                if not uav_id:
+                    continue
+                msg = dict(drone_data)
+                msg['timestamp'] = timestamp_ms
+                msg['epoch'] = self._epoch_map.get(uav_id, 0)
+                # Key = uav_id -> same partition -> ordered
+                # No flush — async send for lowest latency
+                self._kafka_producer.send('telemetry.raw', key=uav_id, value=msg)
+            self._stats['kafka_success'] += 1
+            return True
+        except Exception as e:
+            logger.error("[Kafka] Send failed: %s", e)
+            self._stats['kafka_errors'] += 1
+            return False
+
+    def send_event_to_kafka(self, event_type: str, uav_id: str, level: str, detail: str):
+        """Send a drone event to the events.drone Kafka topic."""
+        if not self._kafka_enabled or not self._kafka_producer:
+            return
+        try:
+            from datetime import datetime, timezone
+            event = {
+                'eventType': event_type,
+                'uavId': uav_id,
+                'level': level,
+                'detail': detail,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+            self._kafka_producer.send('events.drone', key=uav_id, value=event)
+            logger.info("[Kafka] Event sent: %s %s %s", event_type, uav_id, detail)
+        except Exception as e:
+            logger.error("[Kafka] Event send failed: %s", e)
 
     def build_telemetry_payload(self) -> dict:
         """Build the telemetry batch payload for the backend API."""
@@ -538,11 +859,45 @@ class DDSGateway:
                     "armed": state.armed,
                     "flightMode": state.flight_mode,
                     "batteryPercent": state.battery_percent,
+                    "epoch": state.epoch,
                 })
 
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "drones": drones
+        }
+
+    def build_telemetry_payload_single(self, uav_id: str) -> Optional[dict]:
+        """Build telemetry payload for a single drone (real-time per-drone send)."""
+        from datetime import datetime, timezone
+
+        with self._lock:
+            state = self.drone_states.get(uav_id)
+            if not state:
+                return None
+            drone_data = {
+                "uavId": state.uav_id,
+                "lat": state.lat,
+                "lon": state.lon,
+                "alt": state.alt,
+                "heading": state.heading,
+                "groundSpeed": state.ground_speed,
+                "verticalSpeed": state.vertical_speed,
+                "vx": state.vx,
+                "vy": state.vy,
+                "vz": state.vz,
+                "nedX": state.ned_x,
+                "nedY": state.ned_y,
+                "nedZ": state.ned_z,
+                "armed": state.armed,
+                "flightMode": state.flight_mode,
+                "batteryPercent": state.battery_percent,
+                "epoch": state.epoch,
+            }
+
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "drones": [drone_data]
         }
 
     def send_to_backend(self, payload: dict) -> bool:
@@ -648,9 +1003,15 @@ class DDSGateway:
             logger.error("[Startup] Failed to init ROS2 node. Exiting.")
             return
 
-        # Start command HTTP server for receiving commands from backend
+        # Start command HTTP server for receiving commands from backend (fallback)
         cmd_port = int(os.environ.get('DDS_COMMAND_PORT', '5050'))
         self.start_command_server(port=cmd_port)
+
+        # Start Kafka command consumer (primary command path)
+        self._start_kafka_command_consumer()
+
+        # Start epoch periodic maintenance (prevents unbounded epoch growth)
+        self._start_epoch_maintenance()
 
         logger.info("[Startup] Checking backend...")
         for attempt in range(3):
@@ -664,40 +1025,55 @@ class DDSGateway:
         cycle = 0
         import rclpy
 
+        # Track per-drone last-sent timestamps for 10Hz throttle
+        _last_sent: Dict[str, float] = {}
+        SEND_INTERVAL = 0.1  # 10Hz per drone
+
         while self.running and rclpy.ok():
             try:
-                rclpy.spin_once(self._node, timeout_sec=0.1)
+                # Spin ROS2 — process all pending DDS callbacks (non-blocking)
+                rclpy.spin_once(self._node, timeout_sec=0.05)
 
-                if cycle % 10 == 0:
+                if cycle % 50 == 0:  # Discovery every ~5s (50 * 0.1s)
                     logger.info("[Discovery] Scanning topics (cycle %d)...", cycle)
                     new_drones = self.discover_drones_from_topics()
                     for uid in new_drones:
-                        if uid not in self.drone_states:
+                        is_new = uid not in self.drone_states
+                        if is_new:
                             logger.info("[Discovery] NEW drone: %s", uid)
                             self.subscribe_to_drone(uid)
+                            # Increment epoch for new/reconnected drone
+                            epoch = self._get_or_increment_epoch(uid, is_new=True)
+                            self.drone_states[uid].epoch = epoch
+                            # Publish online event to Kafka
+                            self.send_event_to_kafka('DRONE_ONLINE', uid, 'INFO',
+                                                     f'Drone {uid} connected (epoch={epoch})')
                     if not new_drones and cycle == 0:
                         logger.warning(
                             "[Discovery] No drones found. "
                             "Check PX4 simulator and ROS_DOMAIN_ID."
                         )
 
+                # Real-time per-drone forwarding at 10Hz (no batch accumulation)
                 if self.drone_states:
                     now = time.time()
-                    active = sum(
-                        1 for s in self.drone_states.values()
-                        if now - s.last_update < 5
-                    )
-                    if active > 0:
-                        self.send_to_backend(self.build_telemetry_payload())
-                    elif cycle % 10 == 0:
-                        logger.warning(
-                            "[Forward] %d drone(s) tracked but none active",
-                            len(self.drone_states)
-                        )
+                    for uid, state in list(self.drone_states.items()):
+                        if now - state.last_update > 5:
+                            continue  # Skip stale drones
+                        last = _last_sent.get(uid, 0)
+                        if now - last < SEND_INTERVAL:
+                            continue  # Throttle: 10Hz per drone
+                        _last_sent[uid] = now
+                        # Build single-drone payload and send immediately
+                        single_payload = self.build_telemetry_payload_single(uid)
+                        if single_payload:
+                            kafka_ok = self.send_to_kafka(single_payload)
+                            if not kafka_ok:
+                                self.send_to_backend(single_payload)
 
                 self.log_statistics()
                 cycle += 1
-                time.sleep(self.poll_interval)
+                # Tight loop — no sleep; spin_once timeout_sec=0.05 provides pacing
 
             except KeyboardInterrupt:
                 break
@@ -939,7 +1315,7 @@ class DDSGateway:
             logger.info("[Command] TAKEOFF (ARM+OFFBOARD): relative=%.1fm, NED_z=%.1f for %s",
                         relative_alt, target_z, uav_id)
 
-            # Step 0: Save home position + set home on flight controller (cmd 179)
+            # Step 0: Save home position + set home on flight controller
             self._save_home_position(uav_id)
             self.publish_vehicle_command(uav_id, command=179, param1=1.0)  # use current pos
 
@@ -1037,20 +1413,38 @@ class DDSGateway:
             home = self._get_home_position(uav_id)
             if home:
                 home_lat, home_lon, home_alt = home
-                north, east, down = _latlon_to_ned(
+                # Target position in NED (relative to home)
+                target_n, target_e, _ = _latlon_to_ned(
                     lat, lon, home_alt + alt,
                     home_lat, home_lon, home_alt)
                 target_z = -alt  # NED: negative = up from home
-                # Calculate yaw: bearing from current position to target (NED frame)
-                # atan2(east, north) gives heading in radians, 0=North, pi/2=East
-                target_yaw = math.atan2(east, north) if (not math.isnan(east) and not math.isnan(north) and (abs(east) > 0.1 or abs(north) > 0.1)) else float('nan')
+
+                # Calculate yaw: bearing from drone's CURRENT position to target
+                # Use current NED position (updated by _on_local_position callback)
+                with self._lock:
+                    state = self.drone_states.get(uav_id)
+                cur_n = state.ned_x if state else 0.0
+                cur_e = state.ned_y if state else 0.0
+                delta_n = target_n - cur_n  # north difference (meters)
+                delta_e = target_e - cur_e  # east difference (meters)
+                dist = math.sqrt(delta_n ** 2 + delta_e ** 2)
+                if dist > 0.5:  # Only set yaw if target is >0.5m away
+                    # atan2(east, north) → 0=North, pi/2=East (NED yaw convention)
+                    target_yaw = math.atan2(delta_e, delta_n)
+                else:
+                    target_yaw = float('nan')  # Too close, keep current heading
+
                 logger.info(
-                    "[Command] GOTO: lat=%.6f lon=%.6f alt=%.1f -> NED [%.1f, %.1f, %.1f] yaw=%.2frad for %s",
-                    lat, lon, alt, north, east, target_z, target_yaw, uav_id)
+                    "[Command] GOTO: target=(%.6f,%.6f) alt=%.1f -> NED [%.1f,%.1f,%.1f] "
+                    "cur_NED=[%.1f,%.1f] dist=%.1fm yaw=%.2frad(%.1f°) for %s",
+                    lat, lon, alt, target_n, target_e, target_z,
+                    cur_n, cur_e, dist,
+                    target_yaw, math.degrees(target_yaw) if not math.isnan(target_yaw) else 0,
+                    uav_id)
                 # Update heartbeat setpoint with new target + yaw
                 self.start_offboard_heartbeat(
                     uav_id, target_z=target_z,
-                    target_x=north, target_y=east,
+                    target_x=target_n, target_y=target_e,
                     target_yaw=target_yaw)
                 # Ensure OFFBOARD mode
                 ok = self.publish_vehicle_command(
@@ -1317,24 +1711,63 @@ class DDSGateway:
         def _orbit_loop():
             logger.info("[Orbit] Started for %s: center=(%.1f,%.1f) r=%.1fm v=%.1fm/s",
                         uav_id, center_n, center_e, radius, velocity)
-            t0 = time.time()
+            
+            arrived = False
+            t0 = 0
+            initial_angle = 0
+            
             while self._orbit_active.get(uav_id, False) and self.running:
                 try:
-                    elapsed = time.time() - t0
-                    angle = omega * elapsed  # current angle in radians
+                    with self._lock:
+                        state = self.drone_states.get(uav_id)
+                    
+                    if not state:
+                        time.sleep(interval)
+                        continue
 
-                    # Position on circle (NED frame)
-                    target_n = center_n + radius * math.cos(angle)
-                    target_e = center_e + radius * math.sin(angle)
+                    # 1. 计算当前相对于圆心的偏差（必须在这里定义，确保全流程可用）
+                    dx = state.ned_x - center_n
+                    dy = state.ned_y - center_e
+                    dist = math.sqrt(dx**2 + dy**2)
+                    
+                    # 默认目标点和偏航角（防止逻辑未覆盖）
+                    target_n, target_e, yaw = state.ned_x, state.ned_y, 0.0
 
-                    # Yaw towards center: atan2(east_to_center, north_to_center)
-                    dn = center_n - target_n
-                    de = center_e - target_e
-                    yaw = math.atan2(de, dn)  # 0=North, pi/2=East
+                    if not arrived:
+                        # 阶段 1: 飞向圆周切入点
+                        if dist > 0.1:
+                            target_n = center_n + (dx / dist) * radius
+                            target_e = center_e + (dy / dist) * radius
+                        else:
+                            target_n = center_n + radius
+                            target_e = center_e
+                            
+                        # 机头指向目标点
+                        yaw = math.atan2(target_e - state.ned_y, target_n - state.ned_x)
+                        
+                        # 判断是否到达圆周（2米范围内视为到达）
+                        if abs(dist - radius) < 2.0:
+                            arrived = True
+                            t0 = time.time()
+                            initial_angle = math.atan2(dy, dx)
+                            logger.info("[Orbit] Drone %s arrived at orbit circle, switching to rotation phase", uav_id)
+                    
+                    if arrived:
+                        # 阶段 2: 绕圈飞行
+                        elapsed = time.time() - t0
+                        angle = initial_angle + (omega * elapsed)
+                        
+                        target_n = center_n + radius * math.cos(angle)
+                        target_e = center_e + radius * math.sin(angle)
+                        
+                        # 机头指向圆心
+                        yaw = math.atan2(center_e - target_e, center_n - target_n)
 
+                    # 发送指令
                     self.publish_offboard_control_mode(uav_id, position=True)
                     self.publish_trajectory_setpoint(
                         uav_id, target_n, target_e, alt_ned, yaw=yaw, log=False)
+                        
                 except Exception as e:
                     logger.error("[Orbit] Error for %s: %s", uav_id, e)
                 time.sleep(interval)

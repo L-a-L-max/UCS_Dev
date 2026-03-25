@@ -1,0 +1,329 @@
+##############################################
+# UCS 微服务完整编排 (Phase 2)
+# 包含：7个微服务 + Kafka + Redis Cluster + TimescaleDB + PostgreSQL
+##############################################
+version: '3.8'
+
+services:
+  # ================================================================
+  # 基础设施层
+  # ================================================================
+
+  # ---- Kafka (KRaft 模式) ----
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: ucs-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: EXTERNAL://0.0.0.0:9092,INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 16
+      KAFKA_LOG_RETENTION_HOURS: 168
+      # ---- 单节点必须设置 replication-factor=1 ----
+      # 默认值为3，单broker无法满足，导致 __consumer_offsets 等内部topic创建失败
+      # 消费者组协调器依赖 __consumer_offsets，创建失败 → 消费者永远挂起
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # ---- 数据目录与卷挂载对齐 ----
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - ucs-net
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: ucs-kafka-ui
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: ucs-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - ucs-net
+
+  # ---- PostgreSQL (业务数据) ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: ucs-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ucs
+      POSTGRES_USER: ucs
+      POSTGRES_PASSWORD: ucs_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # 自动执行初始化脚本（首次启动时）
+      - ./Doc/sql/01_postgres_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./Doc/sql/02_postgres_init_data.sql:/docker-entrypoint-initdb.d/02_init_data.sql:ro
+    networks:
+      - ucs-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ucs"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---- TimescaleDB (遥测时序数据) ----
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: ucs-timescaledb
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ucs_telemetry
+      POSTGRES_USER: ucs
+      POSTGRES_PASSWORD: ucs_password
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+      # 自动执行初始化脚本（首次启动时）
+      - ./Doc/sql/03_timescaledb_init.sql:/docker-entrypoint-initdb.d/01_timescaledb_init.sql:ro
+    networks:
+      - ucs-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ucs"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---- Redis (单节点开发模式，生产环境使用 docker-compose-redis-cluster.yml) ----
+  redis:
+    image: redis:7.2-alpine
+    container_name: ucs-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - ucs-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ================================================================
+  # 微服务层
+  # ================================================================
+
+  # ---- API 网关 (端口 8080) ----
+  # 最后启动：依赖所有下游微服务就绪
+  ucs-api-gateway:
+    build:
+      context: ./ucs-platform/ucs-api-gateway
+      dockerfile: Dockerfile
+    container_name: ucs-api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DRONE_STATE_URI: http://ucs-drone-state:8085
+      COMMAND_URI: http://ucs-command:8084
+      BUSINESS_URI: http://ucs-business:8086
+      BUSINESS_WS_URI: ws://ucs-business:8086
+      STORE_URI: http://ucs-telemetry-store:8082
+      INGEST_URI: http://ucs-telemetry-ingest:8081
+    depends_on:
+      redis:
+        condition: service_healthy
+      ucs-business:
+        condition: service_started
+      ucs-telemetry-ingest:
+        condition: service_started
+      ucs-telemetry-store:
+        condition: service_started
+      ucs-realtime-push:
+        condition: service_started
+      ucs-command:
+        condition: service_started
+      ucs-drone-state:
+        condition: service_started
+    networks:
+      - ucs-net
+
+  # ---- 遥测接入服务 (端口 8081) ----
+  # 依赖: kafka + redis 就绪后启动
+  ucs-telemetry-ingest:
+    build:
+      context: ./ucs-platform/ucs-telemetry-ingest
+      dockerfile: Dockerfile
+    container_name: ucs-telemetry-ingest
+    ports:
+      - "8081:8081"
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - ucs-net
+
+  # ---- 遥测存储服务 (端口 8082) ----
+  # 依赖: kafka + redis + timescaledb 就绪后启动
+  ucs-telemetry-store:
+    build:
+      context: ./ucs-platform/ucs-telemetry-store
+      dockerfile: Dockerfile
+    container_name: ucs-telemetry-store
+    ports:
+      - "8082:8082"
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      TIMESCALEDB_HOST: timescaledb
+      TIMESCALEDB_PORT: 5432
+      TIMESCALEDB_DB: ucs_telemetry
+      TIMESCALEDB_USER: ucs
+      TIMESCALEDB_PASS: ucs_password
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - ucs-net
+
+  # ---- 实时推送服务 (端口 8083) ----
+  # 依赖: kafka + redis 就绪后启动
+  ucs-realtime-push:
+    build:
+      context: ./ucs-platform/ucs-realtime-push
+      dockerfile: Dockerfile
+    container_name: ucs-realtime-push
+    ports:
+      - "8083:8083"
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - ucs-net
+
+  # ---- 指令下发服务 (端口 8084) ----
+  # 依赖: kafka + redis 就绪后启动
+  ucs-command:
+    build:
+      context: ./ucs-platform/ucs-command
+      dockerfile: Dockerfile
+    container_name: ucs-command
+    ports:
+      - "8084:8084"
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - ucs-net
+
+  # ---- 无人机状态服务 (端口 8085) ----
+  # 依赖: redis + postgres 就绪后启动
+  ucs-drone-state:
+    build:
+      context: ./ucs-platform/ucs-drone-state
+      dockerfile: Dockerfile
+    container_name: ucs-drone-state
+    ports:
+      - "8085:8085"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ucs
+      DB_USER: ucs
+      DB_PASS: ucs_password
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - ucs-net
+
+  # ---- 业务管理服务 (端口 8086) ----
+  ucs-business:
+    build:
+      context: ./ucs-platform/ucs-business
+      dockerfile: Dockerfile
+    container_name: ucs-business
+    ports:
+      - "8086:8086"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ucs
+      DB_USER: ucs
+      DB_PASS: ucs_password
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      # DDS Gateway 通常运行在宿主机（带 ROS2/DDS 环境），使用 host.docker.internal 访问
+      # Linux 下需要在 extra_hosts 中添加映射，或直接使用宿主机 IP
+      DDS_GATEWAY_COMMAND_URL: ${DDS_GATEWAY_COMMAND_URL:-http://host.docker.internal:5050}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - ucs-net
+
+volumes:
+  kafka-data:
+  postgres-data:
+  timescaledb-data:
+  redis-data:
+
+networks:
+  ucs-net:
+    driver: bridge
