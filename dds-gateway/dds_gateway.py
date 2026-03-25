@@ -1711,24 +1711,63 @@ class DDSGateway:
         def _orbit_loop():
             logger.info("[Orbit] Started for %s: center=(%.1f,%.1f) r=%.1fm v=%.1fm/s",
                         uav_id, center_n, center_e, radius, velocity)
-            t0 = time.time()
+            
+            arrived = False
+            t0 = 0
+            initial_angle = 0
+            
             while self._orbit_active.get(uav_id, False) and self.running:
                 try:
-                    elapsed = time.time() - t0
-                    angle = omega * elapsed  # current angle in radians
+                    with self._lock:
+                        state = self.drone_states.get(uav_id)
+                    
+                    if not state:
+                        time.sleep(interval)
+                        continue
 
-                    # Position on circle (NED frame)
-                    target_n = center_n + radius * math.cos(angle)
-                    target_e = center_e + radius * math.sin(angle)
+                    # 1. 计算当前相对于圆心的偏差（必须在这里定义，确保全流程可用）
+                    dx = state.ned_x - center_n
+                    dy = state.ned_y - center_e
+                    dist = math.sqrt(dx**2 + dy**2)
+                    
+                    # 默认目标点和偏航角（防止逻辑未覆盖）
+                    target_n, target_e, yaw = state.ned_x, state.ned_y, 0.0
 
-                    # Yaw towards orbit center so the drone faces inward
-                    dn = center_n - target_n  # north delta to center
-                    de = center_e - target_e  # east delta to center
-                    yaw = math.atan2(de, dn)  # 0=North, pi/2=East
+                    if not arrived:
+                        # 阶段 1: 飞向圆周切入点
+                        if dist > 0.1:
+                            target_n = center_n + (dx / dist) * radius
+                            target_e = center_e + (dy / dist) * radius
+                        else:
+                            target_n = center_n + radius
+                            target_e = center_e
+                            
+                        # 机头指向目标点
+                        yaw = math.atan2(target_e - state.ned_y, target_n - state.ned_x)
+                        
+                        # 判断是否到达圆周（2米范围内视为到达）
+                        if abs(dist - radius) < 2.0:
+                            arrived = True
+                            t0 = time.time()
+                            initial_angle = math.atan2(dy, dx)
+                            logger.info("[Orbit] Drone %s arrived at orbit circle, switching to rotation phase", uav_id)
+                    
+                    if arrived:
+                        # 阶段 2: 绕圈飞行
+                        elapsed = time.time() - t0
+                        angle = initial_angle + (omega * elapsed)
+                        
+                        target_n = center_n + radius * math.cos(angle)
+                        target_e = center_e + radius * math.sin(angle)
+                        
+                        # 机头指向圆心
+                        yaw = math.atan2(center_e - target_e, center_n - target_n)
 
+                    # 发送指令
                     self.publish_offboard_control_mode(uav_id, position=True)
                     self.publish_trajectory_setpoint(
                         uav_id, target_n, target_e, alt_ned, yaw=yaw, log=False)
+                        
                 except Exception as e:
                     logger.error("[Orbit] Error for %s: %s", uav_id, e)
                 time.sleep(interval)
