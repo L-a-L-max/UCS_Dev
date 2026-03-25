@@ -1075,8 +1075,12 @@ export default function CommanderView({ token, username, partitions = [], onLogo
       <Dialog open={transferDialogOpen} onOpenChange={(open) => {
         setTransferDialogOpen(open);
         if (!open) {
-          // Dialog data cleanup: clear transfer state to prevent stale data on next open
+          // Dialog data cleanup: clear all transfer state to prevent stale data on next open
           setTransferResult(null);
+          setToUserId('');
+          setToTeamId('');
+          setTransferReason('');
+          setTransferLoading(false);
         }
       }}>
         <DialogContent className="bg-[rgba(13,21,38,0.95)] backdrop-blur-xl border border-[rgba(0,240,255,0.2)] text-white shadow-[0_0_30px_rgba(0,240,255,0.1)]">
@@ -1100,6 +1104,9 @@ export default function CommanderView({ token, username, partitions = [], onLogo
             <Button variant="outline" onClick={() => {
               setTransferDialogOpen(false);
               setTransferResult(null);
+              setToUserId('');
+              setToTeamId('');
+              setTransferReason('');
             }}
               className="bg-[rgba(0,240,255,0.05)] border-[rgba(0,240,255,0.15)] text-slate-300 hover:bg-[rgba(0,240,255,0.1)]">取消</Button>
             <Button onClick={() => { setTransferDialogOpen(false); handleTransfer(); }}
