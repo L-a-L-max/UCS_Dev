@@ -19,6 +19,7 @@ interface CommandButton {
 
 interface HoloCommandBarProps {
   buttons: CommandButton[];
+  compact?: boolean;
   className?: string;
 }
 
@@ -53,7 +54,7 @@ const colorMap = {
   },
 };
 
-function CommandBtn({ button }: { button: CommandButton }) {
+function CommandBtn({ button, compact = false }: { button: CommandButton; compact?: boolean }) {
   const [ripple, setRipple] = useState(false);
   const colors = colorMap[button.color || 'cyan'];
 
@@ -69,8 +70,9 @@ function CommandBtn({ button }: { button: CommandButton }) {
       whileHover={{ scale: 1.05, y: -2 }}
       whileTap={{ scale: 0.95 }}
       className={cn(
-        'relative flex flex-col items-center gap-1 px-4 py-2.5 rounded-xl',
-        'transition-all duration-200 min-w-[72px]',
+        'relative flex flex-col items-center gap-1 rounded-xl',
+        'transition-all duration-200',
+        compact ? 'px-2.5 py-1.5 min-w-[52px]' : 'px-4 py-2.5 min-w-[72px]',
         button.disabled && 'opacity-40 cursor-not-allowed'
       )}
       style={{
@@ -81,7 +83,7 @@ function CommandBtn({ button }: { button: CommandButton }) {
       onClick={handleClick}
       disabled={button.disabled}
     >
-      <span style={{ color: colors.text }} className="text-lg">
+      <span style={{ color: colors.text }}>
         {button.icon}
       </span>
       <span
@@ -110,14 +112,15 @@ function CommandBtn({ button }: { button: CommandButton }) {
   );
 }
 
-export function HoloCommandBar({ buttons, className = '' }: HoloCommandBarProps) {
+export function HoloCommandBar({ buttons, compact = false, className = '' }: HoloCommandBarProps) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 40 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.6, delay: 0.8 }}
       className={cn(
-        'flex items-center justify-center gap-3 px-6 py-3',
+        'flex items-center justify-center',
+        compact ? 'gap-1.5 px-3 py-2' : 'gap-3 px-6 py-3',
         'rounded-t-2xl',
         className
       )}
@@ -137,7 +140,7 @@ export function HoloCommandBar({ buttons, className = '' }: HoloCommandBarProps)
       </div>
 
       {buttons.map((btn) => (
-        <CommandBtn key={btn.id} button={btn} />
+        <CommandBtn key={btn.id} button={btn} compact={compact} />
       ))}
 
       {/* Right decorative bracket */}

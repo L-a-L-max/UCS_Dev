@@ -9,7 +9,7 @@
  * - Bottom center: Arc command bar
  * - Full overlay: HUD decorative elements
  */
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { lazy, Suspense } from 'react';
 import { 
   Plane, 
@@ -40,6 +40,28 @@ interface HoloDashboardProps {
   className?: string;
 }
 
+/** Hook to track container dimensions for responsive layout */
+function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
+  const [size, setSize] = useState({ width: 1200, height: 800 });
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setSize({ width: rect.width, height: rect.height });
+    };
+
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return size;
+}
+
 export function HoloDashboard({
   drones,
   selectedDroneId,
@@ -49,8 +71,26 @@ export function HoloDashboard({
   onCommand,
   className = '',
 }: HoloDashboardProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+
+  const { width, height } = useContainerSize(containerRef);
+
+  // Responsive breakpoints
+  const isCompact = width < 768;
+  const isMedium = width >= 768 && width < 1200;
+
+  // Dynamic panel widths based on container size
+  const leftPanelWidth = isCompact ? Math.min(width * 0.55, 240) : Math.min(width * 0.22, 300);
+  const rightPanelWidth = isCompact ? Math.min(width * 0.55, 220) : Math.min(width * 0.2, 260);
+  const panelGap = isCompact ? 8 : 16;
+  const radarSize = isCompact
+    ? Math.min(width * 0.3, 120)
+    : isMedium
+    ? Math.min(width * 0.18, 160)
+    : Math.min(width * 0.14, 200);
+  const fleetMaxH = isCompact ? height * 0.3 : height * 0.5;
 
   const handleCommand = useCallback((cmd: string) => {
     onCommand?.(cmd);
@@ -111,7 +151,10 @@ export function HoloDashboard({
   ];
 
   return (
-    <div className={`relative w-full h-full bg-[#0a0f1a] overflow-hidden ${className}`}>
+    <div
+      ref={containerRef}
+      className={`relative w-full h-full bg-[#0a0f1a] overflow-hidden ${className}`}
+    >
       {/* Layer 0: Cesium 3D Globe (full background) */}
       <div className="absolute inset-0 z-0">
         <Suspense
@@ -136,10 +179,18 @@ export function HoloDashboard({
       {/* Layer 1: HUD Overlay (scanlines, vignette, corners, crosshair) */}
       <HoloHUD />
 
-      {/* Layer 2: Floating Panels */}
+      {/* Layer 2: Floating Panels - fully responsive */}
       <div className="absolute inset-0 z-10 pointer-events-none">
         {/* Left floating panel - Fleet Management */}
-        <div className="absolute top-4 left-4 w-[260px] pointer-events-auto">
+        <div
+          className="absolute pointer-events-auto overflow-hidden"
+          style={{
+            top: panelGap,
+            left: panelGap,
+            width: leftPanelWidth,
+            maxHeight: height - panelGap * 2 - 80,
+          }}
+        >
           <HoloPanel
             title="舰队管理"
             tilt="left"
@@ -153,12 +204,21 @@ export function HoloDashboard({
               drones={drones}
               selectedDroneId={selectedDroneId}
               onDroneClick={onDroneClick}
+              maxHeight={fleetMaxH}
             />
           </HoloPanel>
         </div>
 
-        {/* Right floating panel - Data Instruments */}
-        <div className="absolute top-4 right-4 w-[220px] pointer-events-auto">
+        {/* Right floating panel - Radar + Data Instruments */}
+        <div
+          className="absolute pointer-events-auto overflow-hidden"
+          style={{
+            top: panelGap,
+            right: panelGap,
+            width: rightPanelWidth,
+            maxHeight: height - panelGap * 2 - 80,
+          }}
+        >
           {/* Radar at top-right */}
           <HoloPanel
             title="雷达扫描"
@@ -166,19 +226,19 @@ export function HoloDashboard({
             glow="cyan"
             delay={0.3}
           >
-            <div className="flex justify-center p-3">
+            <div className="flex justify-center" style={{ padding: isCompact ? 4 : 12 }}>
               <HoloRadar
                 drones={drones}
                 centerLng={radarCenter.lng}
                 centerLat={radarCenter.lat}
                 radius={2}
-                size={180}
+                size={radarSize}
               />
             </div>
           </HoloPanel>
 
           {/* Data panel below radar */}
-          <div className="mt-3">
+          <div style={{ marginTop: panelGap * 0.75 }}>
             <HoloPanel
               title="实时数据"
               tilt="right"
@@ -197,8 +257,15 @@ export function HoloDashboard({
         </div>
 
         {/* Bottom center - Arc Command Bar */}
-        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 pointer-events-auto">
-          <HoloCommandBar buttons={commandButtons} />
+        <div
+          className="absolute left-1/2 pointer-events-auto"
+          style={{
+            bottom: 0,
+            transform: 'translateX(-50%)',
+            maxWidth: isCompact ? width - panelGap * 2 : width * 0.6,
+          }}
+        >
+          <HoloCommandBar buttons={commandButtons} compact={isCompact} />
         </div>
       </div>
     </div>

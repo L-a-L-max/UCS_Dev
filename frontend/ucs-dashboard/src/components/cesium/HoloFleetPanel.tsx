@@ -13,6 +13,7 @@ interface HoloFleetPanelProps {
   drones: MapDrone[];
   selectedDroneId?: string | null;
   onDroneClick?: (uavId: string) => void;
+  maxHeight?: number;
   className?: string;
 }
 
@@ -92,6 +93,7 @@ export function HoloFleetPanel({
   drones,
   selectedDroneId,
   onDroneClick,
+  maxHeight,
   className = '',
 }: HoloFleetPanelProps) {
   const onlineCount = drones.filter(d => d.onlineStatus !== false).length;
@@ -113,7 +115,10 @@ export function HoloFleetPanel({
       </div>
 
       {/* Drone list */}
-      <div className="flex-1 overflow-y-auto px-1 max-h-[300px] scrollbar-thin scrollbar-thumb-cyan-500/20">
+      <div
+        className="flex-1 overflow-y-auto px-1 scrollbar-thin scrollbar-thumb-cyan-500/20"
+        style={{ maxHeight: maxHeight ? maxHeight - 40 : 300 }}
+      >
         {drones.length === 0 ? (
           <div className="text-center text-slate-500 py-6 text-xs">
             暂无无人机数据

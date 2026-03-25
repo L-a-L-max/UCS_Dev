@@ -97,32 +97,36 @@ export default function CesiumMapPanel({
         navigationHelpButton: false,
         infoBox: false,
         creditContainer: document.createElement('div'), // Hide credits
-        imageryProvider: gaodeProvider,
         msaaSamples: 4,
       });
 
       viewerRef.current = viewer;
 
-      // Add grid overlay for sci-fi aesthetic
-      viewer.imageryLayers.addImageryProvider(
+      // IMPORTANT: Remove ALL default imagery layers first, then add Gaode as base
+      viewer.imageryLayers.removeAll();
+      viewer.imageryLayers.addImageryProvider(gaodeProvider);
+
+      // Add subtle grid overlay ON TOP of the real map tiles for sci-fi aesthetic
+      const gridLayer = viewer.imageryLayers.addImageryProvider(
         new Cesium.GridImageryProvider({
           cells: 8,
-          color: Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.08)'),
-          glowColor: Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.03)'),
-          glowWidth: 2,
+          color: Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.06)'),
+          glowColor: Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.02)'),
+          glowWidth: 1,
         })
       );
+      gridLayer.alpha = 0.3; // Semi-transparent so actual map shows through
 
       // Disable default atmosphere for cleaner sci-fi look
-      viewer.scene.skyAtmosphere.show = false;
+      if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false;
       viewer.scene.fog.enabled = false;
       viewer.scene.globe.showGroundAtmosphere = false;
 
       // Dark space background
       viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#0a0f1a');
-      viewer.scene.skyBox.show = false;
-      viewer.scene.sun.show = false;
-      viewer.scene.moon.show = false;
+      if (viewer.scene.skyBox) viewer.scene.skyBox.show = false;
+      if (viewer.scene.sun) viewer.scene.sun.show = false;
+      if (viewer.scene.moon) viewer.scene.moon.show = false;
 
       // Enable lighting for better visual
       viewer.scene.globe.enableLighting = false;
@@ -161,6 +165,34 @@ export default function CesiumMapPanel({
           onMapClickRef.current?.(lat, lon);
         }
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+      // Add dynamic radar scan circle on the ground
+      const scanCenter = Cesium.Cartesian3.fromDegrees(center[0], center[1]);
+      let scanAngle = 0;
+      const scanEntity = viewer.entities.add({
+        position: scanCenter,
+        ellipse: {
+          semiMajorAxis: 1500,
+          semiMinorAxis: 1500,
+          height: 1,
+          material: new Cesium.ColorMaterialProperty(
+            Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.05)')
+          ),
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.25)'),
+          outlineWidth: 1,
+        },
+      });
+
+      // Animate the radar scan circle with pulsing
+      viewer.scene.preRender.addEventListener(() => {
+        if (scanEntity.ellipse) {
+          scanAngle += 0.002;
+          const pulse = 1200 + 300 * Math.sin(scanAngle * 3);
+          scanEntity.ellipse.semiMajorAxis = new Cesium.ConstantProperty(pulse);
+          scanEntity.ellipse.semiMinorAxis = new Cesium.ConstantProperty(pulse);
+        }
+      });
 
       if (!destroyed) {
         setMapReady(true);
@@ -207,7 +239,6 @@ export default function CesiumMapPanel({
         : drone.uavId === selectedDroneId;
       const color = getDroneColor(drone, isSelected);
       const altitude = (drone.altitude ?? 0) + 50; // Minimum altitude for visibility
-      const heading = drone.heading ?? 0;
 
       const position = Cesium.Cartesian3.fromDegrees(drone.lng, drone.lat, altitude);
 
