@@ -53,7 +53,13 @@ import {
 } from '@/services/api';
 import MapPanel, { type MapDrone, type MapRallyPoint } from '@/components/MapPanel';
 import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
-import { PieChart, Pie, BarChart, Bar, XAxis, Cell, Tooltip, ResponsiveContainer } from 'recharts';
+import ReactEChartsCore from 'echarts-for-react/lib/core';
+import * as echarts from 'echarts/core';
+import { PieChart as EPieChart, BarChart as EBarChart } from 'echarts/charts';
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components';
+import { CanvasRenderer } from 'echarts/renderers';
+
+echarts.use([EPieChart, EBarChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
 
 interface CommanderViewProps {
   token: string;
@@ -626,18 +632,21 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                       <div className="bg-slate-800 rounded border border-slate-700 p-1" style={{ height: chartType === 'pie' ? 90 : 100 }}>
                         {chartType === 'pie' ? (
                           <div className="flex items-center h-full">
-                            <div style={{ width: 80, height: 80 }}>
-                              <ResponsiveContainer width="100%" height="100%">
-                                <PieChart>
-                                  <Pie data={droneChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={35} innerRadius={18}
-                                    animationDuration={600} labelLine={false} fontSize={9} strokeWidth={1}>
-                                    {droneChartData.map((entry, index) => (
-                                      <Cell key={`cell-${index}`} fill={entry.color} />
-                                    ))}
-                                  </Pie>
-                                </PieChart>
-                              </ResponsiveContainer>
-                            </div>
+                            <ReactEChartsCore
+                              echarts={echarts}
+                              option={{
+                                series: [{
+                                  type: 'pie',
+                                  radius: ['45%', '80%'],
+                                  center: ['50%', '50%'],
+                                  data: droneChartData.map(d => ({ value: d.value, name: d.name, itemStyle: { color: d.color } })),
+                                  label: { show: false },
+                                  animationDuration: 600,
+                                }],
+                              }}
+                              style={{ width: 80, height: 80 }}
+                              opts={{ renderer: 'canvas' }}
+                            />
                             <div className="flex-1 pl-2 space-y-1">
                               {droneChartData.map((entry) => (
                                 <div key={entry.name} className="flex items-center gap-1.5 text-[10px]">
@@ -649,20 +658,24 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                             </div>
                           </div>
                         ) : (
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={droneChartData} barCategoryGap="20%">
-                              <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                              <Bar dataKey="value" animationDuration={600} radius={[4, 4, 0, 0]}
-                                label={{ position: 'top', fontSize: 10, fill: '#e2e8f0' }}>
-                                {droneChartData.map((entry, index) => (
-                                  <Cell key={`cell-${index}`} fill={entry.color} />
-                                ))}
-                              </Bar>
-                              <Tooltip cursor={false}
-                                contentStyle={{ background: '#1e293b', border: '1px solid #475569', fontSize: 11 }}
-                                formatter={(value: number, name: string, props: { payload?: { name?: string } }) => [value, props.payload?.name || name]} />
-                            </BarChart>
-                          </ResponsiveContainer>
+                          <ReactEChartsCore
+                            echarts={echarts}
+                            option={{
+                              grid: { left: 10, right: 10, top: 20, bottom: 20, containLabel: true },
+                              xAxis: { type: 'category', data: droneChartData.map(d => d.name), axisLabel: { fontSize: 9, color: '#94a3b8' }, axisLine: { show: false }, axisTick: { show: false } },
+                              yAxis: { type: 'value', show: false },
+                              series: [{
+                                type: 'bar',
+                                data: droneChartData.map(d => ({ value: d.value, itemStyle: { color: d.color, borderRadius: [4, 4, 0, 0] } })),
+                                label: { show: true, position: 'top', fontSize: 10, color: '#e2e8f0' },
+                                animationDuration: 600,
+                                barMaxWidth: 30,
+                              }],
+                              tooltip: { trigger: 'item', backgroundColor: '#1e293b', borderColor: '#475569', textStyle: { fontSize: 11, color: '#e2e8f0' } },
+                            }}
+                            style={{ width: '100%', height: '100%' }}
+                            opts={{ renderer: 'canvas' }}
+                          />
                         )}
                       </div>
                     </div>
