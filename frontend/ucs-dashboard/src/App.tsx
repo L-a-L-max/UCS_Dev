@@ -2050,7 +2050,16 @@ function App() {
 
       <div className="flex-1 flex overflow-hidden relative z-[2]">
         {/* Left Sidebar */}
-        <div className={`sidebar-left ${leftSidebarCollapsed ? 'w-0 overflow-hidden collapsed' : 'w-64'} bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-r border-[rgba(0,240,255,0.08)] overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
+        <AnimatePresence initial={false}>
+        {!leftSidebarCollapsed && (
+        <motion.div
+          key="left-sidebar"
+          initial={{ width: 0, opacity: 0 }}
+          animate={{ width: 256, opacity: 1 }}
+          exit={{ width: 0, opacity: 0 }}
+          transition={{ duration: 0.3, ease: 'easeInOut' }}
+          className="sidebar-left bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-r border-[rgba(0,240,255,0.08)] overflow-y-auto p-3 space-y-3"
+        >
           <div className="glass-panel p-0">
             <div className="py-2 px-3">
               <div className="text-sm flex items-center justify-between text-white font-medium">
@@ -2240,7 +2249,9 @@ function App() {
               )}
             </div>
           </div>
-        </div>
+        </motion.div>
+        )}
+        </AnimatePresence>
 
         {/* Left Sidebar Collapse Button - On Boundary Line */}
         <div className="w-3 flex-shrink-0 relative bg-[rgba(0,240,255,0.03)] flex items-center justify-center cursor-pointer hover:bg-[rgba(0,240,255,0.08)] transition-colors" onClick={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)}>
@@ -2647,7 +2658,16 @@ function App() {
         </div>
 
         {/* Right Sidebar */}
-        <div className={`sidebar-right ${rightSidebarCollapsed ? 'w-0 overflow-hidden collapsed' : 'w-72'} bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-l border-[rgba(0,240,255,0.08)] overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
+        <AnimatePresence initial={false}>
+        {!rightSidebarCollapsed && (
+        <motion.div
+          key="right-sidebar"
+          initial={{ width: 0, opacity: 0 }}
+          animate={{ width: 288, opacity: 1 }}
+          exit={{ width: 0, opacity: 0 }}
+          transition={{ duration: 0.3, ease: 'easeInOut' }}
+          className="sidebar-right bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-l border-[rgba(0,240,255,0.08)] overflow-y-auto p-3 space-y-3"
+        >
           <div className="glass-panel p-0">
             <div className="py-2 px-3">
               <div className="text-sm flex items-center gap-2 text-white font-medium">
@@ -2682,7 +2702,12 @@ function App() {
           {/* Team List with Member Expansion - 暂时隐藏，等待后续对接数据库或订阅话题后再显示 */}
           {/* TODO: 当任务小队数据源确定后（数据库查询或话题订阅），取消注释以下组件 */}
 
-          <div className="glass-panel p-0">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.15, duration: 0.3 }}
+            className="glass-panel p-0"
+          >
             <div className="py-2 px-3">
               <div className="text-sm flex items-center gap-2 text-white font-medium">
                 <AlertTriangle className="w-4 h-4 text-neon-amber" />{zhCN.events}
@@ -2705,8 +2730,10 @@ function App() {
                 )}
               </div>
             </div>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
+        )}
+        </AnimatePresence>
       </div>
 
       <footer className="relative z-10 px-4 py-1 bg-[rgba(13,21,38,0.8)] backdrop-blur-md border-t border-[rgba(0,240,255,0.1)] text-center text-slate-500 text-xs">
