@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+// Card imports removed - using glass-panel classes for glassmorphism theme
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -522,7 +522,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   } : null;
 
   return (
-    <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden relative">
+    <div className="h-screen bg-dark-primary text-white flex flex-col overflow-hidden relative">
       {/* Floating Toast feedback */}
       {(commandFeedback || commandAckFeedback) && (
         <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-1.5 pointer-events-none" style={{ minWidth: 280, maxWidth: 420 }}>
@@ -544,11 +544,11 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
       )}
 
       {/* Header */}
-      <header className="flex justify-between items-center px-4 py-1.5 bg-slate-800 border-b border-slate-700 shrink-0">
+      <header className="flex justify-between items-center px-4 py-1.5 bg-[rgba(13,21,38,0.8)] backdrop-blur-md border-b border-[rgba(0,240,255,0.1)] shrink-0">
         <h1 className="text-lg font-bold flex items-center gap-2">
-          <Users className="w-5 h-5 text-green-400" />
-          {'\u961f\u957f\u7ba1\u7406\u9762\u677f'}
-          <Badge variant="outline" className="ml-2 text-green-300 border-green-500">{username}</Badge>
+          <Users className="w-5 h-5 text-neon-aqua" />
+          <span className="bg-gradient-to-r from-neon-cyan to-neon-aqua bg-clip-text text-transparent">{'\u961f\u957f\u7ba1\u7406\u9762\u677f'}</span>
+          <Badge variant="outline" className="ml-2 text-neon-aqua border-neon-aqua/30">{username}</Badge>
         </h1>
         <div className="flex items-center gap-1.5">
           <Button variant="outline" size="sm"
@@ -610,19 +610,19 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
 
       <div className="flex-1 flex overflow-hidden">
         {/* Left panel: team management */}
-        <div className={`${leftPanelCollapsed ? 'w-0 min-w-0 overflow-hidden' : 'w-[380px] min-w-[300px]'} bg-slate-900 border-r border-slate-700 flex flex-col transition-all duration-500 ease-in-out shrink-0`}>
+        <div className={`${leftPanelCollapsed ? 'w-0 min-w-0 overflow-hidden' : 'w-[380px] min-w-[300px]'} bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-r border-[rgba(0,240,255,0.08)] flex flex-col transition-all duration-500 ease-in-out shrink-0`}>
           {/* Tab switch */}
-          <div className="flex gap-0.5 bg-slate-800 border-b border-slate-700 p-1">
+          <div className="flex gap-0.5 bg-[rgba(13,21,38,0.5)] border-b border-[rgba(0,240,255,0.08)] p-1">
             <button onClick={() => setActiveTab('drones')}
-              className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'drones' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'drones' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
               <Plane className="w-3 h-3 mr-1" />{'\u65e0\u4eba\u673a'}
             </button>
             <button onClick={() => setActiveTab('members')}
-              className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'members' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'members' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
               <Users className="w-3 h-3 mr-1" />{'\u6210\u5458'}
             </button>
             <button onClick={() => { setActiveTab('logs'); fetchLogs(0); }}
-              className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'logs' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'logs' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
               <FileText className="w-3 h-3 mr-1" />{'\u65e5\u5fd7'}
             </button>
           </div>
@@ -634,22 +634,22 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
               <div className="space-y-2">
                 {/* Stats */}
                 <div className="grid grid-cols-4 gap-1">
-                  <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                    <div className="text-sm font-bold text-blue-400">{mapDrones.length}</div>
+                  <div className="bg-[rgba(0,240,255,0.05)] border border-[rgba(0,240,255,0.1)] rounded p-1.5 text-center">
+                    <div className="text-sm font-bold text-neon-cyan">{mapDrones.length}</div>
                     <div className="text-[9px] text-slate-400">{'\u65e0\u4eba\u673a'}</div>
-                  </CardContent></Card>
-                  <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
+                  </div>
+                  <div className="bg-[rgba(34,197,94,0.08)] border border-[rgba(34,197,94,0.15)] rounded p-1.5 text-center">
                     <div className="text-sm font-bold text-green-400">{mapDrones.filter(d => d.armed === true).length}</div>
                     <div className="text-[9px] text-slate-400">{'\u5df2\u89e3\u9501'}</div>
-                  </CardContent></Card>
-                  <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                    <div className="text-sm font-bold text-cyan-400">{mapDrones.filter(d => d.onlineStatus === true).length}</div>
+                  </div>
+                  <div className="bg-[rgba(0,240,255,0.05)] border border-[rgba(0,240,255,0.1)] rounded p-1.5 text-center">
+                    <div className="text-sm font-bold text-neon-cyan">{mapDrones.filter(d => d.onlineStatus === true).length}</div>
                     <div className="text-[9px] text-slate-400">{'\u5728\u7ebf'}</div>
-                  </CardContent></Card>
-                  <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
+                  </div>
+                  <div className="bg-[rgba(239,68,68,0.08)] border border-[rgba(239,68,68,0.15)] rounded p-1.5 text-center">
                     <div className="text-sm font-bold text-red-400">{mapDrones.filter(d => (d.battery || 0) < 20).length}</div>
                     <div className="text-[9px] text-slate-400">{'\u4f4e\u7535\u91cf'}</div>
-                  </CardContent></Card>
+                  </div>
                 </div>
                 {/* Drone list */}
                 <div className="space-y-1">
@@ -661,8 +661,8 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                   }).map(drone => (
                     <div key={drone.uavId}
                       className={`p-1.5 rounded text-xs cursor-pointer transition-all ${
-                        multiSelectMode && selectedDrones.has(drone.uavId) ? 'bg-amber-900/40 border border-amber-500' :
-                        selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
+                        multiSelectMode && selectedDrones.has(drone.uavId) ? 'bg-[rgba(255,184,0,0.1)] border border-neon-amber/50' :
+                        selectedMapDrone === drone.uavId ? 'bg-[rgba(0,240,255,0.1)] border border-neon-cyan/40' : 'bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.08)] hover:border-[rgba(0,240,255,0.2)]'}`}
                       onClick={() => {
                         if (multiSelectMode) {
                           const newSet = new Set(selectedDrones);
@@ -749,29 +749,29 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
             {/* Members Tab */}
             {activeTab === 'members' && (
               <div className="space-y-2">
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardHeader className="pb-1 px-2 pt-2">
-                    <CardTitle className="flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-1"><Users className="w-3 h-3 text-green-400" />{teamInfo?.teamName || '\u6211\u7684\u961f\u4f0d'}</div>
-                      <Badge variant="outline" className="text-slate-400 border-slate-600 text-[10px]">{members.length} {'\u4eba'}</Badge>
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="px-2 pb-2">
-                    {teamInfo && <div className="text-xs text-slate-400 mb-1">{'\u961f\u957f'}: <span className="text-slate-300">{teamInfo.leader}</span></div>}
+                <div className="glass-panel p-0">
+                  <div className="pb-1 px-2 pt-2">
+                    <div className="flex items-center justify-between text-xs font-medium">
+                      <div className="flex items-center gap-1"><Users className="w-3 h-3 text-neon-aqua" />{teamInfo?.teamName || '\u6211\u7684\u961f\u4f0d'}</div>
+                      <Badge variant="outline" className="text-slate-400 border-[rgba(0,240,255,0.2)] text-[10px]">{members.length} {'\u4eba'}</Badge>
+                    </div>
+                  </div>
+                  <div className="px-2 pb-2">
+                    {teamInfo && <div className="text-xs text-slate-400 mb-1">{'\u961f\u957f'}: <span className="text-neon-aqua">{teamInfo.leader}</span></div>}
                     <div className="space-y-0.5">
                       {members.map(member => (
-                        <div key={member.userId} className="flex items-center justify-between text-[10px] p-1 rounded bg-slate-700/50">
+                        <div key={member.userId} className="flex items-center justify-between text-[10px] p-1 rounded bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.06)]">
                           <div className="flex items-center gap-1">
                             <span className="text-slate-300">{member.realName || member.username}</span>
                             <span className="text-[9px] text-slate-500">ID:{member.userId}</span>
                           </div>
-                          <Badge className="bg-slate-600 text-[9px] px-1 py-0">{member.role}</Badge>
+                          <Badge className="bg-[rgba(0,240,255,0.1)] text-neon-cyan text-[9px] px-1 py-0">{member.role}</Badge>
                         </div>
                       ))}
                       {members.length === 0 && <div className="text-center text-slate-500 py-3 text-xs">{'\u6682\u65e0\u6210\u5458\u6570\u636e'}</div>}
                     </div>
-                  </CardContent>
-                </Card>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -780,7 +780,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
               <div className="flex flex-col h-full">
                 <div className="flex-1 space-y-1">
                   {logs.map(log => (
-                    <div key={log.id} className="p-1.5 rounded bg-slate-800 border border-slate-700 text-xs">
+                    <div key={log.id} className="p-1.5 rounded bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.08)] text-xs">
                       <div className="flex items-center justify-between mb-0.5">
                         <span className="text-slate-500 text-[10px]">{formatTime(log.createdAt)}</span>
                         <Badge className={`text-[9px] px-1 py-0 ${log.result === 'SUCCESS' ? 'bg-green-600' : 'bg-red-600'}`}>
@@ -811,15 +811,15 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
 
         {/* Multi-select aggregate panel - enlarged layout */}
         {multiSelectMode && aggregateData && detailPanelEnabled && (
-          <div className="w-[320px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-2.5 shrink-0">
-            <Card className="bg-slate-800 border-slate-700">
-              <CardHeader className="pb-1.5 px-3 pt-2.5">
-                <CardTitle className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-1.5"><ListChecks className="w-4 h-4 text-amber-400" />{'\u591a\u673a\u805a\u5408'}</div>
-                  <Badge className="bg-amber-600 text-xs px-2">{aggregateData.count} {'\u67b6'}</Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-3 pb-3">
+          <div className="w-[320px] bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-r border-[rgba(0,240,255,0.08)] overflow-y-auto p-3 space-y-2.5 shrink-0">
+            <div className="glass-panel p-0">
+              <div className="pb-1.5 px-3 pt-2.5">
+                <div className="flex items-center justify-between text-sm font-medium">
+                  <div className="flex items-center gap-1.5"><ListChecks className="w-4 h-4 text-neon-amber" />{'\u591a\u673a\u805a\u5408'}</div>
+                  <Badge className="bg-[rgba(255,184,0,0.15)] text-neon-amber border border-neon-amber/30 text-xs px-2">{aggregateData.count} {'\u67b6'}</Badge>
+                </div>
+              </div>
+              <div className="px-3 pb-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-slate-700/50 rounded p-2 text-center">
                     <div className="text-[10px] text-slate-400">{'\u6700\u9ad8/\u6700\u4f4e\u9ad8\u5ea6'}</div>
@@ -1056,29 +1056,29 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                     ))}
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           </div>
         )}
 
-        {/* Detail control panel */}
-        {showDetailPanel && selectedMapDrone && !aggregateData && (() => {
+                {/* Detail control panel */}
+                {showDetailPanel && selectedMapDrone && !aggregateData && (() => {
           const drone = mapDrones.find(d => d.uavId === selectedMapDrone);
           if (!drone) return null;
           return (
-            <div className="w-[280px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-2 space-y-2 shrink-0">
+            <div className="w-[280px] bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-r border-[rgba(0,240,255,0.08)] overflow-y-auto p-2 space-y-2 shrink-0">
               {/* Drone status */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader className="pb-1 px-2 pt-2">
-                  <CardTitle className="flex items-center justify-between text-xs">
+              <div className="glass-panel p-0">
+                <div className="pb-1 px-2 pt-2">
+                  <div className="flex items-center justify-between text-xs font-medium">
                     <div className="flex items-center gap-1">
-                      <Activity className="w-3 h-3 text-green-400" />{drone.uavId}
+                      <Activity className="w-3 h-3 text-neon-cyan" />{drone.uavId}
                     </div>
                     <Button size="sm" variant="outline" onClick={() => setShowDetailPanel(false)}
-                      className="bg-slate-700 border-slate-600 hover:bg-slate-600 text-[10px] h-5 px-1.5">{'\u5173\u95ed'}</Button>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="px-2 pb-2">
+                      className="bg-[rgba(0,240,255,0.05)] border-[rgba(0,240,255,0.15)] hover:bg-[rgba(0,240,255,0.1)] text-[10px] h-5 px-1.5">{'\u5173\u95ed'}</Button>
+                  </div>
+                </div>
+                <div className="px-2 pb-2">
                   <div className="grid grid-cols-2 gap-1.5">
                     <div className="bg-slate-700/50 rounded p-1.5 text-center">
                       <div className="text-[9px] text-slate-400">{'\u72b6\u6001'}</div>
@@ -1111,17 +1111,17 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                       {drone.model && <span>{'\u673a\u578b'}: <span className="text-slate-300">{drone.model}</span></span>}
                     </div>
                   )}
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* Control commands */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader className="pb-1 px-2 pt-2">
-                  <CardTitle className="flex items-center gap-1 text-xs">
-                    <Navigation className="w-3 h-3 text-green-400" />{'\u63a7\u5236\u6307\u4ee4'}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="px-2 pb-2">
+              <div className="glass-panel p-0">
+                <div className="pb-1 px-2 pt-2">
+                  <div className="flex items-center gap-1 text-xs font-medium">
+                    <Navigation className="w-3 h-3 text-neon-cyan" />{'\u63a7\u5236\u6307\u4ee4'}
+                  </div>
+                </div>
+                <div className="px-2 pb-2">
                   <div className="grid grid-cols-3 gap-1">
                     {DETAIL_COMMANDS.map(cmd => {
                       const Icon = cmd.icon;
@@ -1140,24 +1140,24 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                       );
                     })}
                   </div>
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* Takeoff altitude */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="px-2 py-1.5">
+              <div className="glass-panel p-0">
+                <div className="px-2 py-1.5">
                   <div className="flex items-center gap-1.5">
                     <span className="text-[9px] text-slate-400 whitespace-nowrap flex items-center gap-0.5"><ArrowUp className="w-2.5 h-2.5 text-blue-400" />{'\u8d77\u98de\u9ad8\u5ea6'}</span>
                     <Input type="number" value={takeoffAlt} onChange={e => setTakeoffAlt(e.target.value)}
                       className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder="5" />
                     <span className="text-[9px] text-slate-400">{'\u7c73'}</span>
                   </div>
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* GOTO target - collapsible */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="px-2 py-1.5 space-y-1">
+              <div className="glass-panel p-0">
+                <div className="px-2 py-1.5 space-y-1">
                   <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setGotoExpanded(!gotoExpanded)}>
                     {gotoExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
                     <Crosshair className="w-2.5 h-2.5 text-cyan-400" />{'\u524d\u5f80\u76ee\u6807'}
@@ -1191,12 +1191,12 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                     <Navigation className="w-3 h-3 mr-1" />{'\u524d\u5f80'}
                   </Button>
                   </>}
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* RTL with Home/Rally mode - collapsible */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="px-2 py-1.5 space-y-1">
+              <div className="glass-panel p-0">
+                <div className="px-2 py-1.5 space-y-1">
                   <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setRtlExpanded(!rtlExpanded)}>
                     {rtlExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
                     <RotateCcw className="w-2.5 h-2.5 text-purple-400" />{'\u8fd4\u822a\u8bbe\u7f6e'}
@@ -1249,12 +1249,12 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                     <RotateCcw className="w-3 h-3 mr-1" />{'\u8fd4\u822a'}
                   </Button>
                   </>}
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* Orbit - collapsible (Issue 4) */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="px-2 py-1.5 space-y-1">
+              <div className="glass-panel p-0">
+                <div className="px-2 py-1.5 space-y-1">
                   <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setOrbitExpanded(!orbitExpanded)}>
                     {orbitExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
                     <Circle className="w-2.5 h-2.5 text-indigo-400" />{'\u76d8\u65cb'}
@@ -1283,8 +1283,8 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                       <Circle className="w-3 h-3 mr-1" />{'\u76d8\u65cb'}
                     </Button>
                   </>}
-                </CardContent>
-              </Card>
+                </div>
+              </div>
             </div>
           );
         })()}
@@ -1351,12 +1351,24 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
       </div>
 
       {/* Transfer dialog */}
-      <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
-        <DialogContent className="bg-slate-800 border-slate-700 text-white">
+      <Dialog open={transferDialogOpen} onOpenChange={(open) => {
+        setTransferDialogOpen(open);
+        if (!open) {
+          // Dialog data cleanup: clear all transfer state to prevent stale data on next open
+          setTransferUavId('');
+          setTransferToUserId('');
+          setTransferResult(null);
+          setTransferLoading(false);
+        }
+      }}>
+        <DialogContent className="bg-[rgba(13,21,38,0.95)] backdrop-blur-xl border border-[rgba(0,240,255,0.2)] text-white shadow-[0_0_30px_rgba(0,240,255,0.1)]">
           <DialogHeader>
-            <DialogTitle className="text-white">{'\u961f\u5185\u63a7\u5236\u6743\u8f6c\u79fb'}</DialogTitle>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <ArrowRightLeft className="w-4 h-4 text-neon-purple" />
+              {'\u961f\u5185\u63a7\u5236\u6743\u8f6c\u79fb'}
+            </DialogTitle>
             <DialogDescription className="text-slate-400">
-              {'\u5c06\u65e0\u4eba\u673a'} {transferUavId} {'\u7684\u63a7\u5236\u6743\u8f6c\u79fb\u7ed9\u961f\u5185\u6210\u5458'}
+              {'\u5c06\u65e0\u4eba\u673a'} <span className="text-neon-cyan font-mono">{transferUavId}</span> {'\u7684\u63a7\u5236\u6743\u8f6c\u79fb\u7ed9\u961f\u5185\u6210\u5458'}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -1365,7 +1377,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
               <select
                 value={transferToUserId}
                 onChange={e => setTransferToUserId(e.target.value)}
-                className="w-full rounded-md bg-slate-700 border-slate-600 text-white px-3 py-2 text-sm"
+                className="w-full rounded-md bg-[rgba(13,21,38,0.6)] border border-[rgba(0,240,255,0.15)] text-white px-3 py-2 text-sm focus:border-neon-cyan/50 focus:outline-none"
               >
                 <option value="">{'\u9009\u62e9\u961f\u5185\u6210\u5458...'}</option>
                 {members.map(m => (
@@ -1376,7 +1388,7 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
               </select>
             </div>
             {transferResult && (
-              <div className={`p-2 rounded ${transferResult.success ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'}`}>
+              <div className={`p-2 rounded ${transferResult.success ? 'bg-[rgba(34,197,94,0.1)] border border-green-700/50' : 'bg-[rgba(239,68,68,0.1)] border border-red-700/50'}`}>
                 <div className="flex items-center gap-2 text-sm">
                   {transferResult.success
                     ? <Activity className="w-4 h-4 text-green-400" />
@@ -1387,10 +1399,16 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setTransferDialogOpen(false); setTransferResult(null); }}
-              className="bg-slate-700 border-slate-600 text-slate-300">{'\u53d6\u6d88'}</Button>
+            <Button variant="outline" onClick={() => {
+              setTransferDialogOpen(false);
+              // Dialog data cleanup on cancel
+              setTransferUavId('');
+              setTransferToUserId('');
+              setTransferResult(null);
+            }}
+              className="bg-[rgba(0,240,255,0.05)] border-[rgba(0,240,255,0.15)] text-slate-300 hover:bg-[rgba(0,240,255,0.1)]">{'\u53d6\u6d88'}</Button>
             <Button onClick={handleTeamTransfer} disabled={transferLoading || !transferToUserId}
-              className="bg-purple-600 hover:bg-purple-700">
+              className="bg-[rgba(160,32,240,0.3)] border border-neon-purple/40 hover:bg-[rgba(160,32,240,0.5)] text-white">
               {transferLoading ? <RefreshCw className="w-4 h-4 animate-spin mr-1" /> : null}
               {'\u786e\u8ba4\u8f6c\u79fb'}
             </Button>

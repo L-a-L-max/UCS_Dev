@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+// Card imports removed - using glass-panel classes for glassmorphism theme
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -407,7 +407,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   const selectedDroneInfo = mapDrones.find(d => d.uavId === selectedDrone);
 
   return (
-    <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden relative">
+    <div className="h-screen bg-dark-primary text-white flex flex-col overflow-hidden relative">
       {/* Floating Toast feedback */}
       {(quickFeedback || commandAckFeedback) && (
         <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-1.5 pointer-events-none" style={{ minWidth: 280, maxWidth: 420 }}>
@@ -429,9 +429,9 @@ export default function PilotView({ token, username, partitions = [], onLogout }
       )}
 
       {/* Header */}
-      <header className="flex justify-between items-center px-4 py-1.5 bg-slate-800 border-b border-slate-700 shrink-0">
+      <header className="flex justify-between items-center px-4 py-1.5 bg-[rgba(13,21,38,0.8)] backdrop-blur-md border-b border-[rgba(0,240,255,0.1)] shrink-0">
         <h1 className="text-lg font-bold flex items-center gap-2">
-          <Plane className="w-5 h-5 text-blue-400" />
+          <Plane className="w-5 h-5 text-neon-cyan" />
           {'\u98de\u624b\u63a7\u5236\u9762\u677f'}
           <Badge variant="outline" className="ml-2 text-blue-300 border-blue-500">{username}</Badge>
         </h1>
@@ -491,7 +491,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
 
       <div className="flex-1 flex overflow-hidden">
         {/* Left: Drone list with quick controls */}
-        <div className="w-60 bg-slate-800 border-r border-slate-700 overflow-y-auto p-1.5 space-y-1 shrink-0">
+        <div className="w-60 bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-r border-[rgba(0,240,255,0.08)] overflow-y-auto p-1.5 space-y-1 shrink-0">
           <h2 className="text-[10px] font-semibold text-slate-400 mb-0.5 px-1">{'\u6211\u7684\u65e0\u4eba\u673a'}</h2>
           {mapDrones.length === 0 && <p className="text-slate-500 text-xs text-center py-6">{'\u6682\u65e0\u53ef\u63a7\u5236\u7684\u65e0\u4eba\u673a'}</p>}
           {[...mapDrones].sort((a, b) => {
@@ -502,10 +502,10 @@ export default function PilotView({ token, username, partitions = [], onLogout }
           }).map(drone => (
             <div key={drone.uavId}
               className={`p-1.5 rounded text-xs cursor-pointer transition-all ${
-                multiSelectMode && selectedDrones.has(drone.uavId) ? 'bg-amber-900/40 border border-amber-500' :
+                multiSelectMode && selectedDrones.has(drone.uavId) ? 'bg-[rgba(255,184,0,0.1)] border border-neon-amber/50' :
                 selectedDrone === drone.uavId
-                  ? 'bg-blue-900/50 border border-blue-500'
-                  : 'bg-slate-700 border border-slate-600 hover:border-slate-500'
+                  ? 'bg-[rgba(0,240,255,0.1)] border border-neon-cyan/40'
+                  : 'bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.08)] hover:border-neon-cyan/30'
               }`}
               onClick={() => {
                 if (multiSelectMode) {
@@ -570,15 +570,15 @@ export default function PilotView({ token, username, partitions = [], onLogout }
 
         {/* Multi-select aggregate panel - enlarged layout */}
         {multiSelectMode && aggregateData && detailPanelEnabled && (
-          <div className="w-[320px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-2.5 shrink-0">
-            <Card className="bg-slate-800 border-slate-700">
-              <CardHeader className="pb-1.5 px-3 pt-2.5">
-                <CardTitle className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-1.5"><ListChecks className="w-4 h-4 text-amber-400" />{'\u591a\u673a\u805a\u5408'}</div>
-                  <Badge className="bg-amber-600 text-xs px-2">{aggregateData.count} {'\u67b6'}</Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-3 pb-3">
+          <div className="w-[320px] bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-r border-[rgba(255,184,0,0.12)] overflow-y-auto p-3 space-y-2.5 shrink-0">
+            <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(255,184,0,0.15)] rounded-lg">
+              <div className="pb-1.5 px-3 pt-2.5">
+                <div className="flex items-center justify-between text-sm font-semibold">
+                  <div className="flex items-center gap-1.5"><ListChecks className="w-4 h-4 text-neon-amber" />{'\u591a\u673a\u805a\u5408'}</div>
+                  <Badge className="bg-[rgba(255,184,0,0.3)] border border-neon-amber/40 text-neon-amber text-xs px-2">{aggregateData.count} {'\u67b6'}</Badge>
+                </div>
+              </div>
+              <div className="px-3 pb-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-slate-700/50 rounded p-2 text-center">
                     <div className="text-[10px] text-slate-400">{'\u6700\u9ad8/\u6700\u4f4e\u9ad8\u5ea6'}</div>
@@ -767,14 +767,14 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                     ))}
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           </div>
         )}
 
         {/* Detail control panel */}
         {showDetailPanel && !aggregateData && (
-          <div className="w-[300px] overflow-y-auto p-2 border-r border-slate-700 space-y-2 shrink-0">
+          <div className="w-[300px] bg-[rgba(13,21,38,0.7)] backdrop-blur-md overflow-y-auto p-2 border-r border-[rgba(0,240,255,0.08)] space-y-2 shrink-0">
             {!selectedDrone ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center text-slate-500">
@@ -785,19 +785,19 @@ export default function PilotView({ token, username, partitions = [], onLogout }
             ) : (
             <div className="space-y-2">
               {/* Drone status */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader className="pb-1 px-2 pt-2">
-                  <CardTitle className="flex items-center justify-between text-xs">
+              <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.1)] rounded-lg">
+                <div className="pb-1 px-2 pt-2">
+                  <div className="flex items-center justify-between text-xs font-semibold">
                     <div className="flex items-center gap-1">
-                      <Activity className="w-3 h-3 text-blue-400" />{selectedDrone}
+                      <Activity className="w-3 h-3 text-neon-cyan" />{selectedDrone}
                     </div>
                     <Button size="sm" variant="outline" onClick={refreshDroneStatus}
                       className="bg-slate-700 border-slate-600 hover:bg-slate-600 text-[10px] h-5 px-1.5">
                       <RefreshCw className={`w-2.5 h-2.5 mr-0.5 ${loading ? 'animate-spin' : ''}`} />{'\u5237\u65b0'}
                     </Button>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="px-2 pb-2">
+                  </div>
+                </div>
+                <div className="px-2 pb-2">
                   {selectedDroneInfo && (
                     <div className="grid grid-cols-2 gap-1.5">
                       <div className="bg-slate-700/50 rounded p-1.5 text-center">
@@ -823,17 +823,17 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                       </div>
                     </div>
                   )}
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* Control commands */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader className="pb-1 px-2 pt-2">
-                  <CardTitle className="flex items-center gap-1 text-xs">
-                    <Navigation className="w-3 h-3 text-blue-400" />{'\u63a7\u5236\u6307\u4ee4'}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="px-2 pb-2">
+              <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.1)] rounded-lg">
+                <div className="pb-1 px-2 pt-2">
+                  <div className="flex items-center gap-1 text-xs font-semibold">
+                    <Navigation className="w-3 h-3 text-neon-cyan" />{'\u63a7\u5236\u6307\u4ee4'}
+                  </div>
+                </div>
+                <div className="px-2 pb-2">
                   <div className="grid grid-cols-3 gap-1">
                     {COMMANDS.map(cmd => {
                       const Icon = cmd.icon;
@@ -853,24 +853,24 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                       );
                     })}
                   </div>
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* Takeoff altitude */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="px-2 py-1.5">
+              <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.1)] rounded-lg">
+                <div className="px-2 py-1.5">
                   <div className="flex items-center gap-1.5">
                     <span className="text-[9px] text-slate-400 whitespace-nowrap flex items-center gap-0.5"><ArrowUp className="w-2.5 h-2.5 text-blue-400" />{'\u8d77\u98de\u9ad8\u5ea6'}</span>
                     <Input type="number" value={takeoffAlt} onChange={e => setTakeoffAlt(e.target.value)}
                       className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder="5" />
                     <span className="text-[9px] text-slate-400">{'\u7c73'}</span>
                   </div>
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* GOTO target - collapsible */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="px-2 py-1.5 space-y-1">
+              <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.1)] rounded-lg">
+                <div className="px-2 py-1.5 space-y-1">
                   <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setGotoExpanded(!gotoExpanded)}>
                     {gotoExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
                     <Crosshair className="w-2.5 h-2.5 text-cyan-400" />{'\u524d\u5f80\u76ee\u6807'}
@@ -906,12 +906,12 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                       </Button>
                     </>
                   )}
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* RTL with Home/Rally mode - collapsible */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="px-2 py-1.5 space-y-1">
+              <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(160,32,240,0.15)] rounded-lg">
+                <div className="px-2 py-1.5 space-y-1">
                   <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setRtlExpanded(!rtlExpanded)}>
                     {rtlExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
                     <RotateCcw className="w-2.5 h-2.5 text-purple-400" />{'\u8fd4\u822a\u8bbe\u7f6e'}
@@ -966,12 +966,12 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                       </Button>
                     </>
                   )}
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* Orbit - collapsible (Issue 4) */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardContent className="px-2 py-1.5 space-y-1">
+              <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(99,102,241,0.15)] rounded-lg">
+                <div className="px-2 py-1.5 space-y-1">
                   <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setOrbitExpanded(!orbitExpanded)}>
                     {orbitExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
                     <Circle className="w-2.5 h-2.5 text-indigo-400" />{'\u76d8\u65cb'}
@@ -1002,8 +1002,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                       </Button>
                     </>
                   )}
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
             </div>
           )}
