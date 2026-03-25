@@ -168,7 +168,7 @@ export default function AMap3DPanel({
         rotateEnable: true,
         pitchEnable: true,
         zooms: [2, 20],
-        mapStyle: 'amap://styles/dark',
+        // mapStyle: 'amap://styles/dark', // Disabled: may fail without Key permission for custom styles
         terrain: true,
       });
       mapRef.current = map;

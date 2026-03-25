@@ -40,7 +40,7 @@ export const TILE_SOURCES: Record<TileSourceKey, TileSourceConfig> = {
   gaode: {
     name: '高德地图',
     tiles: [
-      `${API_BASE}/api/v1/map/tiles/{z}/{x}/{y}.png?style=7`
+      `${API_BASE}/api/v1/map/tiles/{z}/{x}/{y}.png?style=8`
     ],
     attribution: '&copy; <a href="https://www.amap.com/">高德地图</a>'
   },
