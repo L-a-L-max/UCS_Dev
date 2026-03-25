@@ -30,6 +30,9 @@ import { lazy, Suspense } from 'react';
 // Lazy load AMap 3D panel to avoid loading Three.js + AMap SDK when not needed
 const AMap3DPanel = lazy(() => import('./map/AMap3DPanel'));
 
+// Lazy load Cesium Holographic Dashboard
+const HoloDashboard = lazy(() => import('./cesium/HoloDashboard'));
+
 const getApiBase = () => {
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
@@ -265,8 +268,9 @@ export default function MapPanel({
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
-  // 3D map toggle - switches between MapLibre 2D and AMap 3D
+  // 3D map toggle - switches between MapLibre 2D, AMap 3D, and Cesium Holographic
   const [is3DMode, setIs3DMode] = useState(false);
+  const [isCesiumMode, setIsCesiumMode] = useState(false);
 
   // 弹窗自动关闭逻辑 - 默认5秒后关闭，鼠标移入保持，移出后倒计时关闭
   const POPUP_AUTO_CLOSE_MS = 5000;
@@ -907,14 +911,14 @@ export default function MapPanel({
     return () => observer.disconnect();
   }, []);
 
-  // When switching back from 3D to 2D, re-initialize the MapLibre map
+  // When switching back from 3D/Cesium to 2D, re-initialize the MapLibre map
   useEffect(() => {
-    if (!is3DMode) {
+    if (!is3DMode && !isCesiumMode) {
       // Re-init MapLibre map when switching back to 2D
       initMap(tileSource);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [is3DMode]);
+  }, [is3DMode, isCesiumMode]);
 
   // 对无人机排序：在线优先
   const sortedDrones = [...drones].sort((a, b) => {
@@ -930,8 +934,26 @@ export default function MapPanel({
     <div className={`flex h-full ${className}`}>
       {/* 地图区域 */}
       <div className="flex-1 relative">
+        {/* Cesium Holographic mode */}
+        {isCesiumMode && (
+          <Suspense fallback={
+            <div className="absolute inset-0 flex items-center justify-center bg-[#0a0f1a] text-cyan-400 text-sm font-mono">
+              :: INITIALIZING CESIUM HOLOGRAPHIC ::
+            </div>
+          }>
+            <HoloDashboard
+              drones={drones}
+              selectedDroneId={selectedDroneId}
+              selectedDroneIds={selectedDroneIds}
+              onDroneClick={onDroneClick}
+              onMapClick={onMapClick}
+              className="absolute inset-0"
+            />
+          </Suspense>
+        )}
+
         {/* AMap 3D mode */}
-        {is3DMode && (
+        {!isCesiumMode && is3DMode && (
           <Suspense fallback={
             <div className="absolute inset-0 flex items-center justify-center bg-slate-900 text-slate-400 text-sm">
               加载3D地图中...
@@ -952,11 +974,11 @@ export default function MapPanel({
         <div
           ref={mapContainer}
           className="absolute inset-0 w-full h-full"
-          style={{ minHeight: '100%', display: is3DMode ? 'none' : 'block' }}
+          style={{ minHeight: '100%', display: (is3DMode || isCesiumMode) ? 'none' : 'block' }}
         />
 
         {/* 地图错误提示（参考 Observer 视图） */}
-        {!is3DMode && mapError && (
+        {!is3DMode && !isCesiumMode && mapError && (
           <div className="absolute top-12 left-1/2 -translate-x-1/2 z-20 bg-red-900/90 backdrop-blur-sm rounded-lg px-4 py-2 text-white text-xs flex items-center gap-2 max-w-xs shadow-lg border border-red-700">
             <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
             <div>
@@ -981,9 +1003,18 @@ export default function MapPanel({
             size="sm"
             variant="outline"
             className={`border-slate-600 text-white hover:bg-slate-700/80 text-xs ${is3DMode ? 'bg-indigo-700/80 border-indigo-500' : 'bg-slate-800/80'}`}
-            onClick={() => setIs3DMode(!is3DMode)}
+            onClick={() => { setIs3DMode(!is3DMode); setIsCesiumMode(false); }}
           >
             {is3DMode ? <><MapIcon className="w-3 h-3 mr-1" />二维地图</> : <><Globe className="w-3 h-3 mr-1" />高德3D</>}
+          </Button>
+          {/* Cesium holographic mode toggle */}
+          <Button
+            size="sm"
+            variant="outline"
+            className={`border-slate-600 text-white hover:bg-slate-700/80 text-xs ${isCesiumMode ? 'bg-cyan-700/80 border-cyan-500 shadow-[0_0_8px_rgba(0,255,255,0.3)]' : 'bg-slate-800/80'}`}
+            onClick={() => { setIsCesiumMode(!isCesiumMode); setIs3DMode(false); }}
+          >
+            {isCesiumMode ? <><MapIcon className="w-3 h-3 mr-1" />退出全息</> : <><Globe className="w-3 h-3 mr-1" />全息3D</>}
           </Button>
           <div className="relative">
             <Button
@@ -1013,7 +1044,7 @@ export default function MapPanel({
         </div>
 
         {/* Phase 2: GPU Symbol Layer for high-performance drone rendering (2D mode only) */}
-        {!is3DMode && useSymbolLayer && (
+        {!is3DMode && !isCesiumMode && useSymbolLayer && (
           <DroneLayer
             map={map.current}
             drones={drones.filter((d): d is MapDrone & DroneFeature => d.lat != null && d.lng != null).map(d => ({
@@ -1033,8 +1064,8 @@ export default function MapPanel({
           />
         )}
 
-        {/* 统计信息 (2D mode only, 3D has its own stats) */}
-        {!is3DMode && (
+        {/* 统计信息 (2D mode only, 3D/Cesium has its own stats) */}
+        {!is3DMode && !isCesiumMode && (
           <div className="absolute bottom-6 left-2 z-10 bg-slate-800/80 rounded px-2 py-1 text-xs text-slate-300">
             共 {drones.length} 架 | 在线 {drones.filter(d => d.onlineStatus === true).length} | 飞行中 {drones.filter(d => d.flightStatus === 'FLYING').length}
           </div>

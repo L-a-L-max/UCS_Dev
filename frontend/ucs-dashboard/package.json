@@ -43,6 +43,7 @@
     "@stomp/stompjs": "^7.0.0",
     "@tanstack/react-virtual": "^3.13.23",
     "@types/three": "^0.183.1",
+    "cesium": "^1.139.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
@@ -67,6 +68,7 @@
     "tailwindcss-animate": "^1.0.7",
     "three": "^0.183.2",
     "vaul": "^1.1.2",
+    "vite-plugin-cesium": "^1.2.23",
     "zod": "^4.2.1",
     "zustand": "^5.0.12"
   },
