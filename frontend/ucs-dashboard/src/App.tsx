@@ -1,7 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -31,11 +30,24 @@ import {
   ChevronUp,
   Navigation
 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import './App.css';
 import { useTelemetryWebSocket, TelemetryBatch } from './hooks/useTelemetryWebSocket';
 import PilotView from './pages/PilotView';
 import CommanderView from './pages/CommanderView';
 import LeaderView from './pages/LeaderView';
+import { ParticleBackground } from './components/ui/ParticleBackground';
+import { ScanlineOverlay } from './components/ui/ScanlineOverlay';
+import { GlassPanel } from './components/ui/GlassPanel';
+import { NeonButton } from './components/ui/NeonButton';
+import { NeonBadge } from './components/ui/NeonBadge';
+import { ConnectionStatus } from './components/ui/ConnectionStatus';
+// Phase 4/5 imports - will be integrated into observer dashboard
+// import { DroneStatusPie } from './components/charts/DroneStatusPie';
+// import { BatteryGauge } from './components/charts/BatteryGauge';
+// import { DroneLayer } from './components/map/DroneLayer';
+// import { useWebSocketResilience } from './hooks/useWebSocketResilience';
+// import { useEpochAwareness } from './hooks/useEpochAwareness';
 
 // Popup auto-close timing constants (watchdog mechanism)
 const POPUP_DEFAULT_TIMEOUT = 6000; // 6 seconds default
@@ -1908,37 +1920,70 @@ function App() {
 
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen login-bg flex items-center justify-center">
-        {/* Sci-fi background effects */}
-        <div className="login-particles"></div>
-        <div className="hud-corner hud-corner-tl"></div>
-        <div className="hud-corner hud-corner-tr"></div>
-        <div className="hud-corner hud-corner-bl"></div>
-        <div className="hud-corner hud-corner-br"></div>
-        <div className="scan-line"></div>
-        
-        <Card className="w-96 login-card bg-slate-800/90 backdrop-blur-md border-slate-600 shadow-2xl shadow-blue-500/10 relative z-10">
-          <CardHeader className="pb-2">
-            <div className="flex justify-center mb-4">
-              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-500/30">
-                <Plane className="w-8 h-8 text-white" />
-              </div>
+      <div className="min-h-screen bg-dark-primary flex items-center justify-center relative overflow-hidden">
+        {/* Particle background */}
+        <ParticleBackground particleCount={80} color="0, 240, 255" maxSpeed={0.25} connectDistance={100} />
+        <ScanlineOverlay intensity="low" />
+
+        {/* HUD corner decorations */}
+        <div className="absolute top-4 left-4 w-16 h-16 border-t-2 border-l-2 border-neon-cyan/30 rounded-tl-lg" />
+        <div className="absolute top-4 right-4 w-16 h-16 border-t-2 border-r-2 border-neon-cyan/30 rounded-tr-lg" />
+        <div className="absolute bottom-4 left-4 w-16 h-16 border-b-2 border-l-2 border-neon-cyan/30 rounded-bl-lg" />
+        <div className="absolute bottom-4 right-4 w-16 h-16 border-b-2 border-r-2 border-neon-cyan/30 rounded-br-lg" />
+
+        <motion.div
+          initial={{ opacity: 0, y: 20, scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.5, ease: 'easeOut' }}
+          className="relative z-10 w-96"
+        >
+          <GlassPanel variant="neon" glow="cyan" className="p-8" animated={false}>
+            <div className="flex justify-center mb-6">
+              <motion.div
+                animate={{ boxShadow: ['0 0 20px rgba(0,240,255,0.3)', '0 0 40px rgba(0,240,255,0.5)', '0 0 20px rgba(0,240,255,0.3)'] }}
+                transition={{ duration: 3, repeat: Infinity }}
+                className="w-16 h-16 rounded-full bg-gradient-to-br from-neon-cyan/20 to-neon-purple/20 border border-neon-cyan/40 flex items-center justify-center"
+              >
+                <Plane className="w-8 h-8 text-neon-cyan" />
+              </motion.div>
             </div>
-            <CardTitle className="text-white text-center text-xl">
-              {zhCN.platformTitle}
-            </CardTitle>
-            <p className="text-slate-400 text-xs text-center mt-1">UAV Integrated Control System</p>
-          </CardHeader>
-          <CardContent className="space-y-4 pt-2">
-            <Input placeholder={zhCN.username} value={username} onChange={(e) => setUsername(e.target.value)} className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-400" />
-            <Input type="password" placeholder={zhCN.password} value={password} onChange={(e) => setPassword(e.target.value)} className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-400" onKeyPress={(e) => e.key === 'Enter' && handleLogin()} />
-            {error && <p className="text-red-400 text-sm">{error}</p>}
-            <Button onClick={handleLogin} className="w-full bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 shadow-lg shadow-blue-500/20">
-              <LogIn className="w-4 h-4 mr-2" />{zhCN.login}
-            </Button>
-            <p className="text-slate-400 text-xs text-center">{zhCN.loginHint}</p>
-          </CardContent>
-        </Card>
+            <h1 className="text-white text-center text-xl font-bold mb-1">{zhCN.platformTitle}</h1>
+            <p className="text-slate-400 text-xs text-center mb-6 font-mono">UAV Integrated Control System</p>
+
+            <div className="space-y-4">
+              <Input
+                placeholder={zhCN.username}
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="bg-[rgba(13,21,38,0.6)] border-[rgba(0,240,255,0.15)] text-white placeholder:text-slate-500 focus:border-neon-cyan/40 focus:ring-neon-cyan/20 transition-all"
+              />
+              <Input
+                type="password"
+                placeholder={zhCN.password}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="bg-[rgba(13,21,38,0.6)] border-[rgba(0,240,255,0.15)] text-white placeholder:text-slate-500 focus:border-neon-cyan/40 focus:ring-neon-cyan/20 transition-all"
+                onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
+              />
+              <AnimatePresence>
+                {error && (
+                  <motion.p
+                    initial={{ opacity: 0, y: -5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="text-neon-red text-sm"
+                  >
+                    {error}
+                  </motion.p>
+                )}
+              </AnimatePresence>
+              <NeonButton variant="cyan" size="lg" className="w-full" onClick={handleLogin} glow>
+                <LogIn className="w-4 h-4 mr-2" />{zhCN.login}
+              </NeonButton>
+              <p className="text-slate-500 text-xs text-center">{zhCN.loginHint}</p>
+            </div>
+          </GlassPanel>
+        </motion.div>
       </div>
     );
   }
@@ -1957,52 +2002,55 @@ function App() {
 
   // OBSERVER role (default): show the existing big screen dashboard
   return (
-    <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">
-      <header className="flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
+    <div className="h-screen bg-dark-primary text-white flex flex-col overflow-hidden relative">
+      <ScanlineOverlay intensity="low" />
+      <header className="relative z-10 flex justify-between items-center px-4 py-2 bg-[rgba(13,21,38,0.8)] backdrop-blur-md border-b border-[rgba(0,240,255,0.1)]">
         <h1 className="text-xl font-bold flex items-center gap-2">
-          <Plane className="w-6 h-6 text-blue-400" />
-          {zhCN.dashboardTitle}
+          <Plane className="w-6 h-6 text-neon-cyan" />
+          <span className="bg-gradient-to-r from-neon-cyan to-neon-aqua bg-clip-text text-transparent">{zhCN.dashboardTitle}</span>
         </h1>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchAllData} disabled={loading} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 hover:text-white">
-            <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />{zhCN.refresh}
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleLogout} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 hover:text-white">{zhCN.logout}</Button>
+        <div className="flex items-center gap-3">
+          <ConnectionStatus state={_wsConnected ? 'connected' : 'reconnecting'} />
+          <NeonBadge variant="cyan">{username}</NeonBadge>
+          <NeonButton variant="ghost" size="sm" onClick={fetchAllData} disabled={loading}>
+            <RefreshCw className={`w-3.5 h-3.5 mr-1 ${loading ? 'animate-spin' : ''}`} />{zhCN.refresh}
+          </NeonButton>
+          <NeonButton variant="red" size="sm" onClick={handleLogout}>{zhCN.logout}</NeonButton>
         </div>
       </header>
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative z-[2]">
         {/* Left Sidebar */}
-        <div className={`sidebar-left ${leftSidebarCollapsed ? 'w-0 overflow-hidden collapsed' : 'w-64'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center justify-between text-white">
+        <div className={`sidebar-left ${leftSidebarCollapsed ? 'w-0 overflow-hidden collapsed' : 'w-64'} bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-r border-[rgba(0,240,255,0.08)] overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
+          <div className="glass-panel p-0">
+            <div className="py-2 px-3">
+              <div className="text-sm flex items-center justify-between text-white font-medium">
                 <div className="flex items-center gap-2">
-                  <ClipboardList className="w-4 h-4 text-blue-400" />{zhCN.tasks}
+                  <ClipboardList className="w-4 h-4 text-neon-cyan" />{zhCN.tasks}
                 </div>
                 <div className="flex gap-1">
                   <button onClick={() => setTaskChartType('list')} className={`p-1 rounded ${taskChartType === 'list' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.listView}><List className="w-3 h-3" /></button>
                   <button onClick={() => setTaskChartType('pie')} className={`p-1 rounded ${taskChartType === 'pie' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.pieChart}><PieChart className="w-3 h-3" /></button>
                   <button onClick={() => setTaskChartType('bar')} className={`p-1 rounded ${taskChartType === 'bar' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.barChart}><BarChart3 className="w-3 h-3" /></button>
                 </div>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
+              </div>
+            </div>
+            <div className="px-3 pb-3">
               {taskSummary && taskChartType === 'list' && (
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="bg-slate-600 p-2 rounded text-center">
-                    <div className="text-lg font-bold text-blue-400">{taskSummary.total}</div>
+                  <div className="bg-[rgba(0,240,255,0.05)] border border-[rgba(0,240,255,0.1)] p-2 rounded text-center">
+                    <div className="text-lg font-bold text-neon-cyan">{taskSummary.total}</div>
                     <div className="text-xs text-slate-400">{zhCN.total}</div>
                   </div>
-                  <div className="bg-slate-600 p-2 rounded text-center">
+                  <div className="bg-[rgba(34,197,94,0.08)] border border-[rgba(34,197,94,0.15)] p-2 rounded text-center">
                     <div className="text-lg font-bold text-green-400">{taskSummary.executing}</div>
                     <div className="text-xs text-slate-400">{zhCN.active}</div>
                   </div>
-                  <div className="bg-slate-600 p-2 rounded text-center">
+                  <div className="bg-[rgba(148,163,184,0.08)] border border-[rgba(148,163,184,0.15)] p-2 rounded text-center">
                     <div className="text-lg font-bold text-slate-300">{taskSummary.completed}</div>
                     <div className="text-xs text-slate-400">{zhCN.done}</div>
                   </div>
-                  <div className="bg-slate-600 p-2 rounded text-center">
+                  <div className="bg-[rgba(239,68,68,0.08)] border border-[rgba(239,68,68,0.15)] p-2 rounded text-center">
                     <div className="text-lg font-bold text-red-400">{taskSummary.abnormal}</div>
                     <div className="text-xs text-slate-400">{zhCN.error}</div>
                   </div>
@@ -2080,16 +2128,16 @@ function App() {
                   })()}
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <Cloud className="w-4 h-4 text-blue-400" />{zhCN.weather}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
+          <div className="glass-panel p-0">
+            <div className="py-2 px-3">
+              <div className="text-sm flex items-center gap-2 text-white font-medium">
+                <Cloud className="w-4 h-4 text-neon-cyan" />{zhCN.weather}
+              </div>
+            </div>
+            <div className="px-3 pb-3">
               {weather && (
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between"><span className="text-slate-400">{zhCN.location}</span><span>{weather.location || '北京'}</span></div>
@@ -2103,23 +2151,23 @@ function App() {
                   </div>
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center justify-between text-white">
+          <div className="glass-panel p-0">
+            <div className="py-2 px-3">
+              <div className="text-sm flex items-center justify-between text-white font-medium">
                 <div className="flex items-center gap-2">
-                  <Activity className="w-4 h-4 text-blue-400" />{zhCN.stats}
+                  <Activity className="w-4 h-4 text-neon-purple" />{zhCN.stats}
                 </div>
                 <div className="flex gap-1">
                   <button onClick={() => setStatsChartType('list')} className={`p-1 rounded ${statsChartType === 'list' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.listView}><List className="w-3 h-3" /></button>
                   <button onClick={() => setStatsChartType('pie')} className={`p-1 rounded ${statsChartType === 'pie' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.pieChart}><PieChart className="w-3 h-3" /></button>
                   <button onClick={() => setStatsChartType('bar')} className={`p-1 rounded ${statsChartType === 'bar' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.barChart}><BarChart3 className="w-3 h-3" /></button>
                 </div>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
+              </div>
+            </div>
+            <div className="px-3 pb-3">
               {statsChartType === 'list' && (
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between"><span className="text-slate-400">{zhCN.flying}</span><span className="font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</span></div>
@@ -2218,14 +2266,14 @@ function App() {
                   })()}
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </div>
 
         {/* Left Sidebar Collapse Button - On Boundary Line */}
-        <div className="w-3 flex-shrink-0 relative bg-slate-700/30 flex items-center justify-center cursor-pointer hover:bg-slate-600/50 transition-colors" onClick={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)}>
+        <div className="w-3 flex-shrink-0 relative bg-[rgba(0,240,255,0.03)] flex items-center justify-center cursor-pointer hover:bg-[rgba(0,240,255,0.08)] transition-colors" onClick={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)}>
           <button
-            className="absolute z-20 bg-slate-700/90 hover:bg-slate-600 text-white p-1 rounded-full transition-all duration-300 shadow-lg backdrop-blur-sm border border-slate-600/50"
+            className="absolute z-20 bg-[rgba(13,21,38,0.9)] hover:bg-[rgba(0,240,255,0.15)] text-neon-cyan p-1 rounded-full transition-all duration-300 shadow-lg shadow-neon-cyan/10 backdrop-blur-sm border border-[rgba(0,240,255,0.2)]"
             title={leftSidebarCollapsed ? zhCN.expandSidebar : zhCN.collapseSidebar}
           >
             {leftSidebarCollapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronLeft className="w-3 h-3" />}
@@ -2617,9 +2665,9 @@ function App() {
         </div>
 
         {/* Right Sidebar Collapse Button - On Boundary Line */}
-        <div className="w-3 flex-shrink-0 relative bg-slate-700/30 flex items-center justify-center cursor-pointer hover:bg-slate-600/50 transition-colors" onClick={() => setRightSidebarCollapsed(!rightSidebarCollapsed)}>
+        <div className="w-3 flex-shrink-0 relative bg-[rgba(0,240,255,0.03)] flex items-center justify-center cursor-pointer hover:bg-[rgba(0,240,255,0.08)] transition-colors" onClick={() => setRightSidebarCollapsed(!rightSidebarCollapsed)}>
           <button
-            className="absolute z-20 bg-slate-700/90 hover:bg-slate-600 text-white p-1 rounded-full transition-all duration-300 shadow-lg backdrop-blur-sm border border-slate-600/50"
+            className="absolute z-20 bg-[rgba(13,21,38,0.9)] hover:bg-[rgba(0,240,255,0.15)] text-neon-cyan p-1 rounded-full transition-all duration-300 shadow-lg shadow-neon-cyan/10 backdrop-blur-sm border border-[rgba(0,240,255,0.2)]"
             title={rightSidebarCollapsed ? zhCN.expandSidebar : zhCN.collapseSidebar}
           >
             {rightSidebarCollapsed ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
@@ -2627,17 +2675,17 @@ function App() {
         </div>
 
         {/* Right Sidebar */}
-        <div className={`sidebar-right ${rightSidebarCollapsed ? 'w-0 overflow-hidden collapsed' : 'w-72'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <Plane className="w-4 h-4 text-blue-400" />{zhCN.uavList}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
+        <div className={`sidebar-right ${rightSidebarCollapsed ? 'w-0 overflow-hidden collapsed' : 'w-72'} bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-l border-[rgba(0,240,255,0.08)] overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
+          <div className="glass-panel p-0">
+            <div className="py-2 px-3">
+              <div className="text-sm flex items-center gap-2 text-white font-medium">
+                <Plane className="w-4 h-4 text-neon-cyan" />{zhCN.uavList}
+              </div>
+            </div>
+            <div className="px-3 pb-3">
               <div ref={droneListScrollRef} className="space-y-2 max-h-64 overflow-y-auto">
                 {drones.map((drone) => (
-                  <div key={drone.uavId} className="bg-slate-600 p-2 rounded cursor-pointer hover:bg-slate-500 transition-colors" onClick={() => handleDroneListClick(drone)}>
+                  <div key={drone.uavId} className="bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.08)] p-2 rounded cursor-pointer hover:bg-[rgba(0,240,255,0.08)] hover:border-[rgba(0,240,255,0.2)] transition-all" onClick={() => handleDroneListClick(drone)}>
                     <div className="flex justify-between items-start">
                       <div>
                         <div className="font-mono text-xs font-bold">{drone.uavId}</div>
@@ -2658,19 +2706,19 @@ function App() {
                   </div>
                 ))}
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
           {/* Team List with Member Expansion - 暂时隐藏，等待后续对接数据库或订阅话题后再显示 */}
           {/* TODO: 当任务小队数据源确定后（数据库查询或话题订阅），取消注释以下组件 */}
 
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <AlertTriangle className="w-4 h-4 text-yellow-400" />{zhCN.events}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
+          <div className="glass-panel p-0">
+            <div className="py-2 px-3">
+              <div className="text-sm flex items-center gap-2 text-white font-medium">
+                <AlertTriangle className="w-4 h-4 text-neon-amber" />{zhCN.events}
+              </div>
+            </div>
+            <div className="px-3 pb-3">
               <div className="space-y-2 max-h-48 overflow-y-auto">
                 {events.length === 0 ? (
                   <p className="text-slate-400 text-center py-2 text-xs">{zhCN.noEvents}</p>
@@ -2686,12 +2734,12 @@ function App() {
                   ))
                 )}
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </div>
       </div>
 
-      <footer className="px-4 py-1 bg-slate-800 border-t border-slate-700 text-center text-slate-500 text-xs">
+      <footer className="relative z-10 px-4 py-1 bg-[rgba(13,21,38,0.8)] backdrop-blur-md border-t border-[rgba(0,240,255,0.1)] text-center text-slate-500 text-xs">
         {zhCN.footerInfo}
         {currentLocation && ` | ${zhCN.locationInfo}: ${currentLocation.lat.toFixed(4)}, ${currentLocation.lng.toFixed(4)}`}
       </footer>
