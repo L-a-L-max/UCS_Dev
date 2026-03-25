@@ -17,6 +17,13 @@ import type { MapDrone } from '../MapPanel';
 const AMAP_KEY = import.meta.env.VITE_AMAP_KEY || '';
 const AMAP_SECRET = import.meta.env.VITE_AMAP_SECRET || '';
 
+// Security config MUST be set at module level, BEFORE AMapLoader.load() is called.
+// AMap JS API 2.0 reads this global synchronously when the SDK script executes.
+// Setting it inside useEffect is too late — the SDK may already be loading.
+(window as any)._AMapSecurityConfig = {
+  securityJsCode: AMAP_SECRET,
+};
+
 interface AMap3DPanelProps {
   drones: MapDrone[];
   selectedDroneId?: string | null;
@@ -144,22 +151,45 @@ export default function AMap3DPanel({
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Set security config before loading
-    (window as any)._AMapSecurityConfig = {
-      securityJsCode: AMAP_SECRET,
-    };
-
     let destroyed = false;
 
-    AMapLoader.load({
-      key: AMAP_KEY,
-      version: '2.0',
-      plugins: ['AMap.ControlBar', 'AMap.ToolBar', 'AMap.Scale'],
-    }).then((AMap: any) => {
-      if (destroyed || !containerRef.current) return;
-      AMapRef.current = AMap;
+    // Wait for container to have non-zero dimensions before initializing.
+    // During React Suspense transitions, the container may momentarily have 0 size.
+    // AMap won't auto-repaint if initialized in a 0-size container.
+    const waitForContainer = (): Promise<HTMLDivElement> => {
+      return new Promise((resolve, reject) => {
+        const el = containerRef.current;
+        if (!el) { reject(new Error('Container not found')); return; }
+        if (el.offsetWidth > 0 && el.offsetHeight > 0) { resolve(el); return; }
+        let attempts = 0;
+        const maxAttempts = 50; // 50 * 50ms = 2.5s max wait
+        const timer = setInterval(() => {
+          if (destroyed) { clearInterval(timer); reject(new Error('Destroyed')); return; }
+          attempts++;
+          if (el.offsetWidth > 0 && el.offsetHeight > 0) {
+            clearInterval(timer);
+            resolve(el);
+          } else if (attempts >= maxAttempts) {
+            clearInterval(timer);
+            // Fallback: proceed anyway, map may need a resize later
+            console.warn('AMap3DPanel: container still has 0 size after wait, proceeding anyway');
+            resolve(el);
+          }
+        }, 50);
+      });
+    };
 
-      const map = new AMap.Map(containerRef.current, {
+    waitForContainer().then((containerEl) => {
+      if (destroyed) return;
+      return AMapLoader.load({
+        key: AMAP_KEY,
+        version: '2.0',
+        plugins: ['AMap.ControlBar', 'AMap.ToolBar', 'AMap.Scale'],
+      }).then((AMap: any) => {
+        if (destroyed) return;
+        AMapRef.current = AMap;
+
+        const map = new AMap.Map(containerEl, {
         viewMode: '3D',
         pitch,
         zoom,
@@ -252,6 +282,7 @@ export default function AMap3DPanel({
       map.add(glLayer);
 
       setMapReady(true);
+      });
     }).catch((err: Error) => {
       if (!destroyed) {
         console.error('AMap load error:', err);
