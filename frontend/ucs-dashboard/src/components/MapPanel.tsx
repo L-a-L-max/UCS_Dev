@@ -23,6 +23,7 @@ import {
   Globe,
   Map as MapIcon,
 } from 'lucide-react';
+import { DroneLayer, type DroneFeature } from './map/DroneLayer';
 
 const getApiBase = () => {
   if (import.meta.env.VITE_API_URL) {
@@ -134,6 +135,8 @@ interface MapPanelProps {
   showEventLog?: boolean;
   /** 事件日志数据 */
   eventLogs?: Array<{ id: number; time: string; detail: string; result?: string }>;
+  /** Phase 2: 使用 GPU Symbol Layer 渲染无人机（高性能模式，支持10万+） */
+  useSymbolLayer?: boolean;
 }
 
 export default function MapPanel({
@@ -154,6 +157,7 @@ export default function MapPanel({
   showDroneList = true,
   showEventLog = false,
   eventLogs = [],
+  useSymbolLayer = false,
 }: MapPanelProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -924,6 +928,27 @@ export default function MapPanel({
             )}
           </div>
         </div>
+
+        {/* Phase 2: GPU Symbol Layer for high-performance drone rendering */}
+        {useSymbolLayer && (
+          <DroneLayer
+            map={map.current}
+            drones={drones.filter((d): d is MapDrone & DroneFeature => d.lat != null && d.lng != null).map(d => ({
+              uavId: d.uavId,
+              lat: d.lat!,
+              lng: d.lng!,
+              altitude: d.altitude ?? 0,
+              heading: d.heading ?? 0,
+              flightStatus: d.flightStatus || 'IDLE',
+              battery: d.battery,
+              onlineStatus: d.onlineStatus === true,
+              armed: d.armed,
+            }))}
+            selectedDroneId={selectedDroneId}
+            clusterEnabled={drones.length > 50}
+            onDroneClick={onDroneClick}
+          />
+        )}
 
         {/* 统计信息 */}
         <div className="absolute bottom-6 left-2 z-10 bg-slate-800/80 rounded px-2 py-1 text-xs text-slate-300">
