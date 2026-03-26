@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+// Card imports removed - using glass-panel classes for glassmorphism theme
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -53,7 +53,13 @@ import {
 } from '@/services/api';
 import MapPanel, { type MapDrone, type MapRallyPoint } from '@/components/MapPanel';
 import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
-import { PieChart, Pie, BarChart, Bar, XAxis, Cell, Tooltip, ResponsiveContainer } from 'recharts';
+import ReactEChartsCore from 'echarts-for-react/lib/core';
+import * as echarts from 'echarts/core';
+import { PieChart as EPieChart, BarChart as EBarChart } from 'echarts/charts';
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components';
+import { CanvasRenderer } from 'echarts/renderers';
+
+echarts.use([EPieChart, EBarChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
 
 interface CommanderViewProps {
   token: string;
@@ -529,13 +535,13 @@ export default function CommanderView({ token, username, partitions = [], onLogo
   }));
 
   return (
-    <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">
+    <div className="h-screen bg-dark-primary text-white flex flex-col overflow-hidden">
       {/* 顶部栏 */}
-      <header className="flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
+      <header className="flex justify-between items-center px-4 py-2 bg-[rgba(13,21,38,0.8)] backdrop-blur-md border-b border-[rgba(0,240,255,0.1)]">
         <h1 className="text-xl font-bold flex items-center gap-2">
-          <Shield className="w-6 h-6 text-amber-400" />
+          <Shield className="w-6 h-6 text-neon-amber" />
           指挥员控制台
-          <Badge variant="outline" className="ml-2 text-amber-300 border-amber-500">{username}</Badge>
+          <Badge variant="outline" className="ml-2 text-neon-amber border-neon-amber/50">{username}</Badge>
         </h1>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setLeftPanelCollapsed(!leftPanelCollapsed)}
@@ -562,27 +568,27 @@ export default function CommanderView({ token, username, partitions = [], onLogo
       {/* 主体: 左右分栏布局 */}
       <div className="flex-1 flex overflow-hidden">
         {/* 左侧面板: 控制功能 - 右侧收起时自动扩展 */}
-          <div className={`${leftPanelCollapsed ? 'w-0 min-w-0 overflow-hidden' : rightPanelCollapsed ? 'flex-1' : 'w-[420px] min-w-[320px]'} bg-slate-900 border-r border-slate-700 flex flex-col transition-all duration-500 ease-in-out`}>
+          <div className={`${leftPanelCollapsed ? 'w-0 min-w-0 overflow-hidden' : rightPanelCollapsed ? 'flex-1' : 'w-[420px] min-w-[320px]'} bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-r border-[rgba(0,240,255,0.08)] flex flex-col transition-all duration-500 ease-in-out`}>
             {/* Tab 切换 */}
-            <div className="flex gap-0.5 bg-slate-800 border-b border-slate-700 p-1">
+            <div className="flex gap-0.5 bg-[rgba(13,21,38,0.5)] border-b border-[rgba(0,240,255,0.08)] p-1">
               <button onClick={() => setActiveTab('fleet')}
-                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'fleet' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'fleet' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
                 <Plane className="w-3 h-3 mr-1" />机队
               </button>
               <button onClick={() => setActiveTab('permission')}
-                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'permission' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'permission' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
                 <ArrowRightLeft className="w-3 h-3 mr-1" />权限
               </button>
               <button onClick={() => { setActiveTab('logs'); fetchLogs(0, logFilter); }}
-                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'logs' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'logs' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
                 <FileText className="w-3 h-3 mr-1" />日志
               </button>
               <button onClick={() => setActiveTab('teams')}
-                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'teams' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'teams' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
                 <Users className="w-3 h-3 mr-1" />团队
               </button>
               <button onClick={() => { setActiveTab('rally'); fetchRallyPoints(); }}
-                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'rally' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'rally' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
                 <MapPin className="w-3 h-3 mr-1" />集结点
               </button>
             </div>
@@ -594,22 +600,22 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                 <div className="flex flex-col h-full">
                   {/* 统计卡片 - 始终固定显示 */}
                   <div className="grid grid-cols-4 gap-1.5 mb-2 flex-shrink-0">
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                      <div className="text-base font-bold text-blue-400">{mapDrones.length}</div>
+                    <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.1)] rounded-lg p-1.5 text-center">
+                      <div className="text-base font-bold text-neon-cyan">{mapDrones.length}</div>
                       <div className="text-[9px] text-slate-400">总数</div>
-                    </CardContent></Card>
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
+                    </div>
+                    <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.1)] rounded-lg p-1.5 text-center">
                       <div className="text-base font-bold text-green-400">{mapDrones.filter(d => d.armed === true).length}</div>
                       <div className="text-[9px] text-slate-400">飞行中</div>
-                    </CardContent></Card>
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                      <div className="text-base font-bold text-cyan-400">{mapDrones.filter(d => d.onlineStatus === true).length}</div>
+                    </div>
+                    <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.1)] rounded-lg p-1.5 text-center">
+                      <div className="text-base font-bold text-neon-aqua">{mapDrones.filter(d => d.onlineStatus === true).length}</div>
                       <div className="text-[9px] text-slate-400">在线</div>
-                    </CardContent></Card>
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                      <div className="text-base font-bold text-red-400">{mapDrones.filter(d => (d.battery || 0) < 20).length}</div>
+                    </div>
+                    <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(255,59,92,0.15)] rounded-lg p-1.5 text-center">
+                      <div className="text-base font-bold text-neon-red">{mapDrones.filter(d => (d.battery || 0) < 20).length}</div>
                       <div className="text-[9px] text-slate-400">低电量</div>
-                    </CardContent></Card>
+                    </div>
                   </div>
                   {/* 状态分布图表 */}
                   {droneChartData.length > 0 && (
@@ -626,18 +632,21 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                       <div className="bg-slate-800 rounded border border-slate-700 p-1" style={{ height: chartType === 'pie' ? 90 : 100 }}>
                         {chartType === 'pie' ? (
                           <div className="flex items-center h-full">
-                            <div style={{ width: 80, height: 80 }}>
-                              <ResponsiveContainer width="100%" height="100%">
-                                <PieChart>
-                                  <Pie data={droneChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={35} innerRadius={18}
-                                    animationDuration={600} labelLine={false} fontSize={9} strokeWidth={1}>
-                                    {droneChartData.map((entry, index) => (
-                                      <Cell key={`cell-${index}`} fill={entry.color} />
-                                    ))}
-                                  </Pie>
-                                </PieChart>
-                              </ResponsiveContainer>
-                            </div>
+                            <ReactEChartsCore
+                              echarts={echarts}
+                              option={{
+                                series: [{
+                                  type: 'pie',
+                                  radius: ['45%', '80%'],
+                                  center: ['50%', '50%'],
+                                  data: droneChartData.map(d => ({ value: d.value, name: d.name, itemStyle: { color: d.color } })),
+                                  label: { show: false },
+                                  animationDuration: 600,
+                                }],
+                              }}
+                              style={{ width: 80, height: 80 }}
+                              opts={{ renderer: 'canvas' }}
+                            />
                             <div className="flex-1 pl-2 space-y-1">
                               {droneChartData.map((entry) => (
                                 <div key={entry.name} className="flex items-center gap-1.5 text-[10px]">
@@ -649,20 +658,24 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                             </div>
                           </div>
                         ) : (
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={droneChartData} barCategoryGap="20%">
-                              <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                              <Bar dataKey="value" animationDuration={600} radius={[4, 4, 0, 0]}
-                                label={{ position: 'top', fontSize: 10, fill: '#e2e8f0' }}>
-                                {droneChartData.map((entry, index) => (
-                                  <Cell key={`cell-${index}`} fill={entry.color} />
-                                ))}
-                              </Bar>
-                              <Tooltip cursor={false}
-                                contentStyle={{ background: '#1e293b', border: '1px solid #475569', fontSize: 11 }}
-                                formatter={(value: number, name: string, props: { payload?: { name?: string } }) => [value, props.payload?.name || name]} />
-                            </BarChart>
-                          </ResponsiveContainer>
+                          <ReactEChartsCore
+                            echarts={echarts}
+                            option={{
+                              grid: { left: 10, right: 10, top: 20, bottom: 20, containLabel: true },
+                              xAxis: { type: 'category', data: droneChartData.map(d => d.name), axisLabel: { fontSize: 9, color: '#94a3b8' }, axisLine: { show: false }, axisTick: { show: false } },
+                              yAxis: { type: 'value', show: false },
+                              series: [{
+                                type: 'bar',
+                                data: droneChartData.map(d => ({ value: d.value, itemStyle: { color: d.color, borderRadius: [4, 4, 0, 0] } })),
+                                label: { show: true, position: 'top', fontSize: 10, color: '#e2e8f0' },
+                                animationDuration: 600,
+                                barMaxWidth: 30,
+                              }],
+                              tooltip: { trigger: 'item', backgroundColor: '#1e293b', borderColor: '#475569', textStyle: { fontSize: 11, color: '#e2e8f0' } },
+                            }}
+                            style={{ width: '100%', height: '100%' }}
+                            opts={{ renderer: 'canvas' }}
+                          />
                         )}
                       </div>
                     </div>
@@ -686,7 +699,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                     {/* Use stable sort order from mapDrones (sorted by uavId) to prevent list reorder flicker */}
                     {mapDrones.map(drone => (
                       <div key={drone.uavId}
-                        className={`p-2 rounded text-xs cursor-pointer transition-all ${selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
+                        className={`p-2 rounded text-xs cursor-pointer transition-all ${selectedMapDrone === drone.uavId ? 'bg-[rgba(0,240,255,0.1)] border border-neon-cyan/40' : 'bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.08)] hover:border-neon-cyan/30'}`}
                         onClick={() => setSelectedMapDrone(prev => prev === drone.uavId ? null : drone.uavId)}>
                         <div className="flex items-center justify-between mb-0.5">
                           <span className="font-bold text-blue-300">{drone.uavId}</span>
@@ -726,13 +739,13 @@ export default function CommanderView({ token, username, partitions = [], onLogo
               {/* 权限管理 */}
               {activeTab === 'permission' && (
                 <div className="space-y-3">
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardHeader className="pb-2 px-3 pt-3">
-                      <CardTitle className="flex items-center gap-2 text-sm">
-                        <ArrowRightLeft className="w-4 h-4 text-purple-400" />控制权限转移
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="px-3 pb-3">
+                  <div className="bg-[rgba(13,21,38,0.5)] border border-[rgba(160,32,240,0.15)] rounded-lg">
+                    <div className="pb-2 px-3 pt-3">
+                      <div className="flex items-center gap-2 text-sm font-semibold">
+                        <ArrowRightLeft className="w-4 h-4 text-neon-purple" />控制权限转移
+                      </div>
+                    </div>
+                    <div className="px-3 pb-3">
                       <p className="text-xs text-slate-400 mb-3">选择无人机，指定目标队伍或用户。转移至队伍时自动分配给队长。</p>
                       <div className="mb-3">
                         <label className="text-xs text-slate-300 mb-1 block">选择无人机</label>
@@ -797,8 +810,8 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                           </div>
                         </div>
                       )}
-                    </CardContent>
-                  </Card>
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -852,8 +865,8 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                   </div>
                   <div className="flex-1 overflow-y-auto space-y-1.5 scrollbar-thin" style={{ scrollbarWidth: 'thin', scrollbarColor: '#475569 #1e293b' }}>
                     {rallyPoints.map(rp => (
-                      <Card key={rp.id} className="bg-slate-800 border-slate-700">
-                        <CardContent className="p-2">
+                      <div key={rp.id} className="bg-[rgba(13,21,38,0.5)] border border-[rgba(255,184,0,0.12)] rounded-lg">
+                        <div className="p-2">
                           <div className="flex items-center justify-between mb-1">
                             <div className="flex items-center gap-1.5">
                               <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: SERVICE_TYPE_COLORS[rp.serviceType] || '#f59e0b' }} />
@@ -881,8 +894,8 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                             {rp.latitude?.toFixed(6)}, {rp.longitude?.toFixed(6)}
                             {rp.address && <span className="ml-1">· {rp.address}</span>}
                           </div>
-                        </CardContent>
-                      </Card>
+                        </div>
+                      </div>
                     ))}
                     {rallyPoints.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无集结点数据</div>}
                   </div>
@@ -1003,14 +1016,14 @@ export default function CommanderView({ token, username, partitions = [], onLogo
               {activeTab === 'teams' && (
                 <div className="space-y-2">
                   {teams.map(team => (
-                    <Card key={team.teamId} className="bg-slate-800 border-slate-700">
-                      <CardHeader className="pb-1 px-3 pt-2 cursor-pointer" onClick={() => handleTeamExpand(team.teamId)}>
-                        <CardTitle className="flex items-center justify-between text-xs">
+                    <div key={team.teamId} className="bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.1)] rounded-lg">
+                      <div className="pb-1 px-3 pt-2 cursor-pointer" onClick={() => handleTeamExpand(team.teamId)}>
+                        <div className="flex items-center justify-between text-xs font-semibold">
                           <div className="flex items-center gap-1"><Users className="w-3 h-3 text-blue-400" />{team.teamName}</div>
                           <Badge variant="outline" className="text-slate-400 border-slate-600 text-[10px]">{team.memberCount} 人</Badge>
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent className="px-3 pb-2">
+                        </div>
+                      </div>
+                      <div className="px-3 pb-2">
                         <div className="text-xs text-slate-400 mb-1">
                           队长: <span className="text-slate-300">{team.leader}</span>
                           {team.droneCount != null && <span className="ml-2">无人机: {team.droneCount}</span>}
@@ -1030,8 +1043,8 @@ export default function CommanderView({ token, username, partitions = [], onLogo
                           onClick={() => handleTeamExpand(team.teamId)}>
                           {expandedTeams.has(team.teamId) ? '收起成员' : '展开成员'}
                         </Button>
-                      </CardContent>
-                    </Card>
+                      </div>
+                    </div>
                   ))}
                   {teams.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无团队数据</div>}
                 </div>
@@ -1059,10 +1072,22 @@ export default function CommanderView({ token, username, partitions = [], onLogo
       </div>
 
       {/* 确认对话框 - 批量权限转移 */}
-      <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
-        <DialogContent className="bg-slate-800 border-slate-700 text-white">
+      <Dialog open={transferDialogOpen} onOpenChange={(open) => {
+        setTransferDialogOpen(open);
+        if (!open) {
+          // Dialog data cleanup: clear all transfer state to prevent stale data on next open
+          setTransferResult(null);
+          setToUserId('');
+          setToTeamId('');
+          setTransferReason('');
+          setTransferLoading(false);
+        }
+      }}>
+        <DialogContent className="bg-[rgba(13,21,38,0.95)] backdrop-blur-xl border border-[rgba(0,240,255,0.2)] text-white shadow-[0_0_30px_rgba(0,240,255,0.1)]">
           <DialogHeader>
-            <DialogTitle className="text-white">确认权限转移</DialogTitle>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <ArrowRightLeft className="w-4 h-4 text-neon-purple" />确认权限转移
+            </DialogTitle>
             <DialogDescription className="text-slate-400">
               {transferMode === 'team'
                 ? `将以下无人机的控制权转移给队伍 (ID: ${toTeamId})`
@@ -1076,10 +1101,16 @@ export default function CommanderView({ token, username, partitions = [], onLogo
             {transferReason && <p className="text-sm text-slate-400">原因: {transferReason}</p>}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTransferDialogOpen(false)}
-              className="bg-slate-700 border-slate-600 text-slate-300">取消</Button>
+            <Button variant="outline" onClick={() => {
+              setTransferDialogOpen(false);
+              setTransferResult(null);
+              setToUserId('');
+              setToTeamId('');
+              setTransferReason('');
+            }}
+              className="bg-[rgba(0,240,255,0.05)] border-[rgba(0,240,255,0.15)] text-slate-300 hover:bg-[rgba(0,240,255,0.1)]">取消</Button>
             <Button onClick={() => { setTransferDialogOpen(false); handleTransfer(); }}
-              disabled={transferLoading} className="bg-purple-600 hover:bg-purple-700">
+              disabled={transferLoading} className="bg-[rgba(160,32,240,0.3)] border border-neon-purple/40 hover:bg-[rgba(160,32,240,0.5)] text-white">
               {transferLoading ? <RefreshCw className="w-4 h-4 animate-spin mr-1" /> : null}
               确认转移
             </Button>
@@ -1088,10 +1119,22 @@ export default function CommanderView({ token, username, partitions = [], onLogo
       </Dialog>
 
       {/* 快捷转接弹窗 - 单架无人机快速转接 */}
-      <Dialog open={quickTransferOpen} onOpenChange={(open) => { setQuickTransferOpen(open); if (!open) setQuickTransferResult(null); }}>
-        <DialogContent className="bg-slate-800 border-slate-700 text-white">
+      <Dialog open={quickTransferOpen} onOpenChange={(open) => {
+        setQuickTransferOpen(open);
+        if (!open) {
+          // Dialog data cleanup: clear all quick transfer state
+          setQuickTransferUavId('');
+          setQuickTransferToUserId('');
+          setQuickTransferToTeamId('');
+          setQuickTransferResult(null);
+          setQuickTransferLoading(false);
+        }
+      }}>
+        <DialogContent className="bg-[rgba(13,21,38,0.95)] backdrop-blur-xl border border-[rgba(0,240,255,0.2)] text-white shadow-[0_0_30px_rgba(0,240,255,0.1)]">
           <DialogHeader>
-            <DialogTitle className="text-white">快捷转接 - {quickTransferUavId}</DialogTitle>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <ArrowRightLeft className="w-4 h-4 text-neon-purple" />快捷转接 - <span className="text-neon-cyan font-mono">{quickTransferUavId}</span>
+            </DialogTitle>
             <DialogDescription className="text-slate-400">
               将无人机 {quickTransferUavId} 的控制权快速转接给队伍或个人
             </DialogDescription>
@@ -1140,11 +1183,17 @@ export default function CommanderView({ token, username, partitions = [], onLogo
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setQuickTransferOpen(false); setQuickTransferResult(null); }}
-              className="bg-slate-700 border-slate-600 text-slate-300">取消</Button>
+            <Button variant="outline" onClick={() => {
+              setQuickTransferOpen(false);
+              setQuickTransferUavId('');
+              setQuickTransferToUserId('');
+              setQuickTransferToTeamId('');
+              setQuickTransferResult(null);
+            }}
+              className="bg-[rgba(0,240,255,0.05)] border-[rgba(0,240,255,0.15)] text-slate-300 hover:bg-[rgba(0,240,255,0.1)]">取消</Button>
             <Button onClick={handleQuickTransfer}
               disabled={quickTransferLoading || (quickTransferMode === 'user' ? !quickTransferToUserId : !quickTransferToTeamId)}
-              className="bg-purple-600 hover:bg-purple-700">
+              className="bg-[rgba(160,32,240,0.3)] border border-neon-purple/40 hover:bg-[rgba(160,32,240,0.5)] text-white">
               {quickTransferLoading ? <RefreshCw className="w-4 h-4 animate-spin mr-1" /> : null}
               确认转接
             </Button>

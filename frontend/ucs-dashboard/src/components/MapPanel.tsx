@@ -23,6 +23,12 @@ import {
   Globe,
   Map as MapIcon,
 } from 'lucide-react';
+import { DroneLayer, type DroneFeature } from './map/DroneLayer';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { lazy, Suspense } from 'react';
+
+// Lazy load AMap 3D panel to avoid loading Three.js + AMap SDK when not needed
+const AMap3DPanel = lazy(() => import('./map/AMap3DPanel'));
 
 const getApiBase = () => {
   if (import.meta.env.VITE_API_URL) {
@@ -134,6 +140,79 @@ interface MapPanelProps {
   showEventLog?: boolean;
   /** 事件日志数据 */
   eventLogs?: Array<{ id: number; time: string; detail: string; result?: string }>;
+  /** Phase 2: 使用 GPU Symbol Layer 渲染无人机（高性能模式，支持10万+） */
+  useSymbolLayer?: boolean;
+}
+
+/** Phase 3: Virtualized drone list using TanStack Virtual for 10k+ drone support */
+function VirtualDroneList({ drones, selectedDroneId, onDroneClick }: {
+  drones: MapDrone[];
+  selectedDroneId?: string | null;
+  onDroneClick?: (uavId: string) => void;
+}) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: drones.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 52,
+    overscan: 5,
+  });
+
+  if (drones.length === 0) {
+    return <div className="text-center text-slate-500 py-4 text-xs">暂无无人机数据</div>;
+  }
+
+  return (
+    <div ref={parentRef} className="flex-1 overflow-y-auto p-1.5" style={{ contain: 'strict' }}>
+      <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
+        {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+          const drone = drones[virtualRow.index];
+          return (
+            <div
+              key={drone.uavId}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: `${virtualRow.size}px`,
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              <div
+                className={`p-2 rounded cursor-pointer transition-all text-xs mb-1 ${
+                  selectedDroneId === drone.uavId
+                    ? 'bg-blue-900/50 border border-blue-500'
+                    : 'bg-slate-700/50 border border-slate-600 hover:border-slate-500'
+                }`}
+                onClick={() => onDroneClick?.(drone.uavId)}
+              >
+                <div className="flex items-center justify-between mb-0.5">
+                  <span className="font-bold text-white">{drone.uavId}</span>
+                  <Badge className={`text-[10px] px-1 py-0 ${
+                    !drone.onlineStatus
+                      ? 'bg-slate-600'
+                      : drone.armed === true
+                        ? 'bg-green-600'
+                        : 'bg-blue-600'
+                  }`}>
+                    {!drone.onlineStatus ? '离线' : drone.armed === true ? '已解锁' : '未解锁'}
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-2 text-slate-400">
+                  <span className="flex items-center gap-0.5">
+                    <Battery className="w-2.5 h-2.5" />
+                    {drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}
+                  </span>
+                  <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export default function MapPanel({
@@ -154,6 +233,7 @@ export default function MapPanel({
   showDroneList = true,
   showEventLog = false,
   eventLogs = [],
+  useSymbolLayer = false,
 }: MapPanelProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -185,7 +265,7 @@ export default function MapPanel({
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
-  // 3D map toggle - uses MapLibre GL terrain (no external API key needed)
+  // 3D map toggle - switches between MapLibre 2D and AMap 3D
   const [is3DMode, setIs3DMode] = useState(false);
 
   // 弹窗自动关闭逻辑 - 默认5秒后关闭，鼠标移入保持，移出后倒计时关闭
@@ -827,27 +907,13 @@ export default function MapPanel({
     return () => observer.disconnect();
   }, []);
 
-  // 3D terrain toggle - uses MapLibre GL built-in terrain with open DEM tiles
+  // When switching back from 3D to 2D, re-initialize the MapLibre map
   useEffect(() => {
-    if (!map.current) return;
-    const m = map.current;
-    if (is3DMode) {
-      // Add terrain source if not present
-      if (!m.getSource('terrain-dem')) {
-        m.addSource('terrain-dem', {
-          type: 'raster-dem',
-          tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
-          tileSize: 256,
-          encoding: 'terrarium',
-          maxzoom: 15,
-        });
-      }
-      m.setTerrain({ source: 'terrain-dem', exaggeration: 1.5 });
-      m.easeTo({ pitch: 60, duration: 800 });
-    } else {
-      m.setTerrain(undefined as unknown as maplibregl.TerrainSpecification);
-      m.easeTo({ pitch: 0, duration: 800 });
+    if (!is3DMode) {
+      // Re-init MapLibre map when switching back to 2D
+      initMap(tileSource);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [is3DMode]);
 
   // 对无人机排序：在线优先
@@ -864,10 +930,33 @@ export default function MapPanel({
     <div className={`flex h-full ${className}`}>
       {/* 地图区域 */}
       <div className="flex-1 relative">
-        <div ref={mapContainer} className="absolute inset-0 w-full h-full" style={{ minHeight: '100%' }} />
+        {/* AMap 3D mode */}
+        {is3DMode && (
+          <Suspense fallback={
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-900 text-slate-400 text-sm">
+              加载3D地图中...
+            </div>
+          }>
+            <AMap3DPanel
+              drones={drones}
+              selectedDroneId={selectedDroneId}
+              selectedDroneIds={selectedDroneIds}
+              onDroneClick={onDroneClick}
+              onMapClick={onMapClick}
+              className="absolute inset-0"
+            />
+          </Suspense>
+        )}
+
+        {/* MapLibre 2D mode */}
+        <div
+          ref={mapContainer}
+          className="absolute inset-0 w-full h-full"
+          style={{ minHeight: '100%', display: is3DMode ? 'none' : 'block' }}
+        />
 
         {/* 地图错误提示（参考 Observer 视图） */}
-        {mapError && (
+        {!is3DMode && mapError && (
           <div className="absolute top-12 left-1/2 -translate-x-1/2 z-20 bg-red-900/90 backdrop-blur-sm rounded-lg px-4 py-2 text-white text-xs flex items-center gap-2 max-w-xs shadow-lg border border-red-700">
             <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
             <div>
@@ -876,8 +965,6 @@ export default function MapPanel({
             </div>
           </div>
         )}
-        
-        {/* 3D terrain is rendered on the same MapLibre canvas via terrain API */}
 
         {/* 地图控制按钮 */}
         <div className="absolute top-2 left-2 z-10 flex flex-col gap-1" style={{ zIndex: 15 }}>
@@ -889,14 +976,14 @@ export default function MapPanel({
           >
             <Locate className="w-3 h-3 mr-1" />聚焦无人机
           </Button>
-          {/* 2D/3D toggle (Issue 7) */}
+          {/* 2D/3D toggle - switches to AMap 3D map */}
           <Button
             size="sm"
             variant="outline"
             className={`border-slate-600 text-white hover:bg-slate-700/80 text-xs ${is3DMode ? 'bg-indigo-700/80 border-indigo-500' : 'bg-slate-800/80'}`}
             onClick={() => setIs3DMode(!is3DMode)}
           >
-            {is3DMode ? <><MapIcon className="w-3 h-3 mr-1" />二维地图</> : <><Globe className="w-3 h-3 mr-1" />三维地图</>}
+            {is3DMode ? <><MapIcon className="w-3 h-3 mr-1" />二维地图</> : <><Globe className="w-3 h-3 mr-1" />高德3D</>}
           </Button>
           <div className="relative">
             <Button
@@ -925,10 +1012,33 @@ export default function MapPanel({
           </div>
         </div>
 
-        {/* 统计信息 */}
-        <div className="absolute bottom-6 left-2 z-10 bg-slate-800/80 rounded px-2 py-1 text-xs text-slate-300">
-          共 {drones.length} 架 | 在线 {drones.filter(d => d.onlineStatus === true).length} | 飞行中 {drones.filter(d => d.flightStatus === 'FLYING').length}
-        </div>
+        {/* Phase 2: GPU Symbol Layer for high-performance drone rendering (2D mode only) */}
+        {!is3DMode && useSymbolLayer && (
+          <DroneLayer
+            map={map.current}
+            drones={drones.filter((d): d is MapDrone & DroneFeature => d.lat != null && d.lng != null).map(d => ({
+              uavId: d.uavId,
+              lat: d.lat!,
+              lng: d.lng!,
+              altitude: d.altitude ?? 0,
+              heading: d.heading ?? 0,
+              flightStatus: d.flightStatus || 'IDLE',
+              battery: d.battery,
+              onlineStatus: d.onlineStatus === true,
+              armed: d.armed,
+            }))}
+            selectedDroneId={selectedDroneId}
+            clusterEnabled={drones.length > 50}
+            onDroneClick={onDroneClick}
+          />
+        )}
+
+        {/* 统计信息 (2D mode only, 3D has its own stats) */}
+        {!is3DMode && (
+          <div className="absolute bottom-6 left-2 z-10 bg-slate-800/80 rounded px-2 py-1 text-xs text-slate-300">
+            共 {drones.length} 架 | 在线 {drones.filter(d => d.onlineStatus === true).length} | 飞行中 {drones.filter(d => d.flightStatus === 'FLYING').length}
+          </div>
+        )}
       </div>
 
       {/* 无人机列表侧边栏 */}
@@ -945,44 +1055,11 @@ export default function MapPanel({
               {droneListCollapsed ? '展开' : '收起'}
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto p-1.5 space-y-1">
-            {sortedDrones.map(drone => (
-              <div
-                key={drone.uavId}
-                className={`p-2 rounded cursor-pointer transition-all text-xs ${
-                  selectedDroneId === drone.uavId
-                    ? 'bg-blue-900/50 border border-blue-500'
-                    : 'bg-slate-700/50 border border-slate-600 hover:border-slate-500'
-                }`}
-                  onClick={() => {
-                    onDroneClick?.(drone.uavId);
-                  }}
-              >
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="font-bold text-white">{drone.uavId}</span>
-                  <Badge className={`text-[10px] px-1 py-0 ${
-                    !drone.onlineStatus
-                      ? 'bg-slate-600'
-                      : drone.armed === true
-                        ? 'bg-green-600'
-                        : 'bg-blue-600'
-                  }`}>
-                    {!drone.onlineStatus ? '离线' : drone.armed === true ? '已解锁' : '未解锁'}
-                  </Badge>
-                </div>
-                <div className="flex items-center gap-2 text-slate-400">
-                  <span className="flex items-center gap-0.5">
-                    <Battery className="w-2.5 h-2.5" />
-                    {drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}
-                  </span>
-                  <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
-                </div>
-              </div>
-            ))}
-            {drones.length === 0 && (
-              <div className="text-center text-slate-500 py-4 text-xs">暂无无人机数据</div>
-            )}
-          </div>
+          <VirtualDroneList
+            drones={sortedDrones}
+            selectedDroneId={selectedDroneId}
+            onDroneClick={onDroneClick}
+          />
 
           {/* 事件日志滚动区域 */}
           {showEventLog && eventLogs.length > 0 && (

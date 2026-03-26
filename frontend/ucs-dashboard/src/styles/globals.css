@@ -1,0 +1,256 @@
+/* ============================================================
+   UCS Design Token System — Glassmorphism + Neon Theme
+   ============================================================ */
+
+:root {
+  /* ---- Core Colors ---- */
+  --color-bg-primary: #0A0F1F;
+  --color-bg-secondary: #111827;
+  --color-bg-tertiary: #1E293B;
+
+  /* Neon Palette */
+  --color-neon-cyan: #00F0FF;
+  --color-neon-purple: #A020F0;
+  --color-neon-aqua: #7FFFD4;
+  --color-neon-amber: #FFB800;
+  --color-neon-red: #FF3B5C;
+  --color-neon-green: #00FF88;
+
+  /* Text */
+  --color-text-primary: #F1F5F9;
+  --color-text-secondary: #94A3B8;
+  --color-text-muted: #64748B;
+  --color-text-neon: var(--color-neon-cyan);
+
+  /* Borders */
+  --color-border-default: rgba(255, 255, 255, 0.06);
+  --color-border-neon: rgba(0, 240, 255, 0.15);
+  --color-border-neon-strong: rgba(0, 240, 255, 0.3);
+
+  /* ---- Glassmorphism ---- */
+  --glass-bg: rgba(13, 21, 38, 0.6);
+  --glass-bg-strong: rgba(13, 21, 38, 0.75);
+  --glass-bg-subtle: rgba(13, 21, 38, 0.4);
+  --glass-blur: 12px;
+  --glass-border: rgba(0, 240, 255, 0.12);
+
+  /* ---- Shadows & Glows ---- */
+  --shadow-neon-cyan: 0 0 20px rgba(0, 240, 255, 0.2);
+  --shadow-neon-purple: 0 0 20px rgba(160, 32, 240, 0.2);
+  --shadow-neon-aqua: 0 0 20px rgba(127, 255, 212, 0.15);
+  --shadow-panel: 0 8px 32px rgba(0, 0, 0, 0.3);
+
+  /* ---- Spacing ---- */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+
+  /* ---- Border Radius ---- */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  /* ---- Typography ---- */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-display: 'Orbitron', var(--font-sans);
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+
+  /* ---- Transitions ---- */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 500ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---- Z-Index ---- */
+  --z-base: 0;
+  --z-panel: 10;
+  --z-overlay: 20;
+  --z-popup: 30;
+  --z-modal: 40;
+  --z-toast: 50;
+}
+
+/* ============================================================
+   Glassmorphism Utility Classes
+   ============================================================ */
+
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+}
+
+.glass-panel-strong {
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--color-border-neon-strong);
+  border-radius: var(--radius-lg);
+}
+
+.glass-panel-subtle {
+  background: var(--glass-bg-subtle);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+}
+
+/* ============================================================
+   Neon Glow Utilities
+   ============================================================ */
+
+.neon-glow-cyan {
+  box-shadow: var(--shadow-neon-cyan);
+}
+
+.neon-glow-purple {
+  box-shadow: var(--shadow-neon-purple);
+}
+
+.neon-glow-aqua {
+  box-shadow: var(--shadow-neon-aqua);
+}
+
+.neon-text-cyan {
+  color: var(--color-neon-cyan);
+  text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+}
+
+.neon-text-purple {
+  color: var(--color-neon-purple);
+  text-shadow: 0 0 10px rgba(160, 32, 240, 0.5);
+}
+
+.neon-text-aqua {
+  color: var(--color-neon-aqua);
+  text-shadow: 0 0 10px rgba(127, 255, 212, 0.4);
+}
+
+/* ============================================================
+   Scanline Background Effect
+   ============================================================ */
+
+.scanline-bg {
+  position: relative;
+}
+
+.scanline-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 240, 255, 0.015) 2px,
+    rgba(0, 240, 255, 0.015) 4px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ============================================================
+   Highlight Line (top edge glow)
+   ============================================================ */
+
+.highlight-line::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(0, 240, 255, 0.3),
+    transparent
+  );
+}
+
+/* ============================================================
+   Animations
+   ============================================================ */
+
+@keyframes neon-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes scanline-move {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+@keyframes glow-breathe {
+  0%, 100% { box-shadow: 0 0 5px rgba(0, 240, 255, 0.2); }
+  50% { box-shadow: 0 0 20px rgba(0, 240, 255, 0.4); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-neon-pulse {
+  animation: neon-pulse 2s ease-in-out infinite;
+}
+
+.animate-glow-breathe {
+  animation: glow-breathe 3s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.3s ease-out forwards;
+}
+
+/* ============================================================
+   Scrollbar Styling (dark neon theme)
+   ============================================================ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 240, 255, 0.15);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.3);
+}
