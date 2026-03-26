@@ -38,6 +38,7 @@ import {
   type RallyPoint,
 } from '@/services/api';
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
+import { HoloDashboard } from '@/components/cesium';
 import { useTelemetryWebSocket, type PartitionTelemetryMessage, type CommandAckMessage } from '@/hooks/useTelemetryWebSocket';
 
 interface PilotViewProps {
@@ -71,6 +72,9 @@ export default function PilotView({ token, username, partitions = [], onLogout }
   const [sendingCommand, setSendingCommand] = useState<string | null>(null);
   const [quickFeedback, setQuickFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
   const [commandAckFeedback, setCommandAckFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
+
+  // 全息模式状态
+  const [holoMode, setHoloMode] = useState(false);
 
   const [showDetailPanel, setShowDetailPanel] = useState(false);
   const [detailPanelEnabled, setDetailPanelEnabled] = useState(true);
@@ -477,6 +481,11 @@ export default function PilotView({ token, username, partitions = [], onLogout }
             }}
             className={`text-xs h-7 ${detailPanelEnabled ? 'bg-blue-600/30 border-blue-500 text-blue-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}>
             {detailPanelEnabled ? <Eye className="w-3.5 h-3.5 mr-1" /> : <EyeOff className="w-3.5 h-3.5 mr-1" />}{'\u8be6\u60c5'}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setHoloMode(!holoMode)}
+            className={`h-7 text-xs border-slate-500/50 text-slate-100 hover:bg-slate-600/50 ${holoMode ? 'bg-cyan-700/50 border-cyan-400/50 text-cyan-300' : 'bg-slate-700/50'}`}
+            title={holoMode ? '\u9000\u51fa\u5168\u606f\u6a21\u5f0f' : '\u5168\u606f3D\u6a21\u5f0f'}>
+            🌐 {holoMode ? '\u9000\u51fa\u5168\u606f' : '\u5168\u606f3D'}
           </Button>
           <Button variant="outline" size="sm" onClick={fetchDrones} disabled={loading}
             className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-7 text-xs">
@@ -1062,6 +1071,16 @@ export default function PilotView({ token, username, partitions = [], onLogout }
             showDroneList={false} showEventLog={false} />
         </div>
       </div>
+      {/* 全息3D模式 */}
+      {holoMode && (
+        <HoloDashboard
+          drones={mapDrones}
+          selectedDroneId={selectedDrone}
+          selectedDroneIds={selectedDrones}
+          onDroneClick={(id) => { setSelectedDrone(id); setShowDetailPanel(detailPanelEnabled); }}
+          onClose={() => setHoloMode(false)}
+        />
+      )}
     </div>
   );
 }

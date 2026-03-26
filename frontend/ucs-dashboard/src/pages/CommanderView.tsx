@@ -52,6 +52,7 @@ import {
   type RallyPoint,
 } from '@/services/api';
 import MapPanel, { type MapDrone, type MapRallyPoint } from '@/components/MapPanel';
+import { HoloDashboard, type LogEntry } from '@/components/cesium';
 import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import * as echarts from 'echarts/core';
@@ -114,6 +115,9 @@ export default function CommanderView({ token, username, partitions = [], onLogo
   // 可折叠面板状态
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+
+  // 全息模式状态
+  const [holoMode, setHoloMode] = useState(false);
 
   // 地图选中的无人机
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
@@ -534,6 +538,24 @@ export default function CommanderView({ token, username, partitions = [], onLogo
     detail: log.detail || log.operationType, result: log.result,
   }));
 
+  // 日志格式化为全息面板使用
+  const holoLogs: LogEntry[] = logs.slice(0, 20).map(log => ({
+    id: String(log.id),
+    time: formatTime(log.createdAt),
+    message: log.detail || log.operationType || '操作',
+    level: log.result === 'SUCCESS' ? 'success' as const : log.result === 'FAIL' ? 'error' as const : 'info' as const,
+    result: log.result,
+  }));
+
+  // 成员数据用于全息面板
+  const holoMembers = registeredUsers.map(u => ({
+    userId: String(u.userId),
+    username: u.username,
+    realName: u.realName,
+    role: u.role,
+    online: undefined,
+  }));
+
   return (
     <div className="h-screen bg-dark-primary text-white flex flex-col overflow-hidden">
       {/* 顶部栏 */}
@@ -553,6 +575,11 @@ export default function CommanderView({ token, username, partitions = [], onLogo
             className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50"
             title={rightPanelCollapsed ? '展开右侧面板' : '收起右侧面板'}>
             {rightPanelCollapsed ? <PanelRightOpen className="w-4 h-4" /> : <PanelRightClose className="w-4 h-4" />}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setHoloMode(!holoMode)}
+            className={`border-slate-500/50 text-slate-100 hover:bg-slate-600/50 ${holoMode ? 'bg-cyan-700/50 border-cyan-400/50 text-cyan-300' : 'bg-slate-700/50'}`}
+            title={holoMode ? '退出全息模式' : '全息3D模式'}>
+            🌐 {holoMode ? '退出全息' : '全息3D'}
           </Button>
           <Button variant="outline" size="sm" onClick={() => { fetchFleet(); fetchLogs(logPage, logFilter); fetchTeams(); }}
             disabled={loading} className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50">
@@ -1200,6 +1227,17 @@ export default function CommanderView({ token, username, partitions = [], onLogo
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {/* 全息3D模式 */}
+      {holoMode && (
+        <HoloDashboard
+          drones={mapDrones}
+          selectedDroneId={selectedMapDrone}
+          onDroneClick={setSelectedMapDrone}
+          logs={holoLogs}
+          members={holoMembers}
+          onClose={() => setHoloMode(false)}
+        />
+      )}
     </div>
   );
 }

@@ -42,8 +42,8 @@ export default function CesiumMapPanel({
   onDroneClick,
   onMapClick,
   className = '',
-  center = [116.397428, 39.90923], // Beijing Tiananmen
-  zoom = 2000,
+  center = [104.0, 35.0], // China center
+  zoom = 2000000, // ~2000km altitude
   pitch = 35,
 }: CesiumMapPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -134,7 +134,7 @@ export default function CesiumMapPanel({
       // Set globe base color for areas without imagery
       viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0d1526');
 
-      // Fly to initial view (Beijing Tiananmen area)
+      // Fly to initial view - China center with tilted perspective
       viewer.camera.flyTo({
         destination: Cesium.Cartesian3.fromDegrees(center[0], center[1], zoom),
         orientation: {
@@ -142,7 +142,7 @@ export default function CesiumMapPanel({
           pitch: Cesium.Math.toRadians(-pitch),
           roll: 0,
         },
-        duration: 2,
+        duration: 2.5,
       });
 
       // Click handler for map
@@ -166,20 +166,20 @@ export default function CesiumMapPanel({
         }
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-      // Add dynamic radar scan circle on the ground
+      // Add dynamic radar scan circle on the ground centered on China
       const scanCenter = Cesium.Cartesian3.fromDegrees(center[0], center[1]);
       let scanAngle = 0;
       const scanEntity = viewer.entities.add({
         position: scanCenter,
         ellipse: {
-          semiMajorAxis: 1500,
-          semiMinorAxis: 1500,
+          semiMajorAxis: 500000,
+          semiMinorAxis: 500000,
           height: 1,
           material: new Cesium.ColorMaterialProperty(
-            Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.05)')
+            Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.03)')
           ),
           outline: true,
-          outlineColor: Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.25)'),
+          outlineColor: Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.15)'),
           outlineWidth: 1,
         },
       });
@@ -188,7 +188,7 @@ export default function CesiumMapPanel({
       viewer.scene.preRender.addEventListener(() => {
         if (scanEntity.ellipse) {
           scanAngle += 0.002;
-          const pulse = 1200 + 300 * Math.sin(scanAngle * 3);
+          const pulse = 400000 + 100000 * Math.sin(scanAngle * 3);
           scanEntity.ellipse.semiMajorAxis = new Cesium.ConstantProperty(pulse);
           scanEntity.ellipse.semiMinorAxis = new Cesium.ConstantProperty(pulse);
         }
