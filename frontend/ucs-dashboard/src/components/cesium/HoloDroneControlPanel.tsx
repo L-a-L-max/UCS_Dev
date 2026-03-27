@@ -1,7 +1,8 @@
 /**
- * Holographic Drone Control Panel - Phase 5
- * Bottom center: 3-column layout with real API commands
- * No emoji - uses SVG icons and clean text labels
+ * Holographic Drone Control Panel - Phase 6
+ * Bottom center: left/right button layout with multi-select display
+ * Left: takeoff, land, hover | Right: set home, return, goto
+ * Center: multi-select info display
  */
 import type { MapDrone } from '../MapPanel';
 
@@ -30,45 +31,61 @@ export function HoloDroneControlPanel({
     onCommand?.(cmd, ids.length > 0 ? ids : undefined);
   };
 
-  const avgBattery = pool.length > 0
-    ? Math.round(pool.reduce((s, d) => s + (d.battery ?? 0), 0) / pool.length) : 0;
-  const onlineCount = pool.filter(d => d.onlineStatus).length;
   const flyingCount = pool.filter(d => d.armed).length;
+  const onlineCount = pool.filter(d => d.onlineStatus).length;
+  const offlineCount = pool.length - onlineCount;
   const maxAlt = pool.reduce((m, d) => Math.max(m, d.altitude ?? 0), 0);
   const minAlt = pool.filter(d => d.altitude != null).reduce((m, d) => Math.min(m, d.altitude ?? Infinity), Infinity);
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '15px 20px', height: '100%' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', height: '100%' }}>
       {/* Left: Basic Controls */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        <ControlBtn label="起飞" icon="takeoff" onClick={() => handleCmd('TAKEOFF')} disabled={!hasDrones} />
-        <ControlBtn label="降落" icon="land" onClick={() => handleCmd('LAND')} disabled={!hasDrones} />
-        <ControlBtn label="返航" icon="return" onClick={() => handleCmd('RETURN')} disabled={!hasDrones} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <ControlBtn label="\u8d77\u98de" icon="takeoff" onClick={() => handleCmd('TAKEOFF')} disabled={!hasDrones} />
+        <ControlBtn label="\u964d\u843d" icon="land" onClick={() => handleCmd('LAND')} disabled={!hasDrones} />
+        <ControlBtn label="\u60ac\u505c" icon="hover" onClick={() => handleCmd('HOVER')} disabled={!hasDrones} />
       </div>
 
       {/* Center: Drone info */}
-      <div style={{ textAlign: 'center', flex: 1, padding: '0 20px' }}>
-        <div style={{ fontSize: '15px', color: '#52a8ff', marginBottom: '6px', fontWeight: 600 }}>
-          {hasSelection ? `已选 ${selectedDrones.length} 架 · ${selectedDrones.map(d => d.uavId).join(', ')}` : `无人机集群 · ${drones.length} 架`}
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', fontSize: '12px', color: '#c0d8ff' }}>
-          <span>在线 <b style={{ color: '#00ff7f' }}>{onlineCount}</b></span>
-          <span>飞行 <b style={{ color: '#52a8ff' }}>{flyingCount}</b></span>
-          <span>电量 <b style={{ color: avgBattery < 20 ? '#ff4d4f' : '#a0cfff' }}>{avgBattery}%</b></span>
-          <span>高度 <b style={{ color: '#a0cfff' }}>
-            {minAlt === Infinity ? '0' : minAlt.toFixed(0)}-{maxAlt.toFixed(0)}m
-          </b></span>
-        </div>
-        <div style={{ fontSize: '11px', color: '#a0cfff', marginTop: '4px' }}>
-          模式: {hasSelection ? '手动控制' : '集群自主'}
-        </div>
+      <div style={{ textAlign: 'center', flex: 1, padding: '0 16px' }}>
+        {hasSelection ? (
+          <>
+            <div style={{ fontSize: '14px', color: '#52a8ff', marginBottom: '4px', fontWeight: 600 }}>
+              \u5df2\u9009\u4e2d {selectedDrones.length} \u67b6\u65e0\u4eba\u673a
+            </div>
+            {selectedDrones.length === 1 ? (
+              <div style={{ fontSize: '11px', color: '#c0d8ff', lineHeight: 1.6 }}>
+                <div>ID: <b style={{ color: '#fff' }}>{selectedDrones[0].uavId}</b></div>
+                <div>\u64cd\u4f5c\u5458: {selectedDrones[0].owner || '\u672a\u5206\u914d'}</div>
+                <div>\u5750\u6807: {selectedDrones[0].lat?.toFixed(4) ?? '--'}, {selectedDrones[0].lng?.toFixed(4) ?? '--'}</div>
+                <div>\u9ad8\u5ea6: {selectedDrones[0].altitude?.toFixed(1) ?? '--'}m</div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', fontSize: '11px', color: '#c0d8ff' }}>
+                <span>\u98de\u884c <b style={{ color: '#00ff7f' }}>{flyingCount}</b></span>
+                <span>\u5728\u7ebf <b style={{ color: '#3b82f6' }}>{onlineCount - flyingCount}</b></span>
+                <span>\u79bb\u7ebf <b style={{ color: '#64748b' }}>{offlineCount}</b></span>
+                <span>\u9ad8\u5ea6 <b style={{ color: '#a0cfff' }}>
+                  {minAlt === Infinity ? '0' : minAlt.toFixed(0)}-{maxAlt.toFixed(0)}m
+                </b></span>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: '13px', color: '#a0cfff', marginBottom: '4px' }}>
+              \u65e0\u4eba\u673a\u96c6\u7fa4 \u00b7 {drones.length} \u67b6
+            </div>
+            <div style={{ fontSize: '11px', color: '#64748b' }}>\u70b9\u51fb\u5de6\u4fa7\u673a\u961f\u5217\u8868\u9009\u62e9\u65e0\u4eba\u673a</div>
+          </>
+        )}
       </div>
 
-      {/* Right: Advanced Controls */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        <ControlBtn label="悬停" icon="hover" onClick={() => handleCmd('HOVER')} disabled={!hasDrones} />
-        <ControlBtn label="解锁" icon="arm" onClick={() => handleCmd('ARM')} disabled={!hasDrones} />
-        <ControlBtn label="锁定" icon="disarm" onClick={() => handleCmd('DISARM')} disabled={!hasDrones} color="#ff4d4f" />
+      {/* Right: Navigation Controls */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <ControlBtn label="\u6807\u8bb0Home" icon="home" onClick={() => handleCmd('SET_HOME')} disabled={!hasDrones} />
+        <ControlBtn label="\u8fd4\u822a" icon="return" onClick={() => handleCmd('RETURN')} disabled={!hasDrones} />
+        <ControlBtn label="\u524d\u5f80" icon="goto" onClick={() => handleCmd('GOTO')} disabled={!hasDrones} />
       </div>
     </div>
   );
@@ -102,8 +119,8 @@ function CmdIcon({ name }: { name: string }) {
     case 'land': return <svg {...s} viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>;
     case 'return': return <svg {...s} viewBox="0 0 24 24"><path d="M3 12a9 9 0 109-9"/><polyline points="3 3 3 12 12 12"/></svg>;
     case 'hover': return <svg {...s} viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>;
-    case 'arm': return <svg {...s} viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>;
-    case 'disarm': return <svg {...s} viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>;
+    case 'home': return <svg {...s} viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>;
+    case 'goto': return <svg {...s} viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>;
     default: return null;
   }
 }

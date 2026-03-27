@@ -24,15 +24,15 @@ export interface CesiumMapPanelProps {
 
 function getDroneColor(drone: MapDrone, isSelected: boolean): Cesium.Color {
   if (isSelected) return Cesium.Color.fromCssColorString('#f59e0b');
-  if (!drone.onlineStatus) return Cesium.Color.fromCssColorString('#64748b');
-  if (drone.armed) return Cesium.Color.fromCssColorString('#22c55e');
-  return Cesium.Color.fromCssColorString('#3b82f6');
+  if (!drone.onlineStatus) return Cesium.Color.fromCssColorString('#64748b'); // offline=gray
+  if (drone.armed) return Cesium.Color.fromCssColorString('#00ff7f'); // flying=green
+  return Cesium.Color.fromCssColorString('#3b82f6'); // unlocked=blue
 }
 
 function getDroneStatusText(drone: MapDrone): string {
   if (!drone.onlineStatus) return '离线';
-  if (drone.armed) return '已解锁';
-  return '未解锁';
+  if (drone.armed) return '飞行中';
+  return '已解锁';
 }
 
 export default function CesiumMapPanel({
@@ -49,6 +49,7 @@ export default function CesiumMapPanel({
   dronesRef.current = drones;
   const popupOverlayRef = useRef<HTMLDivElement | null>(null);
   const openPopupDroneRef = useRef<string | null>(null);
+  const infoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const onDroneClickRef = useRef(onDroneClick);
   const onMapClickRef = useRef(onMapClick);
@@ -64,6 +65,7 @@ export default function CesiumMapPanel({
   const closePopup = useCallback(() => {
     if (popupOverlayRef.current) popupOverlayRef.current.style.display = 'none';
     openPopupDroneRef.current = null;
+    if (infoTimerRef.current) { clearTimeout(infoTimerRef.current); infoTimerRef.current = null; }
   }, []);
 
   const showDronePopup = useCallback((drone: MapDrone) => {
@@ -72,7 +74,7 @@ export default function CesiumMapPanel({
     const overlay = popupOverlayRef.current;
     const isOnline = drone.onlineStatus === true;
     const isArmed = drone.armed === true;
-    const statusColor = !isOnline ? '#64748b' : isArmed ? '#22c55e' : '#3b82f6';
+    const statusColor = !isOnline ? '#64748b' : isArmed ? '#00ff7f' : '#3b82f6';
     const statusText = getDroneStatusText(drone);
     overlay.innerHTML = '<div style="background:linear-gradient(135deg,rgba(10,20,50,0.95),rgba(30,60,140,0.9));padding:12px;border-radius:8px;min-width:200px;color:white;font-family:system-ui,sans-serif;box-shadow:0 4px 20px rgba(0,0,0,0.3);border:1px solid rgba(82,168,255,0.4);">'
       + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;border-bottom:1px solid rgba(82,168,255,0.3);padding-bottom:8px;">'
@@ -93,6 +95,9 @@ export default function CesiumMapPanel({
     openPopupDroneRef.current = drone.uavId;
     const closeBtn = overlay.querySelector('[data-action="close"]');
     if (closeBtn) closeBtn.addEventListener('click', closePopup);
+    // Auto-close after 5 seconds
+    if (infoTimerRef.current) clearTimeout(infoTimerRef.current);
+    infoTimerRef.current = setTimeout(() => closePopup(), 5000);
     const entity = droneEntitiesRef.current.get(drone.uavId);
     if (entity && entity.position) {
       const pos = entity.position.getValue(viewer.clock.currentTime);

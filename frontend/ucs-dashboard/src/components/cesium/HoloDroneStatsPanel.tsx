@@ -14,7 +14,7 @@ interface HoloDroneStatsPanelProps {
   drones: MapDrone[];
 }
 
-type ChartMode = 'card' | 'bar' | 'pie';
+type ChartMode = 'card' | 'pie';
 
 export function HoloDroneStatsPanel({ drones }: HoloDroneStatsPanelProps) {
   const [chartMode, setChartMode] = useState<ChartMode>('card');
@@ -38,42 +38,7 @@ export function HoloDroneStatsPanel({ drones }: HoloDroneStatsPanelProps) {
     }
     const chart = chartInstanceRef.current;
 
-    if (mode === 'bar') {
-      chart.setOption({
-        backgroundColor: 'transparent',
-        tooltip: {
-          trigger: 'axis',
-          backgroundColor: 'rgba(8, 15, 42, 0.9)',
-          borderColor: 'rgba(82, 168, 255, 0.5)',
-          textStyle: { color: '#fff', fontSize: 11 },
-        },
-        grid: { top: 10, bottom: 20, left: 30, right: 10 },
-        xAxis: {
-          type: 'category',
-          data: ['在线', '飞行中', '离线', '低电量'],
-          axisLabel: { color: '#a0cfff', fontSize: 10 },
-          axisLine: { lineStyle: { color: 'rgba(82, 168, 255, 0.3)' } },
-        },
-        yAxis: {
-          type: 'value',
-          axisLabel: { color: '#a0cfff', fontSize: 10 },
-          splitLine: { lineStyle: { color: 'rgba(82, 168, 255, 0.1)' } },
-        },
-        series: [{
-          data: [stats.online, stats.flying, stats.offline, stats.lowBattery],
-          type: 'bar',
-          itemStyle: {
-            color: {
-              type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [
-                { offset: 0, color: '#52a8ff' },
-                { offset: 1, color: 'rgba(82, 168, 255, 0.3)' },
-              ],
-            },
-          },
-        }],
-      }, true);
-    } else if (mode === 'pie') {
+    if (mode === 'pie') {
       chart.setOption({
         backgroundColor: 'transparent',
         tooltip: {
@@ -125,23 +90,23 @@ export function HoloDroneStatsPanel({ drones }: HoloDroneStatsPanelProps) {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#52a8ff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
           态势总览
         </div>
-        <div style={{ display: 'flex', gap: '3px' }}>
-          {(['card', 'bar', 'pie'] as ChartMode[]).map(mode => (
+        <div style={{ display: 'flex', background: 'rgba(82, 168, 255, 0.1)', borderRadius: '10px', padding: '2px', border: '1px solid rgba(82, 168, 255, 0.3)' }}>
+          {(['card', 'pie'] as ChartMode[]).map(mode => (
             <button
               key={mode}
               onClick={() => setChartMode(mode)}
               style={{
-                padding: '2px 6px',
-                background: chartMode === mode ? 'rgba(82, 168, 255, 0.3)' : 'rgba(82, 168, 255, 0.1)',
-                border: `1px solid ${chartMode === mode ? '#52a8ff' : 'rgba(82, 168, 255, 0.3)'}`,
-                borderRadius: '3px',
+                padding: '2px 10px',
+                background: chartMode === mode ? 'rgba(82, 168, 255, 0.4)' : 'transparent',
+                border: 'none',
+                borderRadius: '8px',
                 fontSize: '10px',
                 color: chartMode === mode ? '#fff' : '#a0cfff',
                 cursor: 'pointer',
                 transition: 'all 0.2s',
               }}
             >
-              {mode === 'card' ? '卡片' : mode === 'bar' ? '柱状图' : '饼图'}
+              {mode === 'card' ? '数据' : '饼图'}
             </button>
           ))}
         </div>

@@ -122,6 +122,16 @@ export default function CommanderView({ token, username, partitions = [], onLogo
   // 地图选中的无人机
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
 
+  // 多选无人机状态 (Phase 6)
+  const [selectedDroneIdsSet, setSelectedDroneIdsSet] = useState<Set<string>>(new Set());
+  const toggleDroneMultiSelect = useCallback((uavId: string) => {
+    setSelectedDroneIdsSet(prev => {
+      const next = new Set(prev);
+      if (next.has(uavId)) next.delete(uavId); else next.add(uavId);
+      return next;
+    });
+  }, []);
+
   // ==================== Telemetry Buffer (no-flicker) ====================
   // Use useRef buffer + version counter instead of useState<Map> to avoid
   // per-message React re-renders. Only bump version at 10Hz from the hook's
@@ -526,7 +536,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
     const disarmed = mapDrones.filter(d => d.onlineStatus === true && d.armed !== true).length;
     const offline = mapDrones.filter(d => !d.onlineStatus).length;
     return [
-      { name: '飞行中', value: armed, color: '#22c55e' },
+      { name: '飞行中', value: armed, color: '#00ff7f' },
       { name: '在线未解锁', value: disarmed, color: '#3b82f6' },
       { name: '离线', value: offline, color: '#64748b' },
     ].filter(d => d.value > 0);
@@ -1235,7 +1245,9 @@ export default function CommanderView({ token, username, partitions = [], onLogo
         <HoloDashboard
           drones={mapDrones}
           selectedDroneId={selectedMapDrone}
+          selectedDroneIds={selectedDroneIdsSet}
           onDroneClick={setSelectedMapDrone}
+          onDroneToggleSelect={toggleDroneMultiSelect}
           logs={holoLogs}
           members={holoMembers}
           teams={teams}

@@ -20,6 +20,8 @@ export interface HoloWeatherInfo {
 interface HoloWeatherPanelProps {
   weather?: HoloWeatherInfo | null;
   drones?: MapDrone[];
+  selectedDroneId?: string | null;
+  selectedDroneIds?: Set<string>;
   onLocationChange?: (lat: number, lng: number) => void;
 }
 
@@ -28,7 +30,7 @@ const DEFAULT_WEATHER: HoloWeatherInfo = {
   visibility: 15, condition: '晴天', description: '适合飞行', locationName: '当前区域',
 };
 
-export function HoloWeatherPanel({ weather, drones = [], onLocationChange }: HoloWeatherPanelProps) {
+export function HoloWeatherPanel({ weather, drones = [], selectedDroneId, selectedDroneIds, onLocationChange }: HoloWeatherPanelProps) {
   const [localWeather, setLocalWeather] = useState<HoloWeatherInfo>(DEFAULT_WEATHER);
   const [locationName, setLocationName] = useState('定位中...');
   const [loading, setLoading] = useState(false);
@@ -66,36 +68,53 @@ export function HoloWeatherPanel({ weather, drones = [], onLocationChange }: Hol
     }
   }, []);
 
-  // Try to get location from drones or geolocation
+  // Throttle: only update weather every 30s
+  const lastUpdateTimeRef = useRef<number>(0);
+
+  // Try to get location from selected drones or all drones
   useEffect(() => {
-    // Priority 1: Use average drone position
-    const onlineDrones = drones.filter(d => d.lat != null && d.lng != null && d.onlineStatus);
-    if (onlineDrones.length > 0) {
-      const avgLat = onlineDrones.reduce((s, d) => s + (d.lat ?? 0), 0) / onlineDrones.length;
-      const avgLng = onlineDrones.reduce((s, d) => s + (d.lng ?? 0), 0) / onlineDrones.length;
-      setLocationName(`无人机区域 (${avgLat.toFixed(2)}, ${avgLng.toFixed(2)})`);
+    const now = Date.now();
+    if (now - lastUpdateTimeRef.current < 30000) return;
+    lastUpdateTimeRef.current = now;
+
+    // Priority 1: Use selected drone(s) position
+    let targetDrones: MapDrone[] = [];
+    if (selectedDroneIds && selectedDroneIds.size > 0) {
+      targetDrones = drones.filter(d => selectedDroneIds.has(d.uavId) && d.lat != null && d.lng != null);
+    } else if (selectedDroneId) {
+      targetDrones = drones.filter(d => d.uavId === selectedDroneId && d.lat != null && d.lng != null);
+    }
+
+    // Priority 2: Use all online drones
+    if (targetDrones.length === 0) {
+      targetDrones = drones.filter(d => d.lat != null && d.lng != null && d.onlineStatus);
+    }
+
+    if (targetDrones.length > 0) {
+      const avgLat = targetDrones.reduce((s, d) => s + (d.lat ?? 0), 0) / targetDrones.length;
+      const avgLng = targetDrones.reduce((s, d) => s + (d.lng ?? 0), 0) / targetDrones.length;
+      setLocationName(`\u65e0\u4eba\u673a\u533a\u57df (${avgLat.toFixed(2)}, ${avgLng.toFixed(2)})`);
       fetchWeather(avgLat, avgLng);
       onLocationChange?.(avgLat, avgLng);
       return;
     }
 
-    // Priority 2: Browser geolocation
+    // Priority 3: Browser geolocation
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          setLocationName(`当前位置 (${pos.coords.latitude.toFixed(2)}, ${pos.coords.longitude.toFixed(2)})`);
+          setLocationName(`\u5f53\u524d\u4f4d\u7f6e (${pos.coords.latitude.toFixed(2)}, ${pos.coords.longitude.toFixed(2)})`);
           fetchWeather(pos.coords.latitude, pos.coords.longitude);
           onLocationChange?.(pos.coords.latitude, pos.coords.longitude);
         },
         () => {
-          // Default to Beijing
-          setLocationName('北京 (默认)');
+          setLocationName('\u5317\u4eac (\u9ed8\u8ba4)');
           fetchWeather(39.9, 116.4);
         },
         { timeout: 5000 }
       );
     }
-  }, [drones, fetchWeather, onLocationChange]);
+  }, [drones, selectedDroneId, selectedDroneIds, fetchWeather, onLocationChange]);
 
   const data = weather || localWeather;
   const windOk = (data.windSpeed ?? 0) <= 6;
