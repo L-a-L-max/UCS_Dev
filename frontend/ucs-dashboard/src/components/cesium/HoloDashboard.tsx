@@ -210,8 +210,8 @@ function ConsolePanel({
   });
 
   const tabs = [
-    { key: 'fleet', label: '\u673a\u961f' }, { key: 'permission', label: '\u6743\u9650' },
-    { key: 'log', label: '\u65e5\u5fd7' }, { key: 'point', label: '\u96c6\u7ed3\u70b9' },
+    { key: 'fleet', label: '机队' }, { key: 'permission', label: '权限' },
+    { key: 'log', label: '日志' }, { key: 'point', label: '集结点' },
   ];
 
   const toggleTransferDrone = (uavId: string) => {
@@ -227,8 +227,8 @@ function ConsolePanel({
     setTransferTarget('');
   };
 
-  const SERVICE_LABELS: Record<number, string> = { 0: '\u505c\u673a', 1: '\u5145\u7535', 2: '\u7ef4\u4fee', 3: '\u8865\u7ed9' };
-  const STATUS_LABELS: Record<number, string> = { 0: '\u7981\u7528', 1: '\u542f\u7528', 2: '\u7ef4\u62a4\u4e2d' };
+  const SERVICE_LABELS: Record<number, string> = { 0: '停机', 1: '充电', 2: '维修', 3: '补给' };
+  const STATUS_LABELS: Record<number, string> = { 0: '禁用', 1: '启用', 2: '维护中' };
   const STATUS_COLORS: Record<number, string> = { 0: '#64748b', 1: '#00ff7f', 2: '#ffd700' };
 
   const openRpCreate = () => {
@@ -268,7 +268,7 @@ function ConsolePanel({
       <div style={{ flex: 1, overflowY: 'auto', paddingRight: '2px' }}>
         {consoleContent ? consoleContent : (<>
           {activeTab === 'fleet' && (<div>
-            {drones.length === 0 ? <div style={{ textAlign: 'center', color: '#a0cfff', fontSize: '12px', padding: '20px 0' }}>\u6682\u65e0\u65e0\u4eba\u673a\u6570\u636e</div>
+            {drones.length === 0 ? <div style={{ textAlign: 'center', color: '#a0cfff', fontSize: '12px', padding: '20px 0' }}>暂无无人机数据</div>
             : drones.map(drone => {
               const isSingleSel = drone.uavId === selectedDroneId;
               const isMultiSel = selectedDroneIds ? selectedDroneIds.has(drone.uavId) : false;
@@ -276,7 +276,7 @@ function ConsolePanel({
               const isOn = drone.onlineStatus === true;
               const isArm = drone.armed === true;
               const sc = !isOn ? '#64748b' : isArm ? '#00ff7f' : '#3b82f6';
-              const st = !isOn ? '\u79bb\u7ebf' : isArm ? '\u98de\u884c\u4e2d' : '\u5df2\u89e3\u9501';
+              const st = !isOn ? '离线' : isArm ? '飞行中' : '已解锁';
               return (<div key={drone.uavId} style={{
                 padding: '8px 10px', marginBottom: '4px', borderRadius: '4px', cursor: 'pointer',
                 background: isSel ? 'rgba(82,168,255,0.2)' : 'rgba(20,40,80,0.5)',
@@ -294,9 +294,9 @@ function ConsolePanel({
                       background: sc + '33', color: sc, border: '1px solid ' + sc + '66' }}>{st}</span>
                   </div>
                   <div style={{ display: 'flex', gap: '12px', fontSize: '11px', color: '#a0cfff' }}>
-                    {drone.battery != null && <span>\u7535\u91cf {drone.battery.toFixed(0)}%</span>}
-                    {drone.altitude != null && <span>\u9ad8\u5ea6 {drone.altitude.toFixed(1)}m</span>}
-                    {drone.owner && <span>\u64cd\u4f5c: {drone.owner}</span>}
+                    {drone.battery != null && <span>电量 {drone.battery.toFixed(0)}%</span>}
+                    {drone.altitude != null && <span>高度 {drone.altitude.toFixed(1)}m</span>}
+                    {drone.owner && <span>操作: {drone.owner}</span>}
                   </div>
                 </div>
               </div>);
@@ -304,25 +304,25 @@ function ConsolePanel({
           </div>)}
 
           {activeTab === 'permission' && (<div>
-            <div style={{ fontSize: '11px', color: '#a0cfff', marginBottom: '8px' }}>\u9009\u62e9\u65e0\u4eba\u673a\u8fdb\u884c\u6743\u9650\u8f6c\u79fb:</div>
+            <div style={{ fontSize: '11px', color: '#a0cfff', marginBottom: '8px' }}>选择无人机进行权限转移:</div>
             <div style={{ maxHeight: '120px', overflowY: 'auto', marginBottom: '8px' }}>
               {drones.map(d => (<label key={d.uavId} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 6px',
                 fontSize: '11px', color: '#c0d8ff', cursor: 'pointer', borderRadius: '3px',
                 background: transferUavIds.includes(d.uavId) ? 'rgba(82,168,255,0.15)' : 'transparent' }}>
                 <input type="checkbox" checked={transferUavIds.includes(d.uavId)} onChange={() => toggleTransferDrone(d.uavId)} style={{ accentColor: '#52a8ff' }} />
                 {d.uavId}
-                <span style={{ marginLeft: 'auto', fontSize: '10px', opacity: 0.7 }}>{d.onlineStatus ? (d.armed ? '\u98de\u884c\u4e2d' : '\u5728\u7ebf') : '\u79bb\u7ebf'}</span>
+                <span style={{ marginLeft: 'auto', fontSize: '10px', opacity: 0.7 }}>{d.onlineStatus ? (d.armed ? '飞行中' : '在线') : '离线'}</span>
               </label>))}
             </div>
             <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
               {(['team', 'user'] as const).map(m => (<button key={m} onClick={() => setTransferMode(m)} style={{
                 flex: 1, padding: '3px 0', borderRadius: '3px', fontSize: '10px', cursor: 'pointer',
-                ...(transferMode === m ? TAB_ACTIVE : TAB_INACTIVE) }}>{m === 'team' ? '\u8f6c\u7ed9\u56e2\u961f' : '\u8f6c\u7ed9\u7528\u6237'}</button>))}
+                ...(transferMode === m ? TAB_ACTIVE : TAB_INACTIVE) }}>{m === 'team' ? '转给团队' : '转给用户'}</button>))}
             </div>
             <select value={transferTarget} onChange={e => setTransferTarget(e.target.value)} style={{
               width: '100%', padding: '4px 6px', background: 'rgba(20,40,80,0.8)',
               border: '1px solid rgba(60,120,220,0.4)', borderRadius: '4px', color: '#c0d8ff', fontSize: '11px', marginBottom: '6px' }}>
-              <option value="">{transferMode === 'team' ? '\u9009\u62e9\u76ee\u6807\u56e2\u961f...' : '\u9009\u62e9\u76ee\u6807\u7528\u6237...'}</option>
+              <option value="">{transferMode === 'team' ? '选择目标团队...' : '选择目标用户...'}</option>
               {transferMode === 'team'
                 ? teams.map(t => <option key={t.teamId} value={t.teamId}>{t.teamName} ({t.leader})</option>)
                 : registeredUsers.filter(u => u.role !== 'OBSERVER').map(u => <option key={u.userId} value={u.userId}>{u.realName || u.username} ({u.role})</option>)}
@@ -333,7 +333,7 @@ function ConsolePanel({
                 border: '1px solid #52a8ff', color: '#fff',
                 cursor: transferUavIds.length > 0 && transferTarget ? 'pointer' : 'not-allowed',
                 opacity: transferUavIds.length > 0 && transferTarget ? 1 : 0.5 }}>
-              \u786e\u8ba4\u8f6c\u79fb ({transferUavIds.length} \u67b6)
+              确认转移 ({transferUavIds.length} 架)
             </button>
           </div>)}
 
@@ -346,11 +346,11 @@ function ConsolePanel({
                 }}
                   style={{ padding: '2px 6px', borderRadius: '3px', fontSize: '10px', cursor: 'pointer',
                     ...(localLogFilter === f ? TAB_ACTIVE : TAB_INACTIVE) }}>
-                  {f === 'ALL' ? '\u5168\u90e8' : f === 'CONTROL_COMMAND' ? '\u63a7\u5236' : f === 'PERMISSION_TRANSFER' ? '\u6743\u9650' : '\u6279\u91cf'}
+                  {f === 'ALL' ? '全部' : f === 'CONTROL_COMMAND' ? '控制' : f === 'PERMISSION_TRANSFER' ? '权限' : '批量'}
                 </button>))}
             </div>
-            {logLoading ? <div style={{ textAlign: 'center', color: '#52a8ff', fontSize: '11px', padding: '12px' }}>\u52a0\u8f7d\u4e2d...</div>
-            : logs.length === 0 ? <div style={{ textAlign: 'center', color: '#a0cfff', fontSize: '11px', padding: '12px' }}>\u6682\u65e0\u65e5\u5fd7</div>
+            {logLoading ? <div style={{ textAlign: 'center', color: '#52a8ff', fontSize: '11px', padding: '12px' }}>加载中...</div>
+            : logs.length === 0 ? <div style={{ textAlign: 'center', color: '#a0cfff', fontSize: '11px', padding: '12px' }}>暂无日志</div>
             : logs.map(log => (<div key={log.id} style={{ padding: '6px 8px', marginBottom: '3px', borderRadius: '3px', fontSize: '11px',
               background: 'rgba(20,40,80,0.5)', borderLeft: '2px solid ' + (log.level === 'error' ? '#ff4d4f' : log.level === 'success' ? '#00ff7f' : '#52a8ff') }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
@@ -358,46 +358,46 @@ function ConsolePanel({
                 {log.result && (<span style={{ padding: '0 4px', borderRadius: '2px', fontSize: '9px',
                   background: log.result === 'SUCCESS' ? 'rgba(0,255,127,0.2)' : 'rgba(255,77,79,0.2)',
                   color: log.result === 'SUCCESS' ? '#00ff7f' : '#ff4d4f' }}>
-                  {log.result === 'SUCCESS' ? '\u6210\u529f' : '\u5931\u8d25'}</span>)}
+                  {log.result === 'SUCCESS' ? '成功' : '失败'}</span>)}
               </div>
               <div style={{ color: '#c0d8ff' }}>{log.detail || log.message}</div>
-              {log.operatorName && <div style={{ fontSize: '10px', color: '#a0cfff', marginTop: '2px' }}>\u64cd\u4f5c\u5458: {log.operatorName}</div>}
+              {log.operatorName && <div style={{ fontSize: '10px', color: '#a0cfff', marginTop: '2px' }}>操作员: {log.operatorName}</div>}
             </div>))}
             {logTotalPages > 1 && (<div style={{ display: 'flex', justifyContent: 'center', gap: '8px', marginTop: '8px', alignItems: 'center' }}>
               <button onClick={() => onFetchLogs?.(Math.max(0, logPage - 1), localLogFilter)} disabled={logPage === 0}
-                style={{ padding: '2px 8px', fontSize: '10px', borderRadius: '3px', cursor: logPage > 0 ? 'pointer' : 'not-allowed', ...TAB_INACTIVE, opacity: logPage > 0 ? 1 : 0.5 }}>\u4e0a\u4e00\u9875</button>
+                style={{ padding: '2px 8px', fontSize: '10px', borderRadius: '3px', cursor: logPage > 0 ? 'pointer' : 'not-allowed', ...TAB_INACTIVE, opacity: logPage > 0 ? 1 : 0.5 }}>上一页</button>
               <span style={{ fontSize: '10px', color: '#a0cfff' }}>{logPage + 1} / {logTotalPages}</span>
               <button onClick={() => onFetchLogs?.(Math.min(logTotalPages - 1, logPage + 1), localLogFilter)} disabled={logPage >= logTotalPages - 1}
-                style={{ padding: '2px 8px', fontSize: '10px', borderRadius: '3px', cursor: logPage < logTotalPages - 1 ? 'pointer' : 'not-allowed', ...TAB_INACTIVE, opacity: logPage < logTotalPages - 1 ? 1 : 0.5 }}>\u4e0b\u4e00\u9875</button>
+                style={{ padding: '2px 8px', fontSize: '10px', borderRadius: '3px', cursor: logPage < logTotalPages - 1 ? 'pointer' : 'not-allowed', ...TAB_INACTIVE, opacity: logPage < logTotalPages - 1 ? 1 : 0.5 }}>下一页</button>
             </div>)}
           </div>)}
 
           {activeTab === 'point' && (<div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <span style={{ fontSize: '11px', color: '#a0cfff' }}>\u96c6\u7ed3\u70b9\u5217\u8868</span>
+              <span style={{ fontSize: '11px', color: '#a0cfff' }}>集结点列表</span>
               <button onClick={openRpCreate} style={{ padding: '2px 8px', borderRadius: '3px', fontSize: '10px', cursor: 'pointer',
-                background: 'rgba(82,168,255,0.2)', border: '1px solid rgba(82,168,255,0.4)', color: '#52a8ff' }}>+ \u65b0\u589e</button>
+                background: 'rgba(82,168,255,0.2)', border: '1px solid rgba(82,168,255,0.4)', color: '#52a8ff' }}>+ 新增</button>
             </div>
-            {rallyPoints.length === 0 ? <div style={{ textAlign: 'center', color: '#a0cfff', fontSize: '12px', padding: '20px 0' }}>\u6682\u65e0\u96c6\u7ed3\u70b9</div>
+            {rallyPoints.length === 0 ? <div style={{ textAlign: 'center', color: '#a0cfff', fontSize: '12px', padding: '20px 0' }}>暂无集结点</div>
             : rallyPoints.map(rp => (<div key={rp.id} style={{ padding: '8px 10px', marginBottom: '4px', borderRadius: '4px',
               background: 'rgba(20,40,80,0.5)', border: '1px solid rgba(60,120,220,0.2)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                 <span style={{ color: '#fff', fontSize: '12px', fontWeight: 600 }}>{rp.name}</span>
                 <div style={{ display: 'flex', gap: '4px' }}>
                   <span style={{ padding: '1px 4px', borderRadius: '2px', fontSize: '9px',
-                    background: (STATUS_COLORS[rp.status] || '#64748b') + '33', color: STATUS_COLORS[rp.status] || '#64748b' }}>{STATUS_LABELS[rp.status] || '\u672a\u77e5'}</span>
+                    background: (STATUS_COLORS[rp.status] || '#64748b') + '33', color: STATUS_COLORS[rp.status] || '#64748b' }}>{STATUS_LABELS[rp.status] || '未知'}</span>
                   <span style={{ padding: '1px 4px', borderRadius: '2px', fontSize: '9px', background: 'rgba(82,168,255,0.15)', color: '#a0cfff' }}>
-                    {SERVICE_LABELS[rp.serviceType] || '\u672a\u77e5'}</span>
+                    {SERVICE_LABELS[rp.serviceType] || '未知'}</span>
                 </div>
               </div>
               <div style={{ fontSize: '10px', color: '#a0cfff', marginBottom: '4px' }}>
-                \u5bb9\u91cf: {rp.currentOccupancy}/{rp.capacity} | \u5750\u6807: {rp.latitude.toFixed(4)}, {rp.longitude.toFixed(4)}
+                容量: {rp.currentOccupancy}/{rp.capacity} | 坐标: {rp.latitude.toFixed(4)}, {rp.longitude.toFixed(4)}
               </div>
               <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
                 <button onClick={() => openRpEditDialog(rp)} style={{ padding: '1px 6px', borderRadius: '2px', fontSize: '9px', cursor: 'pointer',
-                  background: 'rgba(82,168,255,0.15)', border: '1px solid rgba(82,168,255,0.3)', color: '#52a8ff' }}>\u7f16\u8f91</button>
+                  background: 'rgba(82,168,255,0.15)', border: '1px solid rgba(82,168,255,0.3)', color: '#52a8ff' }}>编辑</button>
                 <button onClick={() => onRallyPointDelete?.(rp.id)} style={{ padding: '1px 6px', borderRadius: '2px', fontSize: '9px', cursor: 'pointer',
-                  background: 'rgba(255,77,79,0.15)', border: '1px solid rgba(255,77,79,0.3)', color: '#ff4d4f' }}>\u5220\u9664</button>
+                  background: 'rgba(255,77,79,0.15)', border: '1px solid rgba(255,77,79,0.3)', color: '#ff4d4f' }}>删除</button>
               </div>
             </div>))}
           </div>)}
@@ -428,36 +428,36 @@ function RallyPointDialog({ isEdit, form, onFormChange, onSubmit, onClose }: {
         borderRadius: '8px', padding: '16px', width: '300px', maxHeight: '80vh', overflowY: 'auto',
         boxShadow: '0 0 20px rgba(82,168,255,0.2)' }}>
         <div style={{ fontSize: '14px', color: '#fff', fontWeight: 600, marginBottom: '12px' }}>
-          {isEdit ? '\u7f16\u8f91\u96c6\u7ed3\u70b9' : '\u65b0\u589e\u96c6\u7ed3\u70b9'}
+          {isEdit ? '编辑集结点' : '新增集结点'}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <div><label style={labelStyle}>\u540d\u79f0 *</label>
-            <input style={inputStyle} value={form.name} onChange={e => onFormChange({ ...form, name: e.target.value })} placeholder="\u96c6\u7ed3\u70b9\u540d\u79f0" /></div>
+          <div><label style={labelStyle}>名称 *</label>
+            <input style={inputStyle} value={form.name} onChange={e => onFormChange({ ...form, name: e.target.value })} placeholder="集结点名称" /></div>
           <div style={{ display: 'flex', gap: '8px' }}>
-            <div style={{ flex: 1 }}><label style={labelStyle}>\u7eac\u5ea6 *</label>
+            <div style={{ flex: 1 }}><label style={labelStyle}>纬度 *</label>
               <input style={inputStyle} type="number" step="0.0001" value={form.latitude} onChange={e => onFormChange({ ...form, latitude: e.target.value })} placeholder="39.9042" /></div>
-            <div style={{ flex: 1 }}><label style={labelStyle}>\u7ecf\u5ea6 *</label>
+            <div style={{ flex: 1 }}><label style={labelStyle}>经度 *</label>
               <input style={inputStyle} type="number" step="0.0001" value={form.longitude} onChange={e => onFormChange({ ...form, longitude: e.target.value })} placeholder="116.4074" /></div>
           </div>
-          <div><label style={labelStyle}>\u5bb9\u91cf</label>
+          <div><label style={labelStyle}>容量</label>
             <input style={inputStyle} type="number" value={form.capacity} onChange={e => onFormChange({ ...form, capacity: e.target.value })} /></div>
           <div style={{ display: 'flex', gap: '8px' }}>
-            <div style={{ flex: 1 }}><label style={labelStyle}>\u72b6\u6001</label>
+            <div style={{ flex: 1 }}><label style={labelStyle}>状态</label>
               <select style={inputStyle} value={form.status} onChange={e => onFormChange({ ...form, status: parseInt(e.target.value) })}>
-                <option value={0}>\u7981\u7528</option><option value={1}>\u542f\u7528</option><option value={2}>\u7ef4\u62a4\u4e2d</option>
+                <option value={0}>禁用</option><option value={1}>启用</option><option value={2}>维护中</option>
               </select></div>
-            <div style={{ flex: 1 }}><label style={labelStyle}>\u670d\u52a1\u7c7b\u578b</label>
+            <div style={{ flex: 1 }}><label style={labelStyle}>服务类型</label>
               <select style={inputStyle} value={form.serviceType} onChange={e => onFormChange({ ...form, serviceType: parseInt(e.target.value) })}>
-                <option value={0}>\u505c\u673a</option><option value={1}>\u5145\u7535</option><option value={2}>\u7ef4\u4fee</option><option value={3}>\u8865\u7ed9</option>
+                <option value={0}>停机</option><option value={1}>充电</option><option value={2}>维修</option><option value={3}>补给</option>
               </select></div>
           </div>
         </div>
         <div style={{ display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'flex-end' }}>
           <button onClick={onClose} style={{ padding: '4px 12px', borderRadius: '4px', fontSize: '11px',
-            background: 'rgba(20,40,80,0.8)', border: '1px solid rgba(60,120,220,0.4)', color: '#a0cfff', cursor: 'pointer' }}>\u53d6\u6d88</button>
+            background: 'rgba(20,40,80,0.8)', border: '1px solid rgba(60,120,220,0.4)', color: '#a0cfff', cursor: 'pointer' }}>取消</button>
           <button onClick={onSubmit} style={{ padding: '4px 12px', borderRadius: '4px', fontSize: '11px',
             background: '#52a8ff', border: '1px solid #52a8ff', color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
-            {isEdit ? '\u4fdd\u5b58' : '\u521b\u5efa'}</button>
+            {isEdit ? '保存' : '创建'}</button>
         </div>
       </div>
     </div>

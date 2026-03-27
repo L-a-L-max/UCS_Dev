@@ -41,9 +41,9 @@ export function HoloDroneControlPanel({
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', height: '100%' }}>
       {/* Left: Basic Controls */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-        <ControlBtn label="\u8d77\u98de" icon="takeoff" onClick={() => handleCmd('TAKEOFF')} disabled={!hasDrones} />
-        <ControlBtn label="\u964d\u843d" icon="land" onClick={() => handleCmd('LAND')} disabled={!hasDrones} />
-        <ControlBtn label="\u60ac\u505c" icon="hover" onClick={() => handleCmd('HOVER')} disabled={!hasDrones} />
+        <ControlBtn label="起飞" icon="takeoff" onClick={() => handleCmd('TAKEOFF')} disabled={!hasDrones} />
+        <ControlBtn label="降落" icon="land" onClick={() => handleCmd('LAND')} disabled={!hasDrones} />
+        <ControlBtn label="悬停" icon="hover" onClick={() => handleCmd('HOVER')} disabled={!hasDrones} />
       </div>
 
       {/* Center: Drone info */}
@@ -51,21 +51,21 @@ export function HoloDroneControlPanel({
         {hasSelection ? (
           <>
             <div style={{ fontSize: '14px', color: '#52a8ff', marginBottom: '4px', fontWeight: 600 }}>
-              \u5df2\u9009\u4e2d {selectedDrones.length} \u67b6\u65e0\u4eba\u673a
+              已选中 {selectedDrones.length} 架无人机
             </div>
             {selectedDrones.length === 1 ? (
               <div style={{ fontSize: '11px', color: '#c0d8ff', lineHeight: 1.6 }}>
                 <div>ID: <b style={{ color: '#fff' }}>{selectedDrones[0].uavId}</b></div>
-                <div>\u64cd\u4f5c\u5458: {selectedDrones[0].owner || '\u672a\u5206\u914d'}</div>
-                <div>\u5750\u6807: {selectedDrones[0].lat?.toFixed(4) ?? '--'}, {selectedDrones[0].lng?.toFixed(4) ?? '--'}</div>
-                <div>\u9ad8\u5ea6: {selectedDrones[0].altitude?.toFixed(1) ?? '--'}m</div>
+                <div>操作员: {selectedDrones[0].owner || '未分配'}</div>
+                <div>坐标: {selectedDrones[0].lat?.toFixed(4) ?? '--'}, {selectedDrones[0].lng?.toFixed(4) ?? '--'}</div>
+                <div>高度: {selectedDrones[0].altitude?.toFixed(1) ?? '--'}m</div>
               </div>
             ) : (
               <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', fontSize: '11px', color: '#c0d8ff' }}>
-                <span>\u98de\u884c <b style={{ color: '#00ff7f' }}>{flyingCount}</b></span>
-                <span>\u5728\u7ebf <b style={{ color: '#3b82f6' }}>{onlineCount - flyingCount}</b></span>
-                <span>\u79bb\u7ebf <b style={{ color: '#64748b' }}>{offlineCount}</b></span>
-                <span>\u9ad8\u5ea6 <b style={{ color: '#a0cfff' }}>
+                <span>飞行 <b style={{ color: '#00ff7f' }}>{flyingCount}</b></span>
+                <span>在线 <b style={{ color: '#3b82f6' }}>{onlineCount - flyingCount}</b></span>
+                <span>离线 <b style={{ color: '#64748b' }}>{offlineCount}</b></span>
+                <span>高度 <b style={{ color: '#a0cfff' }}>
                   {minAlt === Infinity ? '0' : minAlt.toFixed(0)}-{maxAlt.toFixed(0)}m
                 </b></span>
               </div>
@@ -74,18 +74,18 @@ export function HoloDroneControlPanel({
         ) : (
           <>
             <div style={{ fontSize: '13px', color: '#a0cfff', marginBottom: '4px' }}>
-              \u65e0\u4eba\u673a\u96c6\u7fa4 \u00b7 {drones.length} \u67b6
+              无人机集群 · {drones.length} 架
             </div>
-            <div style={{ fontSize: '11px', color: '#64748b' }}>\u70b9\u51fb\u5de6\u4fa7\u673a\u961f\u5217\u8868\u9009\u62e9\u65e0\u4eba\u673a</div>
+            <div style={{ fontSize: '11px', color: '#64748b' }}>点击左侧机队列表选择无人机</div>
           </>
         )}
       </div>
 
       {/* Right: Navigation Controls */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-        <ControlBtn label="\u6807\u8bb0Home" icon="home" onClick={() => handleCmd('SET_HOME')} disabled={!hasDrones} />
-        <ControlBtn label="\u8fd4\u822a" icon="return" onClick={() => handleCmd('RETURN')} disabled={!hasDrones} />
-        <ControlBtn label="\u524d\u5f80" icon="goto" onClick={() => handleCmd('GOTO')} disabled={!hasDrones} />
+        <ControlBtn label="标记Home" icon="home" onClick={() => handleCmd('SET_HOME')} disabled={!hasDrones} />
+        <ControlBtn label="返航" icon="return" onClick={() => handleCmd('RETURN')} disabled={!hasDrones} />
+        <ControlBtn label="前往" icon="goto" onClick={() => handleCmd('GOTO')} disabled={!hasDrones} />
       </div>
     </div>
   );
