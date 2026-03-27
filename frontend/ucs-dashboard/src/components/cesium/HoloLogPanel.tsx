@@ -8,9 +8,12 @@ import { useEffect, useRef } from 'react';
 export interface LogEntry {
   id: string | number;
   time: string;
-  detail: string;
+  message?: string;
+  detail?: string;
   result?: string;
   level?: 'info' | 'warn' | 'error' | 'success';
+  operatorName?: string;
+  operationType?: string;
 }
 
 interface HoloLogPanelProps {
@@ -62,17 +65,20 @@ export function HoloLogPanel({ logs, maxVisible = 4 }: HoloLogPanelProps) {
               color: '#c0d8ff',
             }}
           >
-            <span style={{ color: '#52a8ff', marginRight: '8px' }}>{log.time}</span>
-            {log.detail}
-            {log.result && (
-              <span style={{
-                marginLeft: '6px',
-                fontSize: '10px',
-                color: log.result === 'SUCCESS' ? '#00ff7f' : log.result === 'FAILURE' || log.result === 'FAILED' ? '#ff4d4f' : '#a0cfff',
-              }}>
-                [{log.result === 'SUCCESS' ? '成功' : log.result === 'FAILURE' || log.result === 'FAILED' ? '失败' : log.result}]
-              </span>
-            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ color: '#52a8ff', flexShrink: 0 }}>{log.time}</span>
+              {log.operatorName && <span style={{ color: '#ffd700', fontSize: '10px', flexShrink: 0 }}>[{log.operatorName}]</span>}
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{log.detail || log.message}</span>
+              {log.result && (
+                <span style={{
+                  flexShrink: 0, padding: '0 3px', borderRadius: '2px', fontSize: '9px',
+                  background: log.result === 'SUCCESS' ? 'rgba(0,255,127,0.15)' : 'rgba(255,77,79,0.15)',
+                  color: log.result === 'SUCCESS' ? '#00ff7f' : log.result === 'FAILURE' || log.result === 'FAILED' ? '#ff4d4f' : '#a0cfff',
+                }}>
+                  {log.result === 'SUCCESS' ? '成功' : log.result === 'FAILURE' || log.result === 'FAILED' ? '失败' : log.result}
+                </span>
+              )}
+            </div>
           </div>
         ))}
       </div>

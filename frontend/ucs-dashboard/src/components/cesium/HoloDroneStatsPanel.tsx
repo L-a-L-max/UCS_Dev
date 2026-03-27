@@ -122,7 +122,8 @@ export function HoloDroneStatsPanel({ drones }: HoloDroneStatsPanelProps) {
       {/* Header with switch buttons */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
         <div style={{ fontSize: '12px', color: '#a0cfff', display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span>📊</span> 无人机态势
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#52a8ff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          态势总览
         </div>
         <div style={{ display: 'flex', gap: '3px' }}>
           {(['card', 'bar', 'pie'] as ChartMode[]).map(mode => (

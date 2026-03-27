@@ -543,8 +543,11 @@ export default function CommanderView({ token, username, partitions = [], onLogo
     id: String(log.id),
     time: formatTime(log.createdAt),
     message: log.detail || log.operationType || '操作',
+    detail: log.detail || log.operationType || '操作',
     level: log.result === 'SUCCESS' ? 'success' as const : log.result === 'FAIL' ? 'error' as const : 'info' as const,
     result: log.result,
+    operatorName: log.username,
+    operationType: log.operationType,
   }));
 
   // 成员数据用于全息面板
@@ -1235,6 +1238,50 @@ export default function CommanderView({ token, username, partitions = [], onLogo
           onDroneClick={setSelectedMapDrone}
           logs={holoLogs}
           members={holoMembers}
+          teams={teams}
+          teamMembers={teamMembers}
+          rallyPoints={mapRallyPoints}
+          registeredUsers={registeredUsers}
+          logPage={logPage}
+          logTotalPages={logTotalPages}
+          logFilter={logFilter}
+          logLoading={logLoading}
+          onCommand={(cmd, uavIds) => {
+            if (uavIds && uavIds.length > 0) {
+              import('@/services/api').then(api => {
+                if (uavIds.length === 1) {
+                  api.sendControlCommand(token, { uavId: uavIds[0], command: cmd });
+                } else {
+                  api.sendBatchControlCommand(token, { uavIds, command: cmd });
+                }
+                fetchLogs(logPage, logFilter);
+              });
+            }
+          }}
+          onTransferPermission={(uavIds, toUserId, toTeamId, mode) => {
+            if (mode === 'team' && toTeamId) {
+              transferPermissionToTeam(token, uavIds, toTeamId).then(res => {
+                if (res.code === 0) { fetchFleet(); fetchTeams(); fetchLogs(0, logFilter); }
+              });
+            } else if (mode === 'user' && toUserId) {
+              transferPermission(token, { uavIds, toUserId, reason: '全息模式转接' }).then(res => {
+                if (res.code === 0) { fetchFleet(); fetchTeams(); fetchLogs(0, logFilter); }
+              });
+            }
+          }}
+          onFetchLogs={(page, filter) => {
+            setLogFilter(filter);
+            fetchLogs(page, filter);
+          }}
+          onTeamExpand={(teamId) => {
+            if (!teamMembers[teamId]) fetchMembers(teamId);
+          }}
+          onRallyPointCreate={() => openRpEdit()}
+          onRallyPointEdit={(rp) => {
+            const full = rallyPoints.find(r => r.id === rp.id);
+            if (full) openRpEdit(full);
+          }}
+          onRallyPointDelete={handleRpDelete}
           onClose={() => setHoloMode(false)}
         />
       )}

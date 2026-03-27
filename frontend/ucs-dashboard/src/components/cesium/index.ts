@@ -16,5 +16,5 @@ export { HoloChinaRadar } from './HoloChinaRadar';
 export { HoloMemberPanel } from './HoloMemberPanel';
 export { HoloWeatherPanel } from './HoloWeatherPanel';
 export { default as HoloDashboard } from './HoloDashboard';
-export type { HoloDashboardProps, HoloTeamMember, HoloWeatherInfo } from './HoloDashboard';
+export type { HoloDashboardProps, HoloTeam, HoloTeamMember, HoloWeatherInfo } from './HoloDashboard';
 export type { LogEntry } from './HoloLogPanel';
