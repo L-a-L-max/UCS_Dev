@@ -1,7 +1,8 @@
 /**
- * Holographic China Radar Panel
- * Top-right corner - shows China map silhouette with drone positions
- * Different colored dots for online/offline/flying status
+ * Holographic Radar Panel - Phase 4
+ * Circular radar with concentric rings, rotating scan line, 
+ * and drone position dots (only flying=green, lowBattery=red)
+ * Matches HTML prototype radar-box style
  */
 import { useRef, useEffect, useCallback } from 'react';
 import type { MapDrone } from '../MapPanel';
@@ -11,54 +12,31 @@ interface HoloChinaRadarProps {
   size?: number;
 }
 
-// Simplified China map outline (rooster silhouette) as SVG path data
-// Normalized to 0-100 coordinate space
-const CHINA_OUTLINE_POINTS = [
-  // Northeast
-  [73, 10], [76, 8], [79, 6], [82, 5], [85, 7], [87, 10], [89, 13],
-  [91, 11], [93, 9], [95, 12], [96, 15], [94, 18], [92, 20],
-  // East coast
-  [93, 22], [94, 25], [93, 28], [95, 30], [94, 33], [93, 36],
-  [94, 38], [93, 41], [91, 44], [90, 47], [88, 50], [87, 53],
-  // Southeast
-  [86, 56], [85, 59], [83, 62], [82, 64], [80, 66], [78, 68],
-  // Hainan
-  [77, 70], [76, 72], [75, 70],
-  // South coast
-  [73, 67], [71, 65], [69, 63], [67, 62], [65, 61],
-  // Southwest
-  [63, 63], [61, 65], [59, 67], [57, 66], [55, 64], [53, 63],
-  [51, 62], [49, 61], [47, 60], [45, 58],
-  // West (Tibet)
-  [42, 56], [39, 54], [36, 52], [33, 50], [30, 48],
-  // Northwest
-  [27, 45], [24, 42], [22, 39], [20, 36], [18, 33],
-  [16, 30], [15, 27], [14, 24], [15, 21], [17, 18],
-  // North
-  [20, 16], [23, 14], [26, 13], [30, 12], [34, 11],
-  [38, 10], [42, 9], [46, 8], [50, 8], [54, 9],
-  [58, 9], [62, 8], [66, 9], [70, 10], [73, 10],
-];
-
-// China geographic bounds for mapping lat/lng to canvas
-const CHINA_BOUNDS = {
+// Geographic bounds for mapping coordinates
+const GEO_BOUNDS = {
   minLng: 73.5,
   maxLng: 135.0,
   minLat: 18.0,
   maxLat: 53.5,
 };
 
-export function HoloChinaRadar({ drones, size = 180 }: HoloChinaRadarProps) {
+export function HoloChinaRadar({ drones, size = 160 }: HoloChinaRadarProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number>(0);
   const scanAngleRef = useRef(0);
 
-  // Map drone lat/lng to canvas position
-  const mapToCanvas = useCallback((lng: number, lat: number, w: number, h: number) => {
-    const padding = 15;
-    const x = padding + ((lng - CHINA_BOUNDS.minLng) / (CHINA_BOUNDS.maxLng - CHINA_BOUNDS.minLng)) * (w - padding * 2);
-    const y = padding + ((CHINA_BOUNDS.maxLat - lat) / (CHINA_BOUNDS.maxLat - CHINA_BOUNDS.minLat)) * (h - padding * 2);
-    return { x, y };
+  const mapToCanvas = useCallback((lng: number, lat: number, r: number) => {
+    const cx = r;
+    const cy = r;
+    // Map to radar circle area (with some padding)
+    const padding = r * 0.15;
+    const effectiveR = r - padding;
+    const nx = ((lng - GEO_BOUNDS.minLng) / (GEO_BOUNDS.maxLng - GEO_BOUNDS.minLng)) * 2 - 1;
+    const ny = ((GEO_BOUNDS.maxLat - lat) / (GEO_BOUNDS.maxLat - GEO_BOUNDS.minLat)) * 2 - 1;
+    return {
+      x: cx + nx * effectiveR * 0.8,
+      y: cy + ny * effectiveR * 0.8,
+    };
   }, []);
 
   useEffect(() => {
@@ -68,131 +46,129 @@ export function HoloChinaRadar({ drones, size = 180 }: HoloChinaRadarProps) {
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
+    const canvasSize = size;
+    canvas.width = canvasSize * dpr;
+    canvas.height = canvasSize * dpr;
     ctx.scale(dpr, dpr);
 
+    const r = canvasSize / 2;
+
     const draw = () => {
-      ctx.clearRect(0, 0, size, size);
+      ctx.clearRect(0, 0, canvasSize, canvasSize);
 
-      // Background
-      ctx.fillStyle = 'rgba(5, 10, 25, 0.3)';
-      ctx.fillRect(0, 0, size, size);
-
-      // Draw China map outline
+      // Circular background
       ctx.beginPath();
-      const padding = 15;
-      CHINA_OUTLINE_POINTS.forEach((pt, i) => {
-        const x = padding + (pt[0] / 100) * (size - padding * 2);
-        const y = padding + (pt[1] / 100) * (size - padding * 2);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.closePath();
-
-      // Fill China silhouette
-      ctx.fillStyle = 'rgba(0, 229, 255, 0.05)';
+      ctx.arc(r, r, r - 1, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(10, 20, 50, 0.9)';
       ctx.fill();
-
-      // China outline stroke
-      ctx.strokeStyle = 'rgba(0, 229, 255, 0.3)';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(82, 168, 255, 0.3)';
+      ctx.lineWidth = 2;
       ctx.stroke();
 
-      // Rotating scan line
-      scanAngleRef.current += 0.02;
-      const centerX = size / 2;
-      const centerY = size / 2;
-      const scanLen = size * 0.6;
-      const scanEndX = centerX + Math.cos(scanAngleRef.current) * scanLen;
-      const scanEndY = centerY + Math.sin(scanAngleRef.current) * scanLen;
+      // Concentric rings (3 levels)
+      const ringAlpha = 'rgba(82, 168, 255, 0.2)';
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = ringAlpha;
 
-      const scanGrad = ctx.createLinearGradient(centerX, centerY, scanEndX, scanEndY);
-      scanGrad.addColorStop(0, 'rgba(0, 229, 255, 0.15)');
-      scanGrad.addColorStop(1, 'rgba(0, 229, 255, 0)');
+      // Ring 1 (outer) - already drawn as border
+      // Ring 2 (70%)
       ctx.beginPath();
-      ctx.moveTo(centerX, centerY);
+      ctx.arc(r, r, r * 0.7, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Ring 3 (40%)
+      ctx.beginPath();
+      ctx.arc(r, r, r * 0.4, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Cross lines
+      ctx.beginPath();
+      ctx.moveTo(r, 0);
+      ctx.lineTo(r, canvasSize);
+      ctx.moveTo(0, r);
+      ctx.lineTo(canvasSize, r);
+      ctx.strokeStyle = 'rgba(82, 168, 255, 0.1)';
+      ctx.stroke();
+
+      // Rotating scan sweep (conic gradient simulation)
+      scanAngleRef.current += 0.025;
+      const angle = scanAngleRef.current;
+
+      // Draw scan sweep arc
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(r, r, r - 2, 0, Math.PI * 2);
+      ctx.clip();
+
+      ctx.beginPath();
+      ctx.moveTo(r, r);
+      ctx.arc(r, r, r, angle - 0.8, angle, false);
+      ctx.closePath();
+      const scanGrad = ctx.createRadialGradient(r, r, 0, r, r, r);
+      scanGrad.addColorStop(0, 'rgba(82, 168, 255, 0.25)');
+      scanGrad.addColorStop(1, 'rgba(82, 168, 255, 0.02)');
+      ctx.fillStyle = scanGrad;
+      ctx.fill();
+      ctx.restore();
+
+      // Scan line
+      const scanEndX = r + Math.cos(angle) * (r - 2);
+      const scanEndY = r + Math.sin(angle) * (r - 2);
+      ctx.beginPath();
+      ctx.moveTo(r, r);
       ctx.lineTo(scanEndX, scanEndY);
-      ctx.strokeStyle = scanGrad;
+      ctx.strokeStyle = 'rgba(82, 168, 255, 0.6)';
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
-      // Draw scan sweep arc
-      const sweepGrad = ctx.createConicGradient(scanAngleRef.current - 0.5, centerX, centerY);
-      sweepGrad.addColorStop(0, 'rgba(0, 229, 255, 0)');
-      sweepGrad.addColorStop(0.08, 'rgba(0, 229, 255, 0.06)');
-      sweepGrad.addColorStop(0.15, 'rgba(0, 229, 255, 0)');
-      sweepGrad.addColorStop(1, 'rgba(0, 229, 255, 0)');
+      // Center dot
       ctx.beginPath();
-      ctx.arc(centerX, centerY, scanLen, 0, Math.PI * 2);
-      ctx.fillStyle = sweepGrad;
+      ctx.arc(r, r, 3, 0, Math.PI * 2);
+      ctx.fillStyle = '#52a8ff';
       ctx.fill();
 
-      // Draw drone dots
+      // Draw drone dots - only flying (green) and low battery (red)
       drones.forEach(drone => {
         if (drone.lat == null || drone.lng == null) return;
-        // Only draw if within China bounds (roughly)
-        if (drone.lng < CHINA_BOUNDS.minLng - 5 || drone.lng > CHINA_BOUNDS.maxLng + 5) return;
-        if (drone.lat < CHINA_BOUNDS.minLat - 5 || drone.lat > CHINA_BOUNDS.maxLat + 5) return;
+        if (drone.lng < GEO_BOUNDS.minLng - 5 || drone.lng > GEO_BOUNDS.maxLng + 5) return;
+        if (drone.lat < GEO_BOUNDS.minLat - 5 || drone.lat > GEO_BOUNDS.maxLat + 5) return;
 
-        const { x, y } = mapToCanvas(drone.lng, drone.lat, size, size);
+        const isFlying = drone.onlineStatus && drone.armed;
+        const isLowBattery = (drone.battery ?? 100) < 20;
 
-        // Determine color based on status
-        let dotColor: string;
-        let glowColor: string;
-        if (!drone.onlineStatus) {
-          dotColor = '#64748b';
-          glowColor = 'rgba(100, 116, 139, 0.3)';
-        } else if (drone.armed) {
-          dotColor = '#22c55e';
-          glowColor = 'rgba(34, 197, 94, 0.4)';
-        } else {
-          dotColor = '#3b82f6';
-          glowColor = 'rgba(59, 130, 246, 0.4)';
-        }
+        // Only show flying drones (green) and low battery drones (red)
+        if (!isFlying && !isLowBattery) return;
+
+        const { x, y } = mapToCanvas(drone.lng, drone.lat, r);
+
+        // Check if point is within the circle
+        const dist = Math.sqrt((x - r) ** 2 + (y - r) ** 2);
+        if (dist > r - 5) return;
+
+        const dotColor = isLowBattery ? '#ff4d4f' : '#00ff7f';
+        const glowColor = isLowBattery ? 'rgba(255, 77, 79, 0.5)' : 'rgba(0, 255, 127, 0.5)';
 
         // Glow
         ctx.beginPath();
-        ctx.arc(x, y, 5, 0, Math.PI * 2);
+        ctx.arc(x, y, 6, 0, Math.PI * 2);
         ctx.fillStyle = glowColor;
         ctx.fill();
 
         // Dot
         ctx.beginPath();
-        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
         ctx.fillStyle = dotColor;
         ctx.fill();
 
-        // Pulse for flying drones
-        if (drone.armed) {
-          const pulse = 3 + Math.sin(Date.now() / 300 + x) * 2;
-          ctx.beginPath();
-          ctx.arc(x, y, pulse, 0, Math.PI * 2);
-          ctx.strokeStyle = `${dotColor}40`;
-          ctx.lineWidth = 0.5;
-          ctx.stroke();
-        }
+        // Blink animation
+        const blink = 0.3 + 0.7 * Math.abs(Math.sin(Date.now() / 1000 + x));
+        ctx.globalAlpha = blink;
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = dotColor;
+        ctx.fill();
+        ctx.globalAlpha = 1;
       });
-
-      // Corner grid lines for aesthetics
-      ctx.strokeStyle = 'rgba(0, 229, 255, 0.08)';
-      ctx.lineWidth = 0.5;
-      // Horizontal grid
-      for (let i = 1; i < 4; i++) {
-        const y = (size / 4) * i;
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(size, y);
-        ctx.stroke();
-      }
-      // Vertical grid
-      for (let i = 1; i < 4; i++) {
-        const x = (size / 4) * i;
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, size);
-        ctx.stroke();
-      }
 
       animFrameRef.current = requestAnimationFrame(draw);
     };
@@ -202,22 +178,20 @@ export function HoloChinaRadar({ drones, size = 180 }: HoloChinaRadarProps) {
   }, [drones, size, mapToCanvas]);
 
   return (
-    <div className="flex flex-col items-center p-2">
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <canvas
         ref={canvasRef}
-        style={{ width: size, height: size }}
-        className="rounded"
+        style={{ width: size, height: size, borderRadius: '50%' }}
       />
       {/* Legend */}
-      <div className="flex items-center gap-3 mt-2 text-[9px] text-slate-400">
-        <span className="flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />飞行
+      <div style={{ display: 'flex', gap: '12px', marginTop: '6px', fontSize: '9px', color: '#a0cfff' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#00ff7f', display: 'inline-block', boxShadow: '0 0 4px #00ff7f' }} />
+          飞行中
         </span>
-        <span className="flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />在线
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-slate-500 inline-block" />离线
+        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ff4d4f', display: 'inline-block', boxShadow: '0 0 4px #ff4d4f' }} />
+          低电量
         </span>
       </div>
     </div>

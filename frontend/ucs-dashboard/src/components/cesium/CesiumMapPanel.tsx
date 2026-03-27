@@ -43,8 +43,8 @@ export default function CesiumMapPanel({
   onMapClick,
   className = '',
   center = [104.0, 35.0], // China center
-  zoom = 2000000, // ~2000km altitude
-  pitch = 35,
+  zoom = 22000000, // ~22000km altitude for top-down globe view
+  pitch = 90, // top-down view
 }: CesiumMapPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
@@ -110,35 +110,35 @@ export default function CesiumMapPanel({
       const gridLayer = viewer.imageryLayers.addImageryProvider(
         new Cesium.GridImageryProvider({
           cells: 8,
-          color: Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.06)'),
-          glowColor: Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.02)'),
+          color: Cesium.Color.fromCssColorString('rgba(82, 168, 255, 0.04)'),
+          glowColor: Cesium.Color.fromCssColorString('rgba(82, 168, 255, 0.01)'),
           glowWidth: 1,
         })
       );
-      gridLayer.alpha = 0.3; // Semi-transparent so actual map shows through
+      gridLayer.alpha = 0.2; // Semi-transparent so actual map shows through
 
-      // Disable default atmosphere for cleaner sci-fi look
-      if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false;
+      // Keep atmosphere for globe view at high altitude
+      if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = true;
       viewer.scene.fog.enabled = false;
-      viewer.scene.globe.showGroundAtmosphere = false;
+      viewer.scene.globe.showGroundAtmosphere = true;
 
       // Dark space background
-      viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#0a0f1a');
-      if (viewer.scene.skyBox) viewer.scene.skyBox.show = false;
-      if (viewer.scene.sun) viewer.scene.sun.show = false;
+      viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#050a1e');
+      if (viewer.scene.skyBox) viewer.scene.skyBox.show = true;
+      if (viewer.scene.sun) viewer.scene.sun.show = true;
       if (viewer.scene.moon) viewer.scene.moon.show = false;
 
-      // Enable lighting for better visual
-      viewer.scene.globe.enableLighting = false;
+      // Enable lighting for better visual with globe atmosphere
+      viewer.scene.globe.enableLighting = true;
 
       // Set globe base color for areas without imagery
-      viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0d1526');
+      viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#050a1e');
 
-      // Fly to initial view - China center with tilted perspective
+      // Fly to initial view - top-down globe view centered on China
       viewer.camera.flyTo({
         destination: Cesium.Cartesian3.fromDegrees(center[0], center[1], zoom),
         orientation: {
-          heading: Cesium.Math.toRadians(20),
+          heading: Cesium.Math.toRadians(0),
           pitch: Cesium.Math.toRadians(-pitch),
           roll: 0,
         },
@@ -172,14 +172,14 @@ export default function CesiumMapPanel({
       const scanEntity = viewer.entities.add({
         position: scanCenter,
         ellipse: {
-          semiMajorAxis: 500000,
-          semiMinorAxis: 500000,
+          semiMajorAxis: 800000,
+          semiMinorAxis: 800000,
           height: 1,
           material: new Cesium.ColorMaterialProperty(
-            Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.03)')
+            Cesium.Color.fromCssColorString('rgba(82, 168, 255, 0.03)')
           ),
           outline: true,
-          outlineColor: Cesium.Color.fromCssColorString('rgba(0, 255, 255, 0.15)'),
+          outlineColor: Cesium.Color.fromCssColorString('rgba(82, 168, 255, 0.12)'),
           outlineWidth: 1,
         },
       });
@@ -188,7 +188,7 @@ export default function CesiumMapPanel({
       viewer.scene.preRender.addEventListener(() => {
         if (scanEntity.ellipse) {
           scanAngle += 0.002;
-          const pulse = 400000 + 100000 * Math.sin(scanAngle * 3);
+          const pulse = 600000 + 200000 * Math.sin(scanAngle * 3);
           scanEntity.ellipse.semiMajorAxis = new Cesium.ConstantProperty(pulse);
           scanEntity.ellipse.semiMinorAxis = new Cesium.ConstantProperty(pulse);
         }
@@ -405,7 +405,7 @@ export default function CesiumMapPanel({
       />
       {!mapReady && (
         <div className="absolute inset-0 flex items-center justify-center bg-[#0a0f1a]">
-          <div className="text-cyan-400 animate-pulse text-sm">
+          <div className="animate-pulse text-sm" style={{ color: '#52a8ff' }}>
             正在初始化 Cesium 3D 地球...
           </div>
         </div>

@@ -1,17 +1,11 @@
 /**
- * Holographic Dashboard - Full-viewport 3D holographic interface
+ * Holographic Dashboard - Phase 4 (HTML Prototype Migration)
  * 
- * Layout: Cesium globe fills 100vw×100vh as background.
- * 7 floating panels positioned with absolute positioning over the globe.
- * 
- * Panels:
- * 1. Left Console (控制台) - main control functions by role
- * 2. Top-Left Drone Stats (无人机统计) - drone count/status statistics
- * 3. Bottom-Left Log (日志) - scrolling log, max 4 visible
- * 4. Bottom Center Drone Control (无人机控制) - flight controls + info
- * 5. Top-Right Radar (雷达) - China map silhouette with drone positions
- * 6. Right Member Log (成员日志) - member online status
- * 7. Bottom-Right Weather (天气信息) - weather conditions
+ * Layout matches HTML prototype exactly:
+ * - Cesium globe fills 100vw x 100vh as background
+ * - Top center title
+ * - 7 floating panels with responsive positioning
+ * - Arc clip-path SVG for bottom control panel
  */
 import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { lazy, Suspense } from 'react';
@@ -25,7 +19,6 @@ import { HoloMemberPanel } from './HoloMemberPanel';
 import { HoloWeatherPanel } from './HoloWeatherPanel';
 import { HoloHUD } from './HoloHUD';
 
-// Lazy load CesiumMapPanel to avoid loading Cesium when not needed
 const CesiumMapPanel = lazy(() => import('./CesiumMapPanel'));
 
 /** Team member type for member panel */
@@ -55,15 +48,10 @@ export interface HoloDashboardProps {
   onDroneClick?: (uavId: string) => void;
   onMapClick?: (lat: number, lon: number) => void;
   onCommand?: (command: string, uavIds?: string[]) => void;
-  /** Content for the left console panel (role-specific tabs) */
   consoleContent?: ReactNode;
-  /** Log entries for the bottom-left log panel */
   logs?: LogEntry[];
-  /** Team members for the right member panel */
   members?: HoloTeamMember[];
-  /** Weather data for the bottom-right panel */
   weather?: HoloWeatherInfo | null;
-  /** Callback to close holographic mode */
   onClose?: () => void;
   className?: string;
 }
@@ -105,24 +93,33 @@ export function HoloDashboard({
   className = '',
 }: HoloDashboardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [consoleCollapsed, setConsoleCollapsed] = useState(false);
-  const [memberCollapsed, setMemberCollapsed] = useState(false);
-
   const { width, height } = useContainerSize(containerRef);
 
-  // Responsive breakpoints
-  const isCompact = width < 768;
-  const isMedium = width >= 768 && width < 1200;
+  // Responsive scaling factor based on viewport
+  const scaleX = width / 1920;
+  const scaleY = height / 1080;
+  const scale = Math.min(scaleX, scaleY, 1);
 
-  // Dynamic sizing
-  const gap = isCompact ? 8 : 12;
-  const consolePanelWidth = isCompact ? Math.min(width * 0.6, 280) : Math.min(width * 0.22, 340);
-  const rightPanelWidth = isCompact ? Math.min(width * 0.5, 240) : Math.min(width * 0.18, 260);
-  const radarSize = isCompact ? Math.min(width * 0.35, 140) : isMedium ? Math.min(width * 0.16, 180) : Math.min(width * 0.14, 200);
-  const statsWidth = isCompact ? Math.min(width * 0.45, 200) : Math.min(width * 0.17, 240);
-  const logWidth = isCompact ? Math.min(width * 0.55, 260) : Math.min(width * 0.2, 300);
-  const controlPanelWidth = isCompact ? width - gap * 2 : Math.min(width * 0.45, 600);
-  const weatherWidth = isCompact ? Math.min(width * 0.5, 220) : Math.min(width * 0.17, 240);
+  // Panel dimensions (responsive from prototype fixed values)
+  const gap = Math.max(12, Math.round(12 * scale));
+  const leftPanelWidth = Math.max(240, Math.round(320 * scaleX));
+  const rightPanelWidth = Math.max(230, Math.round(310 * scaleX));
+  const bottomHeight = Math.max(120, Math.round(160 * scaleY));
+  const radarHeight = Math.max(160, Math.round(200 * scaleY));
+  const statHeight = Math.max(70, Math.round(85 * scaleY));
+  const radarSize = Math.max(120, Math.round(160 * Math.min(scaleX, scaleY)));
+
+  // Console panel: from below stats to above logs
+  const consoleTop = gap + statHeight + gap;
+  const consoleBottom = gap + bottomHeight + gap;
+
+  // Member panel: from below radar to above weather
+  const memberTop = gap + radarHeight + gap;
+  const memberBottom = gap + bottomHeight + gap;
+
+  // Bottom control panel: between left and right panels
+  const controlLeft = gap + leftPanelWidth + gap;
+  const controlRight = gap + rightPanelWidth + gap;
 
   const handleCommand = useCallback((cmd: string, uavIds?: string[]) => {
     onCommand?.(cmd, uavIds);
@@ -131,15 +128,25 @@ export function HoloDashboard({
   return (
     <div
       ref={containerRef}
-      className={`fixed inset-0 z-50 bg-[#0a0f1a] overflow-hidden ${className}`}
+      className={`fixed inset-0 z-50 overflow-hidden ${className}`}
+      style={{ background: '#050a1e', fontFamily: '"Microsoft YaHei", sans-serif', userSelect: 'none' }}
     >
-      {/* Layer 0: Cesium 3D Globe (full viewport background) */}
+      {/* SVG clip-path definition for arc top */}
+      <svg width="0" height="0" style={{ position: 'absolute', zIndex: -1 }}>
+        <defs>
+          <clipPath id="arcTopClip" clipPathUnits="objectBoundingBox">
+            <path d="M 0,0 Q 0.5,0.24 1,0 L 1,1 L 0,1 Z" />
+          </clipPath>
+        </defs>
+      </svg>
+
+      {/* Layer 0: Cesium 3D Globe */}
       <div className="absolute inset-0 z-0">
         <Suspense
           fallback={
-            <div className="w-full h-full flex items-center justify-center bg-[#0a0f1a]">
-              <div className="text-cyan-400 animate-pulse text-sm font-mono">
-                :: INITIALIZING CESIUM 3D GLOBE ::
+            <div className="w-full h-full flex items-center justify-center" style={{ background: '#050a1e' }}>
+              <div style={{ color: '#52a8ff' }} className="animate-pulse text-sm">
+                Loading Cesium 3D Globe...
               </div>
             </div>
           }
@@ -154,94 +161,72 @@ export function HoloDashboard({
         </Suspense>
       </div>
 
-      {/* Layer 1: HUD Overlay (scanlines, vignette, corners, crosshair) */}
+      {/* Layer 1: HUD Overlay */}
       <HoloHUD />
 
-      {/* Layer 2: All 7 Floating Panels */}
+      {/* Layer 2: Top Title */}
+      <div
+        className="absolute z-[99]"
+        style={{
+          top: '15px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          fontSize: Math.max(16, Math.round(22 * scale)) + 'px',
+          fontWeight: 'bold',
+          color: '#ffffff',
+          textShadow: '0 0 10px rgba(82, 168, 255, 0.5)',
+          letterSpacing: '2px',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        无人机指挥控制平台
+      </div>
+
+      {/* Layer 3: All 7 Floating Panels */}
       <div className="absolute inset-0 z-10 pointer-events-none">
 
-        {/* ===== Panel 1: Left Console (控制台) ===== */}
+        {/* Panel 1: Top-Left Drone Stats */}
         <div
           className="absolute pointer-events-auto"
-          style={{
-            top: gap + 40,
-            left: gap,
-            width: consoleCollapsed ? 'auto' : consolePanelWidth,
-            maxHeight: height - gap * 2 - 80 - 160,
-          }}
+          style={{ top: gap, left: gap, width: leftPanelWidth }}
         >
-          <HoloPanel
-            title="控制台"
-            tilt="none"
-            glow="cyan"
-            delay={0.2}
-            collapsible
-            collapsed={consoleCollapsed}
-            onToggle={() => setConsoleCollapsed(!consoleCollapsed)}
-          >
-            <div className="overflow-y-auto" style={{ maxHeight: height * 0.55 }}>
-              {consoleContent || (
-                <div className="p-4 text-center text-slate-500 text-xs font-mono">
-                  控制台功能加载中...
-                </div>
-              )}
-            </div>
-          </HoloPanel>
-        </div>
-
-        {/* ===== Panel 2: Top-Left Drone Stats (无人机统计) ===== */}
-        <div
-          className="absolute pointer-events-auto"
-          style={{
-            top: gap,
-            left: gap + (consoleCollapsed ? 50 : consolePanelWidth) + gap,
-            width: statsWidth,
-          }}
-        >
-          <HoloPanel
-            title="无人机统计"
-            tilt="none"
-            glow="cyan"
-            delay={0.1}
-          >
+          <HoloPanel title="无人机态势" delay={0.1}>
             <HoloDroneStatsPanel drones={drones} />
           </HoloPanel>
         </div>
 
-        {/* ===== Panel 3: Bottom-Left Log (日志) ===== */}
+        {/* Panel 2: Left Control Console */}
         <div
           className="absolute pointer-events-auto"
           style={{
-            bottom: gap + 80,
-            left: gap,
-            width: logWidth,
+            top: consoleTop, left: gap, width: leftPanelWidth,
+            bottom: consoleBottom, display: 'flex', flexDirection: 'column',
           }}
         >
-          <HoloPanel
-            title="日志"
-            tilt="none"
-            glow="cyan"
-            delay={0.5}
-          >
+          <HoloPanel title="管理控制台" delay={0.2} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <ConsolePanel consoleContent={consoleContent} />
+          </HoloPanel>
+        </div>
+
+        {/* Panel 3: Bottom-Left Log */}
+        <div
+          className="absolute pointer-events-auto"
+          style={{ left: gap, bottom: gap, width: leftPanelWidth, height: bottomHeight }}
+        >
+          <HoloPanel title="系统日志" delay={0.5}>
             <HoloLogPanel logs={logs} maxVisible={4} />
           </HoloPanel>
         </div>
 
-        {/* ===== Panel 4: Bottom Center Drone Control (无人机控制) ===== */}
+        {/* Panel 4: Bottom Center Drone Control (arc clip-path) */}
         <div
-          className="absolute pointer-events-auto left-1/2"
+          className="absolute pointer-events-auto"
           style={{
-            bottom: gap,
-            transform: 'translateX(-50%)',
-            width: controlPanelWidth,
+            bottom: gap, left: controlLeft, right: controlRight,
+            height: bottomHeight, clipPath: 'url(#arcTopClip)',
           }}
         >
-          <HoloPanel
-            title="无人机控制"
-            tilt="none"
-            glow="cyan"
-            delay={0.4}
-          >
+          <HoloPanel delay={0.4} animated={false} style={{ height: '100%' }}>
             <HoloDroneControlPanel
               drones={drones}
               selectedDroneId={selectedDroneId}
@@ -251,83 +236,147 @@ export function HoloDashboard({
           </HoloPanel>
         </div>
 
-        {/* ===== Panel 5: Top-Right Radar (雷达扫描) ===== */}
+        {/* Panel 5: Top-Right Radar */}
         <div
           className="absolute pointer-events-auto"
-          style={{
-            top: gap,
-            right: gap,
-            width: radarSize + 24,
-          }}
+          style={{ top: gap, right: gap, width: rightPanelWidth }}
         >
-          <HoloPanel
-            title="雷达扫描"
-            tilt="none"
-            glow="cyan"
-            delay={0.3}
-          >
+          <HoloPanel title="区域无人机态势" delay={0.3}>
             <HoloChinaRadar drones={drones} size={radarSize} />
           </HoloPanel>
         </div>
 
-        {/* ===== Panel 6: Right Member Log (成员日志) ===== */}
+        {/* Panel 6: Right Member Status */}
         <div
           className="absolute pointer-events-auto"
-          style={{
-            top: gap + radarSize + 80,
-            right: gap,
-            width: memberCollapsed ? 'auto' : rightPanelWidth,
-            maxHeight: height - radarSize - gap * 3 - 160,
-          }}
+          style={{ top: memberTop, right: gap, width: rightPanelWidth, bottom: memberBottom }}
         >
-          <HoloPanel
-            title="成员日志"
-            tilt="none"
-            glow="cyan"
-            delay={0.35}
-            collapsible
-            collapsed={memberCollapsed}
-            onToggle={() => setMemberCollapsed(!memberCollapsed)}
-          >
+          <HoloPanel title="成员在线状态" delay={0.35} style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             <HoloMemberPanel members={members} />
           </HoloPanel>
         </div>
 
-        {/* ===== Panel 7: Bottom-Right Weather (天气信息) ===== */}
+        {/* Panel 7: Bottom-Right Weather */}
         <div
           className="absolute pointer-events-auto"
-          style={{
-            bottom: gap + 80,
-            right: gap,
-            width: weatherWidth,
-          }}
+          style={{ right: gap, bottom: gap, width: rightPanelWidth, height: bottomHeight }}
         >
-          <HoloPanel
-            title="天气信息"
-            tilt="none"
-            glow="cyan"
-            delay={0.45}
-          >
+          <HoloPanel title="实时气象" delay={0.45}>
             <HoloWeatherPanel weather={weather} />
           </HoloPanel>
         </div>
 
-        {/* ===== Exit Button (top center) ===== */}
+        {/* Exit Button */}
         {onClose && (
-          <div className="absolute top-2 pointer-events-auto z-20" style={{ left: '50%', transform: 'translateX(-50%)' }}>
+          <div
+            className="absolute pointer-events-auto z-20"
+            style={{ top: gap, right: gap + rightPanelWidth + gap }}
+          >
             <button
               onClick={onClose}
-              className="px-3 py-1.5 rounded-lg text-xs font-mono transition-all
-                hover:scale-105 active:scale-95"
               style={{
-                background: 'rgba(10, 20, 40, 0.7)',
-                border: '1px solid rgba(0, 229, 255, 0.3)',
-                color: '#00e5ff',
-                backdropFilter: 'blur(8px)',
+                padding: '4px 12px',
+                background: 'rgba(10, 20, 50, 0.9)',
+                border: '1px solid rgba(82, 168, 255, 0.4)',
+                borderRadius: '4px',
+                color: '#52a8ff',
+                fontSize: '12px',
+                cursor: 'pointer',
+                backdropFilter: 'blur(6px)',
+                transition: 'all 0.2s',
               }}
             >
               ✕ 退出全息模式
             </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Console panel with tabs matching HTML prototype */
+function ConsolePanel({ consoleContent }: { consoleContent?: ReactNode }) {
+  const [activeTab, setActiveTab] = useState('all');
+
+  const tabs = [
+    { key: 'all', icon: '✈', label: '机队' },
+    { key: 'permission', icon: '🔐', label: '权限' },
+    { key: 'log', icon: '📋', label: '日志' },
+    { key: 'team', icon: '👥', label: '团队' },
+    { key: 'point', icon: '📍', label: '集结点' },
+  ];
+
+  const tabContent: Record<string, string[]> = {
+    all: ['📋 机队管理', '🔐 权限管理', '📜 日志详情', '📍 集结点设置', '🛠 设备状态', '📶 通信监测', '⚙ 系统配置'],
+    permission: ['🔐 权限管理', '👤 用户管理', '🎚 角色配置'],
+    log: ['📜 日志详情', '📊 统计分析', '⚠ 异常记录'],
+    team: ['👥 团队管理', '📋 成员列表', '📊 绩效统计'],
+    point: ['📍 集结点设置', '🗺 区域划分', '🎯 航点管理'],
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: '6px', marginBottom: '12px', flexWrap: 'nowrap', justifyContent: 'space-between' }}>
+        {tabs.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            style={{
+              flex: 1,
+              padding: '5px 0',
+              background: activeTab === tab.key ? 'rgba(60, 120, 220, 0.4)' : 'rgba(20, 40, 80, 0.8)',
+              border: `1px solid ${activeTab === tab.key ? '#52a8ff' : 'rgba(60, 120, 220, 0.4)'}`,
+              borderRadius: '4px',
+              fontSize: '12px',
+              cursor: 'pointer',
+              color: activeTab === tab.key ? '#fff' : '#c0d8ff',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '4px',
+              transition: 'all 0.2s',
+            }}
+          >
+            <span>{tab.icon}</span> {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px' }}>
+        {consoleContent || (
+          <div>
+            {(tabContent[activeTab] || []).map((item, i) => (
+              <div
+                key={i}
+                style={{
+                  padding: '10px 12px',
+                  marginBottom: '6px',
+                  background: 'rgba(20, 40, 80, 0.6)',
+                  borderRadius: '4px',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  border: '1px solid transparent',
+                  transition: 'all 0.2s',
+                  color: '#c0d8ff',
+                }}
+                onMouseEnter={e => {
+                  (e.currentTarget as HTMLDivElement).style.background = 'rgba(60, 120, 220, 0.2)';
+                  (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(82, 168, 255, 0.3)';
+                }}
+                onMouseLeave={e => {
+                  (e.currentTarget as HTMLDivElement).style.background = 'rgba(20, 40, 80, 0.6)';
+                  (e.currentTarget as HTMLDivElement).style.borderColor = 'transparent';
+                }}
+              >
+                {item}
+              </div>
+            ))}
           </div>
         )}
       </div>

@@ -1,7 +1,7 @@
 /**
- * Holographic Log Panel
- * Bottom-left scrolling log display, max 4 visible items
- * New items push older ones up (auto-scroll)
+ * Holographic Log Panel - Phase 4
+ * Bottom-left scrolling log with auto-scroll animation matching prototype
+ * CSS animation scrollLog for continuous upward scroll
  */
 import { useEffect, useRef } from 'react';
 
@@ -19,73 +19,60 @@ interface HoloLogPanelProps {
 }
 
 export function HoloLogPanel({ logs, maxVisible = 4 }: HoloLogPanelProps) {
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom when new logs arrive
+  // Auto-scroll animation: move first item up, then move it to end
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [logs.length]);
+    const el = listRef.current;
+    if (!el || logs.length <= maxVisible) return;
 
-  const visibleLogs = logs.slice(-maxVisible * 2); // Keep some buffer for smooth scroll
+    const interval = setInterval(() => {
+      el.style.transition = 'transform 0.5s ease';
+      el.style.transform = 'translateY(-30px)';
+      setTimeout(() => {
+        el.style.transition = 'none';
+        el.style.transform = 'translateY(0)';
+        // Move first child to end (DOM rotation)
+        const first = el.firstElementChild;
+        if (first) {
+          const clone = first.cloneNode(true);
+          el.appendChild(clone);
+          first.remove();
+        }
+      }, 500);
+    }, 3500);
 
-  const getLevelColor = (level?: string, result?: string) => {
-    if (result === 'FAILURE' || result === 'FAILED' || level === 'error') return '#ef4444';
-    if (result === 'SUCCESS' || level === 'success') return '#22c55e';
-    if (level === 'warn') return '#f59e0b';
-    return '#00e5ff';
-  };
+    return () => clearInterval(interval);
+  }, [logs.length, maxVisible]);
 
-  const getLevelDot = (level?: string, result?: string) => {
-    const color = getLevelColor(level, result);
-    return (
-      <span
-        className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1"
-        style={{ backgroundColor: color, boxShadow: `0 0 4px ${color}` }}
-      />
-    );
-  };
+  const displayLogs = logs.length > 0 ? logs : [
+    { id: 'placeholder-1', time: '--:--:--', detail: '暂无日志', level: 'info' as const },
+  ];
 
   return (
-    <div
-      ref={scrollRef}
-      className="overflow-y-auto scrollbar-thin"
-      style={{ maxHeight: maxVisible * 44 + 16 }}
-    >
-      <div className="p-2 space-y-1">
-        {visibleLogs.length === 0 && (
-          <div className="text-center text-slate-500 text-[10px] py-3 font-mono">
-            暂无日志
-          </div>
-        )}
-        {visibleLogs.map((log) => (
+    <div style={{ overflow: 'hidden', maxHeight: maxVisible * 30 + 8 }}>
+      <div ref={listRef}>
+        {displayLogs.map((log) => (
           <div
             key={log.id}
-            className="flex items-start gap-2 px-2 py-1.5 rounded"
             style={{
-              background: 'rgba(0, 229, 255, 0.03)',
-              borderLeft: `2px solid ${getLevelColor(log.level, log.result)}30`,
+              fontSize: '12px',
+              padding: '6px 0',
+              borderBottom: '1px solid rgba(82, 168, 255, 0.1)',
+              color: '#c0d8ff',
             }}
           >
-            {getLevelDot(log.level, log.result)}
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-[9px] text-slate-500 font-mono flex-shrink-0">{log.time}</span>
-                {log.result && (
-                  <span
-                    className="text-[8px] px-1 rounded font-mono"
-                    style={{
-                      color: getLevelColor(log.level, log.result),
-                      background: `${getLevelColor(log.level, log.result)}15`,
-                    }}
-                  >
-                    {log.result === 'SUCCESS' ? '成功' : log.result === 'FAILURE' || log.result === 'FAILED' ? '失败' : log.result}
-                  </span>
-                )}
-              </div>
-              <div className="text-[10px] text-slate-300 truncate">{log.detail}</div>
-            </div>
+            <span style={{ color: '#52a8ff', marginRight: '8px' }}>{log.time}</span>
+            {log.detail}
+            {log.result && (
+              <span style={{
+                marginLeft: '6px',
+                fontSize: '10px',
+                color: log.result === 'SUCCESS' ? '#00ff7f' : log.result === 'FAILURE' || log.result === 'FAILED' ? '#ff4d4f' : '#a0cfff',
+              }}>
+                [{log.result === 'SUCCESS' ? '成功' : log.result === 'FAILURE' || log.result === 'FAILED' ? '失败' : log.result}]
+              </span>
+            )}
           </div>
         ))}
       </div>
