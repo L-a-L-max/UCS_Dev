@@ -97,12 +97,24 @@ public class AuthController {
      * 前端同时应清除本地存储的 accessToken 和 refreshToken。
      */
     @PostMapping("/logout")
-    @Operation(summary = "用户注销", description = "将当前 token 加入黑名单")
+    @Operation(summary = "用户注销", description = "将当前 token 加入黑名单并发布离线状态")
     public ApiResponse<String> logout(HttpServletRequest request) {
         try {
             String authHeader = request.getHeader("Authorization");
             if (authHeader != null && authHeader.startsWith("Bearer ")) {
                 String token = authHeader.substring(7);
+
+                // Extract user info before blacklisting for Kafka notification
+                try {
+                    String username = jwtUtil.extractUsername(token);
+                    Long userId = jwtUtil.extractUserId(token);
+                    // Publish offline status to Kafka
+                    authService.publishLogout(userId, username, username);
+                    log.info("[Auth] User {} logged out, publishing offline status", username);
+                } catch (Exception ex) {
+                    log.warn("[Auth] Could not extract user info for logout notification: {}", ex.getMessage());
+                }
+
                 jwtUtil.blacklistToken(token);
                 log.info("[Auth] User logged out, token blacklisted");
             }

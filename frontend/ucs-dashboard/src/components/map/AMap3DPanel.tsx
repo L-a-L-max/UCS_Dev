@@ -226,7 +226,7 @@ export default function AMap3DPanel({
 
       const glLayer = new AMap.GLCustomLayer({
         zIndex: 120,
-        init: (gl: WebGLRenderingContext) => {
+        init: (gl: WebGLRenderingContext | WebGL2RenderingContext) => {
           const camera = new THREE.PerspectiveCamera(
             60,
             containerRef.current!.offsetWidth / containerRef.current!.offsetHeight,
@@ -235,8 +235,27 @@ export default function AMap3DPanel({
           );
           cameraRef.current = camera;
 
+          // THREE.js r163+ requires WebGL 2. AMap's GLCustomLayer may pass a WebGL 1
+          // context, causing "WebGL 1 is not supported since r163" error.
+          // Fix: If the context is WebGL 1, obtain a WebGL 2 context from the same canvas.
+          let glContext: WebGL2RenderingContext | WebGLRenderingContext = gl;
+          if (gl && gl.canvas && !(gl instanceof WebGL2RenderingContext)) {
+            const gl2 = (gl.canvas as HTMLCanvasElement).getContext('webgl2', {
+              antialias: true,
+              alpha: true,
+              premultipliedAlpha: true,
+              preserveDrawingBuffer: true,
+            });
+            if (gl2) {
+              glContext = gl2;
+              console.info('[AMap3D] Upgraded WebGL 1 context to WebGL 2 for THREE.js r163+ compatibility');
+            } else {
+              console.warn('[AMap3D] Browser does not support WebGL 2. THREE.js r163+ rendering may fail.');
+            }
+          }
+
           const renderer = new THREE.WebGLRenderer({
-            context: gl,
+            context: glContext as WebGL2RenderingContext,
             antialias: true,
           });
           renderer.autoClear = false;

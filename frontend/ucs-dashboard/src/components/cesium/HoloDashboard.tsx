@@ -4,7 +4,7 @@
  * Console panel: 4 tabs (removed team), rally points CRUD with dialog.
  * Multi-select support throughout.
  */
-import { useState, useCallback, type ReactNode } from 'react';
+import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { lazy, Suspense } from 'react';
 import type { MapDrone, MapRallyPoint } from '../MapPanel';
 import { HoloPanel } from './HoloPanel';
@@ -53,6 +53,7 @@ export interface HoloDashboardProps {
   onTransferPermission?: (uavIds: string[], toUserId?: number, toTeamId?: number, mode?: 'user' | 'team') => void;
   onFetchLogs?: (page: number, filter: string) => void;
   onTeamExpand?: (teamId: string) => void;
+  onTeamFilter?: (teamId: string) => void;
   onRallyPointCreate?: (data: Partial<MapRallyPoint>) => void;
   onRallyPointEdit?: (rp: MapRallyPoint, data: Partial<MapRallyPoint>) => void;
   onRallyPointDelete?: (id: number) => void;
@@ -68,25 +69,32 @@ export function HoloDashboard({
   registeredUsers = [],
   logPage = 0, logTotalPages = 0, logFilter = 'ALL', logLoading = false,
   onDroneClick, onDroneToggleSelect, onMapClick, onMapClickCommand, onCommand,
-  onTransferPermission, onFetchLogs, onTeamExpand,
+  onTransferPermission, onFetchLogs, onTeamExpand, onTeamFilter,
   onRallyPointCreate, onRallyPointEdit, onRallyPointDelete,
   onWeatherLocationChange, consoleContent, onClose, className = '',
 }: HoloDashboardProps) {
-  const LEFT_W = 320;
-  const RIGHT_W = 310;
-  const GAP = 12;
-  const STAT_H = 90;
-  const LOG_H = 140;
-  const WEATHER_H = 180;
-  const RADAR_H = 220;
-  const CONTROL_H = 160;
-  const TITLE_H = 40;
+  // ===== Percentage-based layout constants =====
+  // All dimensions use viewport percentages for responsive adaptation across different screen sizes.
+  // Outer margin from browser edge: fixed 3px
+  // Left/right side panels: 25% width each (adjustable)
+  // Bottom panels: ~28% height
+  // Panels between gaps: 3px
+  const EDGE = '3px';       // outer margin from browser edge
+  const GAP = '3px';        // gap between panels
+  const SIDE_W = '25%';     // left & right side panel width
+  const TITLE_H = '3.5%';   // title bar height (~3.5vh)
+  const BOTTOM_H = '28%';   // bottom row height
+  // Left column: top panel (stats) ~12% height, bottom panel (log) = BOTTOM_H, middle = rest
+  const STAT_H = '12%';     // drone stats panel height
+  // Right column: top panel (radar) ~28% height, bottom panel (weather) = BOTTOM_H, middle = rest
+  const RADAR_H = '28%';
 
   const handleCommand = useCallback((cmd: string, uavIds?: string[]) => { onCommand?.(cmd, uavIds); }, [onCommand]);
 
   return (
     <div className={`fixed inset-0 z-50 overflow-hidden ${className}`}
       style={{ background: '#050a1e', fontFamily: '"Microsoft YaHei", sans-serif', userSelect: 'none' }}>
+      {/* Cesium 3D Globe - full viewport background */}
       <div className="absolute inset-0 z-0">
         <Suspense fallback={<div className="w-full h-full flex items-center justify-center" style={{ background: '#050a1e' }}><div style={{ color: '#52a8ff' }} className="animate-pulse text-sm">Loading Cesium 3D Globe...</div></div>}>
           <CesiumMapPanel drones={drones} selectedDroneId={selectedDroneId} selectedDroneIds={selectedDroneIds}
@@ -94,20 +102,29 @@ export function HoloDashboard({
         </Suspense>
       </div>
       <HoloHUD />
+      {/* Title */}
       <div className="absolute z-[99]" style={{ top: '10px', left: '50%', transform: 'translateX(-50%)',
         fontSize: '22px', fontWeight: 'bold', color: '#ffffff',
         textShadow: '0 0 10px rgba(82, 168, 255, 0.5)', letterSpacing: '2px', whiteSpace: 'nowrap' }}>
         无人机指挥控制平台
       </div>
+      {/* Panel overlay layer */}
       <div className="absolute inset-0 z-10 pointer-events-none">
-        <div className="absolute pointer-events-auto" style={{ top: TITLE_H + GAP, left: GAP, width: LEFT_W, height: STAT_H }}>
+
+        {/* ===== LEFT COLUMN (25% width) ===== */}
+        {/* Left top: Drone Stats */}
+        <div className="absolute pointer-events-auto" style={{
+          top: `calc(${TITLE_H} + ${GAP})`, left: EDGE, width: SIDE_W, height: STAT_H,
+        }}>
           <HoloPanel title="无人机态势" delay={0.1} style={{ height: '100%', overflow: 'hidden' }}>
             <HoloDroneStatsPanel drones={drones} />
           </HoloPanel>
         </div>
+        {/* Left middle: Console (fills between stats and log) */}
         <div className="absolute pointer-events-auto" style={{
-          top: TITLE_H + GAP + STAT_H + GAP, left: GAP, width: LEFT_W,
-          bottom: GAP + LOG_H + GAP, display: 'flex', flexDirection: 'column',
+          top: `calc(${TITLE_H} + ${GAP} + ${STAT_H} + ${GAP})`, left: EDGE, width: SIDE_W,
+          bottom: `calc(${EDGE} + ${BOTTOM_H} + ${GAP})`,
+          display: 'flex', flexDirection: 'column',
         }}>
           <HoloPanel title="管理控制台" delay={0.2} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             <ConsolePanel drones={drones} selectedDroneId={selectedDroneId} selectedDroneIds={selectedDroneIds}
@@ -119,38 +136,58 @@ export function HoloDashboard({
               consoleContent={consoleContent} />
           </HoloPanel>
         </div>
-        <div className="absolute pointer-events-auto" style={{ left: GAP, bottom: GAP, width: LEFT_W, height: LOG_H }}>
+        {/* Left bottom: System Logs */}
+        <div className="absolute pointer-events-auto" style={{
+          left: EDGE, bottom: EDGE, width: SIDE_W, height: BOTTOM_H,
+        }}>
           <HoloPanel title="系统日志" delay={0.5} style={{ height: '100%', overflow: 'hidden' }}>
             <HoloLogPanel logs={logs} maxVisible={3} />
           </HoloPanel>
         </div>
+
+        {/* ===== BOTTOM CENTER: Drone Control ===== */}
         <div className="absolute pointer-events-auto" style={{
-          bottom: GAP, left: GAP + LEFT_W + GAP, right: GAP + RIGHT_W + GAP, height: CONTROL_H,
+          bottom: EDGE,
+          left: `calc(${EDGE} + ${SIDE_W} + ${GAP})`,
+          right: `calc(${EDGE} + ${SIDE_W} + ${GAP})`,
+          height: BOTTOM_H,
         }}>
           <HoloPanel delay={0.4} animated={false} style={{ height: '100%' }}>
             <HoloDroneControlPanel drones={drones} selectedDroneId={selectedDroneId} selectedDroneIds={selectedDroneIds} onCommand={handleCommand} />
           </HoloPanel>
         </div>
-        <div className="absolute pointer-events-auto" style={{ top: TITLE_H + GAP, right: GAP, width: RIGHT_W, height: RADAR_H }}>
+
+        {/* ===== RIGHT COLUMN (25% width) ===== */}
+        {/* Right top: Radar */}
+        <div className="absolute pointer-events-auto" style={{
+          top: `calc(${TITLE_H} + ${GAP})`, right: EDGE, width: SIDE_W, height: RADAR_H,
+        }}>
           <HoloPanel title="区域无人机态势" delay={0.3} style={{ height: '100%', overflow: 'hidden' }}>
             <HoloChinaRadar drones={drones} size={150} />
           </HoloPanel>
         </div>
+        {/* Right middle: Member Status (fills between radar and weather) */}
         <div className="absolute pointer-events-auto" style={{
-          top: TITLE_H + GAP + RADAR_H + GAP, right: GAP, width: RIGHT_W,
-          bottom: GAP + WEATHER_H + GAP, display: 'flex', flexDirection: 'column',
+          top: `calc(${TITLE_H} + ${GAP} + ${RADAR_H} + ${GAP})`, right: EDGE, width: SIDE_W,
+          bottom: `calc(${EDGE} + ${BOTTOM_H} + ${GAP})`,
+          display: 'flex', flexDirection: 'column',
         }}>
           <HoloPanel title="成员在线状态" delay={0.35} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <HoloMemberPanel members={members} teams={teams} />
+            <HoloMemberPanel members={members} teams={teams} teamMembers={teamMembers} onTeamFilter={onTeamFilter} />
           </HoloPanel>
         </div>
-        <div className="absolute pointer-events-auto" style={{ right: GAP, bottom: GAP, width: RIGHT_W, height: WEATHER_H }}>
+        {/* Right bottom: Weather */}
+        <div className="absolute pointer-events-auto" style={{
+          right: EDGE, bottom: EDGE, width: SIDE_W, height: BOTTOM_H,
+        }}>
           <HoloPanel title="实时气象" delay={0.45} style={{ height: '100%', overflow: 'hidden' }}>
             <HoloWeatherPanel weather={weather} drones={drones} selectedDroneId={selectedDroneId} selectedDroneIds={selectedDroneIds} onLocationChange={onWeatherLocationChange} />
           </HoloPanel>
         </div>
+
+        {/* Exit button */}
         {onClose && (
-          <div className="absolute pointer-events-auto z-20" style={{ top: GAP, right: GAP + RIGHT_W + GAP }}>
+          <div className="absolute pointer-events-auto z-20" style={{ top: GAP, right: `calc(${EDGE} + ${SIDE_W} + ${GAP})` }}>
             <button onClick={onClose} style={{ padding: '4px 12px', background: 'rgba(10, 20, 50, 0.9)',
               border: '1px solid rgba(82, 168, 255, 0.4)', borderRadius: '4px', color: '#52a8ff', fontSize: '12px',
               cursor: 'pointer', backdropFilter: 'blur(6px)', transition: 'all 0.2s' }}>
@@ -191,6 +228,111 @@ interface ConsolePanelProps {
 const TAB_ACTIVE = { background: 'rgba(60, 120, 220, 0.4)', border: '1px solid #52a8ff', color: '#fff' };
 const TAB_INACTIVE = { background: 'rgba(20, 40, 80, 0.8)', border: '1px solid rgba(60, 120, 220, 0.4)', color: '#c0d8ff' };
 
+// ===== Helper: Generate popup window HTML for permission transfer =====
+function buildPermissionTransferPopupHtml(
+  dronesJson: string, teamsJson: string, usersJson: string,
+): string {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>权限转移</title>
+<style>
+  body { margin:0; padding:20px; background:#0a1428; color:#c0d8ff; font-family:'Microsoft YaHei',sans-serif; }
+  h2 { color:#52a8ff; margin-bottom:16px; font-size:18px; }
+  .section { margin-bottom:16px; }
+  .section-title { font-size:13px; color:#a0cfff; margin-bottom:8px; }
+  .drone-list { max-height:200px; overflow-y:auto; border:1px solid rgba(60,120,220,0.4); border-radius:6px; padding:8px; background:rgba(20,40,80,0.5); }
+  .drone-item { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:4px; cursor:pointer; font-size:13px; }
+  .drone-item:hover { background:rgba(82,168,255,0.1); }
+  .drone-item.selected { background:rgba(82,168,255,0.2); }
+  input[type=checkbox] { accent-color:#52a8ff; width:16px; height:16px; cursor:pointer; }
+  .mode-btns { display:flex; gap:8px; margin-bottom:12px; }
+  .mode-btn { flex:1; padding:8px; border-radius:6px; font-size:13px; cursor:pointer; text-align:center; border:1px solid rgba(60,120,220,0.4); background:rgba(20,40,80,0.8); color:#c0d8ff; transition:all 0.2s; }
+  .mode-btn.active { background:rgba(60,120,220,0.4); border-color:#52a8ff; color:#fff; }
+  select { width:100%; padding:8px 12px; background:rgba(20,40,80,0.8); border:1px solid rgba(60,120,220,0.4); border-radius:6px; color:#c0d8ff; font-size:13px; margin-bottom:12px; }
+  .submit-btn { width:100%; padding:10px; border-radius:6px; font-size:14px; font-weight:600; border:1px solid #52a8ff; color:#fff; cursor:pointer; transition:all 0.2s; }
+  .submit-btn.enabled { background:#52a8ff; }
+  .submit-btn.disabled { background:rgba(82,168,255,0.2); cursor:not-allowed; opacity:0.5; }
+  .status { font-size:11px; opacity:0.7; margin-left:auto; }
+</style></head><body>
+<h2>无人机权限转移</h2>
+<div class="section"><div class="section-title">选择需要转移的无人机（可多选）:</div>
+<div class="drone-list" id="droneList"></div></div>
+<div class="section"><div class="section-title">转移目标:</div>
+<div class="mode-btns"><div class="mode-btn active" id="btnTeam" onclick="setMode('team')">转给团队</div>
+<div class="mode-btn" id="btnUser" onclick="setMode('user')">转给用户</div></div>
+<select id="targetSelect"><option value="">请选择...</option></select></div>
+<button class="submit-btn disabled" id="submitBtn" onclick="doSubmit()">确认转移</button>
+<script>
+var drones=${dronesJson};
+var teams=${teamsJson};
+var users=${usersJson};
+var selectedIds=new Set();
+var mode='team';
+function renderDrones(){var el=document.getElementById('droneList');el.innerHTML='';
+drones.forEach(function(d){var div=document.createElement('div');div.className='drone-item'+(selectedIds.has(d.uavId)?' selected':'');
+var cb=document.createElement('input');cb.type='checkbox';cb.checked=selectedIds.has(d.uavId);
+cb.onchange=function(){if(selectedIds.has(d.uavId))selectedIds.delete(d.uavId);else selectedIds.add(d.uavId);renderDrones();updateBtn();};
+div.appendChild(cb);var sp=document.createElement('span');sp.textContent=d.uavId;div.appendChild(sp);
+var st=document.createElement('span');st.className='status';st.textContent=d.onlineStatus?(d.armed?'飞行中':'在线'):'离线';div.appendChild(st);
+div.onclick=function(e){if(e.target!==cb){cb.checked=!cb.checked;if(selectedIds.has(d.uavId))selectedIds.delete(d.uavId);else selectedIds.add(d.uavId);renderDrones();updateBtn();}};
+el.appendChild(div);});}
+function setMode(m){mode=m;document.getElementById('btnTeam').className='mode-btn'+(m==='team'?' active':'');
+document.getElementById('btnUser').className='mode-btn'+(m==='user'?' active':'');renderTarget();}
+function renderTarget(){var sel=document.getElementById('targetSelect');sel.innerHTML='<option value="">'+(mode==='team'?'选择目标团队...':'选择目标用户...')+'</option>';
+var items=mode==='team'?teams:users.filter(function(u){return u.role!=='OBSERVER';});
+items.forEach(function(item){var opt=document.createElement('option');
+opt.value=mode==='team'?item.teamId:item.userId;
+opt.textContent=mode==='team'?(item.teamName+' ('+item.leader+')'):(item.realName||item.username)+' ('+item.role+')';sel.appendChild(opt);});}
+function updateBtn(){var btn=document.getElementById('submitBtn');var target=document.getElementById('targetSelect').value;
+if(selectedIds.size>0&&target){btn.className='submit-btn enabled';btn.textContent='确认转移 ('+selectedIds.size+' 架)';}else{btn.className='submit-btn disabled';btn.textContent='确认转移 ('+selectedIds.size+' 架)';}}
+document.getElementById('targetSelect').onchange=updateBtn;
+function doSubmit(){var target=document.getElementById('targetSelect').value;
+if(selectedIds.size===0||!target)return;var n=parseInt(target);if(isNaN(n))return;
+window.opener.postMessage({type:'permissionTransfer',uavIds:Array.from(selectedIds),mode:mode,targetId:n},'*');window.close();}
+renderDrones();renderTarget();
+</script></body></html>`;
+}
+
+// ===== Helper: Generate popup window HTML for rally point create/edit =====
+function buildRallyPointPopupHtml(isEdit: boolean, rpData?: { name: string; latitude: number; longitude: number; capacity: number; status: number; serviceType: number; id?: number }): string {
+  const d = rpData || { name: '', latitude: '', longitude: '', capacity: 10, status: 1, serviceType: 0 };
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${isEdit ? '编辑集结点' : '新增集结点'}</title>
+<style>
+  body { margin:0; padding:20px; background:#0a1428; color:#c0d8ff; font-family:'Microsoft YaHei',sans-serif; }
+  h2 { color:#52a8ff; margin-bottom:16px; font-size:18px; }
+  .form-group { margin-bottom:14px; }
+  label { display:block; font-size:13px; color:#a0cfff; margin-bottom:4px; }
+  input, select { width:100%; padding:8px 12px; background:rgba(20,40,80,0.8); border:1px solid rgba(60,120,220,0.4); border-radius:6px; color:#c0d8ff; font-size:13px; box-sizing:border-box; }
+  .row { display:flex; gap:12px; }
+  .row > div { flex:1; }
+  .btn-row { display:flex; gap:12px; margin-top:20px; justify-content:flex-end; }
+  .btn { padding:8px 20px; border-radius:6px; font-size:13px; cursor:pointer; border:1px solid; transition:all 0.2s; }
+  .btn-cancel { background:rgba(20,40,80,0.8); border-color:rgba(60,120,220,0.4); color:#a0cfff; }
+  .btn-submit { background:#52a8ff; border-color:#52a8ff; color:#fff; font-weight:600; }
+</style></head><body>
+<h2>${isEdit ? '编辑集结点' : '新增集结点'}</h2>
+<div class="form-group"><label>名称 *</label><input id="rpName" value="${d.name}" placeholder="集结点名称"></div>
+<div class="row"><div class="form-group"><label>纬度 *</label><input id="rpLat" type="number" step="0.0001" value="${d.latitude}" placeholder="39.9042"></div>
+<div class="form-group"><label>经度 *</label><input id="rpLng" type="number" step="0.0001" value="${d.longitude}" placeholder="116.4074"></div></div>
+<div class="form-group"><label>容量</label><input id="rpCap" type="number" value="${d.capacity}"></div>
+<div class="row"><div class="form-group"><label>状态</label><select id="rpStatus">
+<option value="0"${d.status===0?' selected':''}>禁用</option><option value="1"${d.status===1?' selected':''}>启用</option><option value="2"${d.status===2?' selected':''}>维护中</option></select></div>
+<div class="form-group"><label>服务类型</label><select id="rpService">
+<option value="0"${d.serviceType===0?' selected':''}>停机</option><option value="1"${d.serviceType===1?' selected':''}>充电</option><option value="2"${d.serviceType===2?' selected':''}>维修</option><option value="3"${d.serviceType===3?' selected':''}>补给</option></select></div></div>
+<div class="btn-row"><button class="btn btn-cancel" onclick="window.close()">取消</button>
+<button class="btn btn-submit" onclick="doSubmit()">${isEdit ? '保存' : '创建'}</button></div>
+<script>
+function doSubmit(){
+  var name=document.getElementById('rpName').value;
+  var lat=parseFloat(document.getElementById('rpLat').value);
+  var lng=parseFloat(document.getElementById('rpLng').value);
+  var cap=parseInt(document.getElementById('rpCap').value);
+  if(!name||isNaN(lat)||isNaN(lng)||isNaN(cap)){alert('请填写所有必填字段');return;}
+  window.opener.postMessage({type:'rallyPoint',isEdit:${isEdit},${isEdit && rpData?.id != null ? `editId:${rpData.id},` : ''}
+    data:{name:name,latitude:lat,longitude:lng,capacity:cap,status:parseInt(document.getElementById('rpStatus').value),serviceType:parseInt(document.getElementById('rpService').value),currentOccupancy:0}},'*');
+  window.close();
+}
+</script></body></html>`;
+}
+
 function ConsolePanel({
   drones, selectedDroneId, selectedDroneIds, onDroneClick, onDroneToggleSelect,
   teams, registeredUsers, rallyPoints,
@@ -199,59 +341,73 @@ function ConsolePanel({
   onRallyPointCreate, onRallyPointEdit, onRallyPointDelete, consoleContent,
 }: ConsolePanelProps) {
   const [activeTab, setActiveTab] = useState('fleet');
-  const [transferUavIds, setTransferUavIds] = useState<string[]>([]);
-  const [transferMode, setTransferMode] = useState<'user' | 'team'>('team');
-  const [transferTarget, setTransferTarget] = useState('');
   const [localLogFilter, setLocalLogFilter] = useState(logFilter);
-  const [rpDialogOpen, setRpDialogOpen] = useState(false);
-  const [rpEditTarget, setRpEditTarget] = useState<MapRallyPoint | null>(null);
-  const [rpForm, setRpForm] = useState<{name: string; latitude: string; longitude: string; capacity: string; status: number; serviceType: number}>({
-    name: '', latitude: '', longitude: '', capacity: '10', status: 1, serviceType: 0,
-  });
 
   const tabs = [
     { key: 'fleet', label: '机队' }, { key: 'permission', label: '权限' },
     { key: 'log', label: '日志' }, { key: 'point', label: '集结点' },
   ];
 
-  const toggleTransferDrone = (uavId: string) => {
-    setTransferUavIds(prev => prev.includes(uavId) ? prev.filter(id => id !== uavId) : [...prev, uavId]);
-  };
-
-  const handleTransferSubmit = () => {
-    if (transferUavIds.length === 0 || !transferTarget) return;
-    const n = parseInt(transferTarget);
-    if (isNaN(n)) return;
-    onTransferPermission?.(transferUavIds, transferMode === 'user' ? n : undefined, transferMode === 'team' ? n : undefined, transferMode);
-    setTransferUavIds([]);
-    setTransferTarget('');
-  };
-
   const SERVICE_LABELS: Record<number, string> = { 0: '停机', 1: '充电', 2: '维修', 3: '补给' };
   const STATUS_LABELS: Record<number, string> = { 0: '禁用', 1: '启用', 2: '维护中' };
   const STATUS_COLORS: Record<number, string> = { 0: '#64748b', 1: '#00ff7f', 2: '#ffd700' };
 
-  const openRpCreate = () => {
-    setRpEditTarget(null);
-    setRpForm({ name: '', latitude: '', longitude: '', capacity: '10', status: 1, serviceType: 0 });
-    setRpDialogOpen(true);
-  };
+  // Refs to keep latest callback references for postMessage listener
+  const onTransferPermissionRef = useRef(onTransferPermission);
+  const onRallyPointCreateRef = useRef(onRallyPointCreate);
+  const onRallyPointEditRef = useRef(onRallyPointEdit);
+  const rallyPointsRef = useRef(rallyPoints);
+  useEffect(() => { onTransferPermissionRef.current = onTransferPermission; }, [onTransferPermission]);
+  useEffect(() => { onRallyPointCreateRef.current = onRallyPointCreate; }, [onRallyPointCreate]);
+  useEffect(() => { onRallyPointEditRef.current = onRallyPointEdit; }, [onRallyPointEdit]);
+  useEffect(() => { rallyPointsRef.current = rallyPoints; }, [rallyPoints]);
 
-  const openRpEditDialog = (rp: MapRallyPoint) => {
-    setRpEditTarget(rp);
-    setRpForm({ name: rp.name, latitude: String(rp.latitude), longitude: String(rp.longitude), capacity: String(rp.capacity), status: rp.status, serviceType: rp.serviceType });
-    setRpDialogOpen(true);
-  };
+  // Listen for postMessage from popup windows
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      const msg = event.data;
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'permissionTransfer') {
+        const { uavIds, mode, targetId } = msg;
+        onTransferPermissionRef.current?.(
+          uavIds,
+          mode === 'user' ? targetId : undefined,
+          mode === 'team' ? targetId : undefined,
+          mode,
+        );
+      } else if (msg.type === 'rallyPoint') {
+        if (msg.isEdit && msg.editId != null) {
+          const rp = rallyPointsRef.current.find(r => r.id === msg.editId);
+          if (rp) onRallyPointEditRef.current?.(rp, msg.data);
+        } else {
+          onRallyPointCreateRef.current?.(msg.data);
+        }
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
 
-  const handleRpDialogSubmit = () => {
-    const lat = parseFloat(rpForm.latitude);
-    const lng = parseFloat(rpForm.longitude);
-    const cap = parseInt(rpForm.capacity);
-    if (!rpForm.name || isNaN(lat) || isNaN(lng) || isNaN(cap)) return;
-    const data: Partial<MapRallyPoint> = { name: rpForm.name, latitude: lat, longitude: lng, capacity: cap, status: rpForm.status, serviceType: rpForm.serviceType, currentOccupancy: 0 };
-    if (rpEditTarget) { onRallyPointEdit?.(rpEditTarget, data); } else { onRallyPointCreate?.(data); }
-    setRpDialogOpen(false);
-  };
+  // Open permission transfer popup
+  const openTransferPopup = useCallback(() => {
+    const dronesData = drones.map(d => ({ uavId: d.uavId, onlineStatus: d.onlineStatus, armed: d.armed }));
+    const teamsData = teams.map(t => ({ teamId: t.teamId, teamName: t.teamName, leader: t.leader }));
+    const usersData = registeredUsers.map(u => ({ userId: u.userId, username: u.username, realName: u.realName, role: u.role }));
+    const html = buildPermissionTransferPopupHtml(
+      JSON.stringify(dronesData), JSON.stringify(teamsData), JSON.stringify(usersData),
+    );
+    const popup = window.open('', '_blank', 'width=520,height=600,scrollbars=yes,resizable=yes');
+    if (popup) { popup.document.write(html); popup.document.close(); }
+  }, [drones, teams, registeredUsers]);
+
+  // Open rally point popup (create or edit)
+  const openRpPopup = useCallback((rp?: MapRallyPoint) => {
+    const isEdit = !!rp;
+    const rpData = rp ? { name: rp.name, latitude: rp.latitude, longitude: rp.longitude, capacity: rp.capacity, status: rp.status, serviceType: rp.serviceType, id: rp.id } : undefined;
+    const html = buildRallyPointPopupHtml(isEdit, rpData);
+    const popup = window.open('', '_blank', 'width=480,height=500,scrollbars=yes,resizable=yes');
+    if (popup) { popup.document.write(html); popup.document.close(); }
+  }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -304,37 +460,13 @@ function ConsolePanel({
           </div>)}
 
           {activeTab === 'permission' && (<div>
-            <div style={{ fontSize: '11px', color: '#a0cfff', marginBottom: '8px' }}>选择无人机进行权限转移:</div>
-            <div style={{ maxHeight: '120px', overflowY: 'auto', marginBottom: '8px' }}>
-              {drones.map(d => (<label key={d.uavId} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 6px',
-                fontSize: '11px', color: '#c0d8ff', cursor: 'pointer', borderRadius: '3px',
-                background: transferUavIds.includes(d.uavId) ? 'rgba(82,168,255,0.15)' : 'transparent' }}>
-                <input type="checkbox" checked={transferUavIds.includes(d.uavId)} onChange={() => toggleTransferDrone(d.uavId)} style={{ accentColor: '#52a8ff' }} />
-                {d.uavId}
-                <span style={{ marginLeft: 'auto', fontSize: '10px', opacity: 0.7 }}>{d.onlineStatus ? (d.armed ? '飞行中' : '在线') : '离线'}</span>
-              </label>))}
-            </div>
-            <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
-              {(['team', 'user'] as const).map(m => (<button key={m} onClick={() => setTransferMode(m)} style={{
-                flex: 1, padding: '3px 0', borderRadius: '3px', fontSize: '10px', cursor: 'pointer',
-                ...(transferMode === m ? TAB_ACTIVE : TAB_INACTIVE) }}>{m === 'team' ? '转给团队' : '转给用户'}</button>))}
-            </div>
-            <select value={transferTarget} onChange={e => setTransferTarget(e.target.value)} style={{
-              width: '100%', padding: '4px 6px', background: 'rgba(20,40,80,0.8)',
-              border: '1px solid rgba(60,120,220,0.4)', borderRadius: '4px', color: '#c0d8ff', fontSize: '11px', marginBottom: '6px' }}>
-              <option value="">{transferMode === 'team' ? '选择目标团队...' : '选择目标用户...'}</option>
-              {transferMode === 'team'
-                ? teams.map(t => <option key={t.teamId} value={t.teamId}>{t.teamName} ({t.leader})</option>)
-                : registeredUsers.filter(u => u.role !== 'OBSERVER').map(u => <option key={u.userId} value={u.userId}>{u.realName || u.username} ({u.role})</option>)}
-            </select>
-            <button onClick={handleTransferSubmit} disabled={transferUavIds.length === 0 || !transferTarget}
-              style={{ width: '100%', padding: '6px', borderRadius: '4px', fontSize: '11px', fontWeight: 600,
-                background: transferUavIds.length > 0 && transferTarget ? '#52a8ff' : 'rgba(82,168,255,0.2)',
-                border: '1px solid #52a8ff', color: '#fff',
-                cursor: transferUavIds.length > 0 && transferTarget ? 'pointer' : 'not-allowed',
-                opacity: transferUavIds.length > 0 && transferTarget ? 1 : 0.5 }}>
-              确认转移 ({transferUavIds.length} 架)
+            <div style={{ fontSize: '11px', color: '#a0cfff', marginBottom: '8px' }}>点击下方按钮在新窗口中进行权限转移操作:</div>
+            <button onClick={openTransferPopup}
+              style={{ width: '100%', padding: '8px', borderRadius: '4px', fontSize: '12px', fontWeight: 600,
+                background: '#52a8ff', border: '1px solid #52a8ff', color: '#fff', cursor: 'pointer', transition: 'all 0.2s' }}>
+              打开权限转移窗口
             </button>
+            <div style={{ fontSize: '10px', color: '#64748b', marginTop: '6px', textAlign: 'center' }}>将在新浏览器窗口中选择无人机和转移目标</div>
           </div>)}
 
           {activeTab === 'log' && (<div>
@@ -375,7 +507,7 @@ function ConsolePanel({
           {activeTab === 'point' && (<div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
               <span style={{ fontSize: '11px', color: '#a0cfff' }}>集结点列表</span>
-              <button onClick={openRpCreate} style={{ padding: '2px 8px', borderRadius: '3px', fontSize: '10px', cursor: 'pointer',
+              <button onClick={() => openRpPopup()} style={{ padding: '2px 8px', borderRadius: '3px', fontSize: '10px', cursor: 'pointer',
                 background: 'rgba(82,168,255,0.2)', border: '1px solid rgba(82,168,255,0.4)', color: '#52a8ff' }}>+ 新增</button>
             </div>
             {rallyPoints.length === 0 ? <div style={{ textAlign: 'center', color: '#a0cfff', fontSize: '12px', padding: '20px 0' }}>暂无集结点</div>
@@ -394,7 +526,7 @@ function ConsolePanel({
                 容量: {rp.currentOccupancy}/{rp.capacity} | 坐标: {rp.latitude.toFixed(4)}, {rp.longitude.toFixed(4)}
               </div>
               <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-                <button onClick={() => openRpEditDialog(rp)} style={{ padding: '1px 6px', borderRadius: '2px', fontSize: '9px', cursor: 'pointer',
+                <button onClick={() => openRpPopup(rp)} style={{ padding: '1px 6px', borderRadius: '2px', fontSize: '9px', cursor: 'pointer',
                   background: 'rgba(82,168,255,0.15)', border: '1px solid rgba(82,168,255,0.3)', color: '#52a8ff' }}>编辑</button>
                 <button onClick={() => onRallyPointDelete?.(rp.id)} style={{ padding: '1px 6px', borderRadius: '2px', fontSize: '9px', cursor: 'pointer',
                   background: 'rgba(255,77,79,0.15)', border: '1px solid rgba(255,77,79,0.3)', color: '#ff4d4f' }}>删除</button>
@@ -402,63 +534,6 @@ function ConsolePanel({
             </div>))}
           </div>)}
         </>)}
-      </div>
-      {rpDialogOpen && (
-        <RallyPointDialog isEdit={rpEditTarget !== null} form={rpForm} onFormChange={setRpForm}
-          onSubmit={handleRpDialogSubmit} onClose={() => setRpDialogOpen(false)} />
-      )}
-    </div>
-  );
-}
-
-interface RpFormType {
-  name: string; latitude: string; longitude: string; capacity: string; status: number; serviceType: number;
-}
-
-function RallyPointDialog({ isEdit, form, onFormChange, onSubmit, onClose }: {
-  isEdit: boolean; form: RpFormType; onFormChange: (f: RpFormType) => void; onSubmit: () => void; onClose: () => void;
-}) {
-  const inputStyle = { width: '100%', padding: '4px 8px', background: 'rgba(20,40,80,0.8)',
-    border: '1px solid rgba(60,120,220,0.4)', borderRadius: '4px', color: '#c0d8ff', fontSize: '11px' };
-  const labelStyle = { fontSize: '11px', color: '#a0cfff', marginBottom: '2px', display: 'block' as const };
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)' }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ background: 'rgba(10, 20, 50, 0.95)', border: '1px solid rgba(82,168,255,0.4)',
-        borderRadius: '8px', padding: '16px', width: '300px', maxHeight: '80vh', overflowY: 'auto',
-        boxShadow: '0 0 20px rgba(82,168,255,0.2)' }}>
-        <div style={{ fontSize: '14px', color: '#fff', fontWeight: 600, marginBottom: '12px' }}>
-          {isEdit ? '编辑集结点' : '新增集结点'}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <div><label style={labelStyle}>名称 *</label>
-            <input style={inputStyle} value={form.name} onChange={e => onFormChange({ ...form, name: e.target.value })} placeholder="集结点名称" /></div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <div style={{ flex: 1 }}><label style={labelStyle}>纬度 *</label>
-              <input style={inputStyle} type="number" step="0.0001" value={form.latitude} onChange={e => onFormChange({ ...form, latitude: e.target.value })} placeholder="39.9042" /></div>
-            <div style={{ flex: 1 }}><label style={labelStyle}>经度 *</label>
-              <input style={inputStyle} type="number" step="0.0001" value={form.longitude} onChange={e => onFormChange({ ...form, longitude: e.target.value })} placeholder="116.4074" /></div>
-          </div>
-          <div><label style={labelStyle}>容量</label>
-            <input style={inputStyle} type="number" value={form.capacity} onChange={e => onFormChange({ ...form, capacity: e.target.value })} /></div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <div style={{ flex: 1 }}><label style={labelStyle}>状态</label>
-              <select style={inputStyle} value={form.status} onChange={e => onFormChange({ ...form, status: parseInt(e.target.value) })}>
-                <option value={0}>禁用</option><option value={1}>启用</option><option value={2}>维护中</option>
-              </select></div>
-            <div style={{ flex: 1 }}><label style={labelStyle}>服务类型</label>
-              <select style={inputStyle} value={form.serviceType} onChange={e => onFormChange({ ...form, serviceType: parseInt(e.target.value) })}>
-                <option value={0}>停机</option><option value={1}>充电</option><option value={2}>维修</option><option value={3}>补给</option>
-              </select></div>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'flex-end' }}>
-          <button onClick={onClose} style={{ padding: '4px 12px', borderRadius: '4px', fontSize: '11px',
-            background: 'rgba(20,40,80,0.8)', border: '1px solid rgba(60,120,220,0.4)', color: '#a0cfff', cursor: 'pointer' }}>取消</button>
-          <button onClick={onSubmit} style={{ padding: '4px 12px', borderRadius: '4px', fontSize: '11px',
-            background: '#52a8ff', border: '1px solid #52a8ff', color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
-            {isEdit ? '保存' : '创建'}</button>
-        </div>
       </div>
     </div>
   );

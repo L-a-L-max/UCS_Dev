@@ -53,7 +53,7 @@ import {
 } from '@/services/api';
 import MapPanel, { type MapDrone, type MapRallyPoint } from '@/components/MapPanel';
 import { HoloDashboard, type LogEntry } from '@/components/cesium';
-import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
+import { useTelemetryWebSocket, type PartitionTelemetryMessage, type MemberStatusMessage } from '@/hooks/useTelemetryWebSocket';
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import * as echarts from 'echarts/core';
 import { PieChart as EPieChart, BarChart as EBarChart } from 'echarts/charts';
@@ -187,12 +187,34 @@ export default function CommanderView({ token, username, partitions = [], onLogo
     });
   }, []);
 
+  // Handle member online status changes from Kafka via WebSocket
+  const handleMemberStatusChange = useCallback((status: MemberStatusMessage) => {
+    setRegisteredUsers(prev => {
+      const idx = prev.findIndex(u => u.userId === status.userId);
+      if (idx >= 0) {
+        // Update existing user's online status
+        const updated = [...prev];
+        updated[idx] = { ...updated[idx], online: status.online } as typeof updated[number] & { online?: boolean };
+        return updated;
+      }
+      // New user not in list - add them
+      return [...prev, {
+        userId: status.userId,
+        username: status.username,
+        realName: status.realName,
+        role: '',
+        online: status.online,
+      } as typeof prev[number] & { online?: boolean }];
+    });
+  }, []);
+
   // Subscribe to partition-specific WebSocket topics for real-time telemetry
   useTelemetryWebSocket({
     enabled: partitions.length > 0,
     partitions,
     onPartitionDataReceived: handlePartitionData,
     onDroneRemoved: handleDroneRemoved,
+    onMemberStatusChange: handleMemberStatusChange,
   });
 
   // 快捷转接弹窗状态
@@ -560,13 +582,13 @@ export default function CommanderView({ token, username, partitions = [], onLogo
     operationType: log.operationType,
   }));
 
-  // 成员数据用于全息面板
+  // 成员数据用于全息面板 (merge online status from WebSocket events)
   const holoMembers = registeredUsers.map(u => ({
     userId: String(u.userId),
     username: u.username,
     realName: u.realName,
     role: u.role,
-    online: undefined,
+    online: (u as Record<string, unknown>).online as boolean | undefined,
   }));
 
   return (
@@ -1288,10 +1310,26 @@ export default function CommanderView({ token, username, partitions = [], onLogo
           onTeamExpand={(teamId) => {
             if (!teamMembers[teamId]) fetchMembers(teamId);
           }}
-          onRallyPointCreate={() => openRpEdit()}
-          onRallyPointEdit={(rp) => {
-            const full = rallyPoints.find(r => r.id === rp.id);
-            if (full) openRpEdit(full);
+          onTeamFilter={(teamId) => {
+            fetchMembers(teamId);
+          }}
+          onRallyPointCreate={(data) => {
+            if (data) {
+              import('@/services/api').then(api => {
+                api.createRallyPoint(token, data as Parameters<typeof api.createRallyPoint>[1]).then(res => {
+                  if (res.code === 0) fetchRallyPoints();
+                });
+              });
+            }
+          }}
+          onRallyPointEdit={(rp, data) => {
+            if (rp && data) {
+              import('@/services/api').then(api => {
+                api.updateRallyPoint(token, rp.id, data as Parameters<typeof api.updateRallyPoint>[2]).then(res => {
+                  if (res.code === 0) fetchRallyPoints();
+                });
+              });
+            }
           }}
           onRallyPointDelete={handleRpDelete}
           onClose={() => setHoloMode(false)}

@@ -3,7 +3,7 @@
  * Real member data with team filtering, WebSocket online status
  * Priority: captain (gold), online (green), offline (red)
  */
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 
 export interface HoloTeamMember {
   userId: string;
@@ -25,6 +25,8 @@ interface HoloTeam {
 interface HoloMemberPanelProps {
   members: HoloTeamMember[];
   teams?: HoloTeam[];
+  teamMembers?: Record<string, Array<{ userId: string; username: string; realName: string; role: string }>>;
+  onTeamFilter?: (teamId: string) => void;
 }
 
 const ROLE_PRIORITY: Record<string, number> = {
@@ -34,12 +36,39 @@ const ROLE_LABELS: Record<string, string> = {
   COMMANDER: '指挥员', LEADER: '队长', PILOT: '飞手', OPERATOR: '操作员', OBSERVER: '观察员',
 };
 
-export function HoloMemberPanel({ members, teams = [] }: HoloMemberPanelProps) {
+export function HoloMemberPanel({ members, teams = [], teamMembers = {}, onTeamFilter }: HoloMemberPanelProps) {
   const [filterTeam, setFilterTeam] = useState<string>('all');
 
+  // When team filter changes, call API to fetch team members
+  const handleTeamChange = useCallback((teamId: string) => {
+    setFilterTeam(teamId);
+    if (teamId !== 'all') {
+      onTeamFilter?.(teamId);
+    }
+  }, [onTeamFilter]);
+
+  // Build the filtered member list:
+  // - "all": show all members from props
+  // - specific team: show team members from API response, merged with online status from members
   const filtered = filterTeam === 'all'
     ? members
-    : members.filter(m => m.teamId === filterTeam);
+    : (() => {
+        const tmList = teamMembers[filterTeam];
+        if (!tmList || tmList.length === 0) return [];
+        // Merge team members with online status from the members prop
+        return tmList.map(tm => {
+          const match = members.find(m => m.userId === String(tm.userId));
+          return {
+            userId: String(tm.userId),
+            username: tm.username,
+            realName: tm.realName,
+            role: tm.role,
+            online: match?.online,
+            teamId: filterTeam,
+            teamName: teams.find(t => t.teamId === filterTeam)?.teamName,
+          };
+        });
+      })();
 
   const sorted = [...filtered].sort((a, b) => {
     const roleA = ROLE_PRIORITY[a.role.toUpperCase()] ?? 99;
@@ -59,7 +88,7 @@ export function HoloMemberPanel({ members, teams = [] }: HoloMemberPanelProps) {
         {teams.length > 0 && (
           <select
             value={filterTeam}
-            onChange={e => setFilterTeam(e.target.value)}
+            onChange={e => handleTeamChange(e.target.value)}
             style={{
               padding: '1px 4px', background: 'rgba(20, 40, 80, 0.8)',
               border: '1px solid rgba(60, 120, 220, 0.4)', borderRadius: '3px',

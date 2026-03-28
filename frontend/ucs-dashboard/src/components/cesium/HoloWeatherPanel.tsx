@@ -93,7 +93,7 @@ export function HoloWeatherPanel({ weather, drones = [], selectedDroneId, select
     if (targetDrones.length > 0) {
       const avgLat = targetDrones.reduce((s, d) => s + (d.lat ?? 0), 0) / targetDrones.length;
       const avgLng = targetDrones.reduce((s, d) => s + (d.lng ?? 0), 0) / targetDrones.length;
-      setLocationName(`\u65e0\u4eba\u673a\u533a\u57df (${avgLat.toFixed(2)}, ${avgLng.toFixed(2)})`);
+      setLocationName(`无人机区域 (${avgLat.toFixed(2)}, ${avgLng.toFixed(2)})`);
       fetchWeather(avgLat, avgLng);
       onLocationChange?.(avgLat, avgLng);
       return;
@@ -103,12 +103,12 @@ export function HoloWeatherPanel({ weather, drones = [], selectedDroneId, select
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          setLocationName(`\u5f53\u524d\u4f4d\u7f6e (${pos.coords.latitude.toFixed(2)}, ${pos.coords.longitude.toFixed(2)})`);
+          setLocationName(`当前位置 (${pos.coords.latitude.toFixed(2)}, ${pos.coords.longitude.toFixed(2)})`);
           fetchWeather(pos.coords.latitude, pos.coords.longitude);
           onLocationChange?.(pos.coords.latitude, pos.coords.longitude);
         },
         () => {
-          setLocationName('\u5317\u4eac (\u9ed8\u8ba4)');
+          setLocationName('北京 (默认)');
           fetchWeather(39.9, 116.4);
         },
         { timeout: 5000 }
