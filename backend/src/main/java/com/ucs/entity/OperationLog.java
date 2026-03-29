@@ -55,7 +55,7 @@ public class OperationLog {
      * {"commandType":"TAKEOFF","payload":{"altitude":50}}
      * {"fromUserId":2,"toUserId":3,"droneId":1}
      */
-    @Column(columnDefinition = "TEXT")
+    @Column(length = 2000)
     private String detail;
     
     /**
@@ -64,7 +64,7 @@ public class OperationLog {
     @Column(length = 20)
     private String result;
     
-    @Column(name = "error_message", columnDefinition = "TEXT")
+    @Column(name = "error_message", length = 2000)
     private String errorMessage;
     
     @Column(name = "ip_address", length = 50)

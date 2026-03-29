@@ -16,9 +16,8 @@ public class Drone {
     private String droneSn;
     
     /**
-     * Unique identifier derived from MAC address on the onboard computer.
-     * This is the permanent drone identifier used throughout the Zenoh network.
-     * Format example: "UAV_001", "UAV_002", etc.
+     * Unique identifier for the drone in the DDS network.
+     * Matches PX4 simulation topic prefix (e.g., "px4_1", "px4_2").
      */
     @Column(name = "uav_id", unique = true, length = 50)
     private String uavId;
@@ -32,16 +31,43 @@ public class Drone {
     @Column(length = 100)
     private String manufacturer;
     
-    @Column(columnDefinition = "JSON")
+    @Column(length = 2000)
     private String capabilities;
     
     @Column(name = "default_team_id")
     private Long defaultTeamId;
     
     /**
-     * Current online status based on Zenoh heartbeat.
+     * Current control permission owner (user ID who can send commands).
+     * NULL means no one has control permission (new drone).
      */
-    @Column(name = "online_status", columnDefinition = "BOOLEAN DEFAULT FALSE")
+    @Column(name = "control_owner_id")
+    private Long controlOwnerId;
+    
+    /**
+     * Current view permission owner at Leader/Pilot level.
+     * Each level only has one person. NULL means default viewing (observer+commander only).
+     */
+    @Column(name = "view_owner_id")
+    private Long viewOwnerId;
+    
+    /**
+     * Current online status based on DDS heartbeat.
+     */
+    /**
+     * Last known home position (saved on ARM/TAKEOFF).
+     * Used for NED coordinate conversion and RTL reference.
+     */
+    @Column(name = "last_home_lat")
+    private Double lastHomeLat;
+    
+    @Column(name = "last_home_lon")
+    private Double lastHomeLon;
+    
+    @Column(name = "last_home_alt")
+    private Double lastHomeAlt;
+    
+    @Column(name = "online_status")
     private Boolean onlineStatus = false;
     
     @Column(name = "last_heartbeat")

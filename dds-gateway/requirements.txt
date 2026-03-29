@@ -1,0 +1,4 @@
+# ROS2 Python client (provided by ROS2 installation, not pip)
+# rclpy - install via: sudo apt install ros-humble-rclpy
+# px4_msgs - install via: sudo apt install ros-humble-px4-msgs
+requests>=2.28.0

@@ -398,6 +398,7 @@ function App() {
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
   const [userRoles, setUserRoles] = useState<string[]>([]);
+  const [userPartitions, setUserPartitions] = useState<string[]>([]);
   
   const [drones, setDrones] = useState<DroneStatus[]>([]);
   const [taskSummary, setTaskSummary] = useState<TaskSummary | null>(null);
@@ -498,12 +499,15 @@ function App() {
       const data = await response.json();
       if (data.code === 0) {
         const roles = data.data.roles || [];
+        const partitions = data.data.partitions || [];
         setToken(data.data.token);
         setUserRoles(roles);
+        setUserPartitions(partitions);
         setIsLoggedIn(true);
         localStorage.setItem('token', data.data.token);
         localStorage.setItem('roles', JSON.stringify(roles));
         localStorage.setItem('username', username);
+        localStorage.setItem('partitions', JSON.stringify(partitions));
       } else {
         setError(data.msg || zhCN.loginFailed);
       }
@@ -700,9 +704,10 @@ function App() {
     });
   }, [useLiveTelemetry]);
 
-  // WebSocket hook for real-time telemetry
+  // WebSocket hook for real-time telemetry (only for OBSERVER role - other roles use their own view-level WS)
+  const isObserverRole = !userRoles.some(r => ['COMMANDER', 'LEADER', 'PILOT', 'OPERATOR'].includes(r.toUpperCase()));
   const { connected: _telemetryConnected } = useTelemetryWebSocket({
-    enabled: isLoggedIn && useLiveTelemetry,
+    enabled: isLoggedIn && useLiveTelemetry && isObserverRole,
     onTelemetryReceived: handleTelemetryReceived,
     onConnectionChange: setWsConnected,
   });
@@ -1747,12 +1752,16 @@ function App() {
     const savedToken = localStorage.getItem('token');
     const savedRoles = localStorage.getItem('roles');
     const savedUsername = localStorage.getItem('username');
+    const savedPartitions = localStorage.getItem('partitions');
     if (savedToken && savedRoles) {
       const roles = JSON.parse(savedRoles);
       setToken(savedToken);
       setUserRoles(roles);
       setIsLoggedIn(true);
       if (savedUsername) setUsername(savedUsername);
+      if (savedPartitions) {
+        try { setUserPartitions(JSON.parse(savedPartitions)); } catch { /* ignore */ }
+      }
     }
     // Pre-warm geolocation to avoid cold-start delay
     preWarmGeolocation();
@@ -1876,6 +1885,8 @@ function App() {
     localStorage.removeItem('token');
     localStorage.removeItem('roles');
     localStorage.removeItem('username');
+    localStorage.removeItem('partitions');
+    setUserPartitions([]);
     setIsLoggedIn(false);
     setToken('');
     setUserRoles([]);
@@ -1935,13 +1946,13 @@ function App() {
   // Role-based routing: non-observer roles get their dedicated views
   const primaryRole = getPrimaryRole();
   if (primaryRole === 'COMMANDER') {
-    return <CommanderView token={token} username={username} onLogout={handleLogout} />;
+    return <CommanderView token={token} username={username} partitions={userPartitions} onLogout={handleLogout} />;
   }
   if (primaryRole === 'PILOT') {
-    return <PilotView token={token} username={username} onLogout={handleLogout} />;
+    return <PilotView token={token} username={username} partitions={userPartitions} onLogout={handleLogout} />;
   }
   if (primaryRole === 'LEADER') {
-    return <LeaderView token={token} username={username} onLogout={handleLogout} />;
+    return <LeaderView token={token} username={username} partitions={userPartitions} onLogout={handleLogout} />;
   }
 
   // OBSERVER role (default): show the existing big screen dashboard

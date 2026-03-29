@@ -63,7 +63,7 @@ public class TelemetryController {
     @GetMapping("/latest/{uavId}")
     @Operation(summary = "Get latest state for a specific UAV")
     public ResponseEntity<ApiResponse<UavLatestState>> getLatestState(
-            @PathVariable Integer uavId) {
+            @PathVariable String uavId) {
         UavLatestState state = telemetryService.getLatestState(uavId);
         if (state == null) {
             return ResponseEntity.notFound().build();
@@ -77,7 +77,7 @@ public class TelemetryController {
     @GetMapping("/history/{uavId}")
     @Operation(summary = "Get telemetry history for path replay")
     public ResponseEntity<ApiResponse<List<UavTelemetry>>> getTelemetryHistory(
-            @PathVariable Integer uavId,
+            @PathVariable String uavId,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant startTime,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant endTime) {
         List<UavTelemetry> history = telemetryService.getTelemetryHistory(uavId, startTime, endTime);

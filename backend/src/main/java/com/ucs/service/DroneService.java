@@ -11,6 +11,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Service
@@ -71,12 +72,16 @@ public class DroneService {
         
         Map<Long, String> ownerMap = getOwnerMap(droneIds);
         
+        // Build control owner name map: droneId -> actual controller's realName
+        Map<Long, String> controlOwnerMap = getControlOwnerMap(droneIds);
+        
         return drones.stream().map(drone -> {
             DroneStatusDTO dto = new DroneStatusDTO();
-            dto.setUavId("UAV_" + String.format("%03d", drone.getId()));
+            dto.setUavId(drone.getUavId() != null ? drone.getUavId() : "UNKNOWN_" + drone.getId());
             dto.setDroneSn(drone.getDroneSn());
             dto.setModel(drone.getModel());
             dto.setOwner(ownerMap.get(drone.getId()));
+            dto.setControlOwnerName(controlOwnerMap.get(drone.getId()));
             
             DroneStatus status = statusMap.get(drone.getId());
             if (status != null) {
@@ -105,6 +110,25 @@ public class DroneService {
                                         .map(User::getRealName)
                                         .orElse("Unknown"))
                                 .orElse("Unassigned")
+                ));
+    }
+
+    /**
+     * Build a map of droneId -> actual control owner's realName.
+     * Uses DroneOwnership (active record) to find who currently controls each drone.
+     */
+    private Map<Long, String> getControlOwnerMap(List<Long> droneIds) {
+        return droneIds.stream()
+                .collect(Collectors.toMap(
+                        id -> id,
+                        id -> droneOwnershipRepository.findActiveByDroneId(id)
+                                .map(ownership -> {
+                                    Long userId = ownership.getUserId();
+                                    return userRepository.findById(userId)
+                                            .map(u -> u.getRealName() != null ? u.getRealName() : u.getUsername())
+                                            .orElse("未知用户");
+                                })
+                                .orElse("未分配")
                 ));
     }
     
@@ -138,7 +162,12 @@ public class DroneService {
         
         return statuses.stream()
                 .filter(status -> matchesFilter(status, filterType))
-                .map(status -> "UAV_" + String.format("%03d", status.getDroneId()))
+                .map(status -> {
+                    // Use actual uavId from drone entity instead of generated name
+                    return droneRepository.findById(status.getDroneId())
+                            .map(d -> d.getUavId() != null ? d.getUavId() : "UNKNOWN_" + d.getId())
+                            .orElse("UNKNOWN_" + status.getDroneId());
+                })
                 .collect(Collectors.toList());
     }
     
@@ -207,6 +236,12 @@ public class DroneService {
     }
     
     public Long parseDroneId(String uavId) {
+        // First try to find by uavId (DDS identifier like "px4_1")
+        Optional<Drone> droneOpt = droneRepository.findByUavId(uavId);
+        if (droneOpt.isPresent()) {
+            return droneOpt.get().getId();
+        }
+        // Legacy fallback: "UAV_001" format
         if (uavId.startsWith("UAV_")) {
             return Long.parseLong(uavId.substring(4));
         }

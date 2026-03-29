@@ -23,7 +23,7 @@ public class DroneSpec {
     @Column
     private Float weight;
     
-    @Column(columnDefinition = "JSON")
+    @Column(length = 2000)
     private String sensors;
     
     @OneToOne(fetch = FetchType.LAZY)

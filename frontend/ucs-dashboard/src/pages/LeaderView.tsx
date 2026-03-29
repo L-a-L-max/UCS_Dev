@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -23,12 +23,15 @@ import {
   ArrowUp,
   ArrowDown,
   RotateCcw,
-  Lock,
-  Unlock,
   Pause,
   CheckSquare,
   Square,
   ListChecks,
+  Home,
+  Crosshair,
+  Locate,
+  ChevronDown,
+  Circle,
 } from 'lucide-react';
 import {
   Dialog,
@@ -46,27 +49,48 @@ import {
   getLeaderTeamInfo,
   leaderTransferDrone,
   sendControlCommand,
+  sendBatchControlCommand,
+  getEnabledRallyPoints,
+  getDroneHomePosition,
   type DroneInfo,
   type OperationLog,
+  type RallyPoint,
 } from '@/services/api';
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
+import { useTelemetryWebSocket, type PartitionTelemetryMessage, type CommandAckMessage } from '@/hooks/useTelemetryWebSocket';
 
 interface LeaderViewProps {
   token: string;
   username: string;
+  partitions?: string[];
   onLogout: () => void;
 }
 
+// Control commands - ARM/DISARM removed, TAKEOFF handles ARM+OFFBOARD+climb
+// RTL removed from quick commands - use configurable RTL panel below instead
 const COMMANDS = [
-  { type: 'ARM', label: '解锁' },
-  { type: 'DISARM', label: '锁定' },
-  { type: 'TAKEOFF', label: '起飞' },
-  { type: 'LAND', label: '降落' },
-  { type: 'RTL', label: '返航' },
-  { type: 'HOLD', label: '悬停' },
+  { type: 'TAKEOFF', label: '\u8d77\u98de' },
+  { type: 'LAND', label: '\u964d\u843d' },
+  { type: 'HOLD', label: '\u60ac\u505c' },
+  { type: 'MARK_HOME', label: '\u6807\u8bb0Home' },
 ];
 
-export default function LeaderView({ token, username, onLogout }: LeaderViewProps) {
+// Batch control commands for multi-select
+const BATCH_COMMANDS = [
+  { type: 'TAKEOFF', label: '\u8d77\u98de', icon: ArrowUp, color: 'bg-blue-600 hover:bg-blue-700' },
+  { type: 'LAND', label: '\u964d\u843d', icon: ArrowDown, color: 'bg-amber-600 hover:bg-amber-700' },
+  { type: 'HOLD', label: '\u60ac\u505c', icon: Pause, color: 'bg-orange-600 hover:bg-orange-700' },
+];
+
+// Detail panel control commands - RTL removed from quick buttons, has dedicated configurable panel
+const DETAIL_COMMANDS = [
+  { type: 'TAKEOFF', label: '\u8d77\u98de', icon: ArrowUp, color: 'bg-blue-600 hover:bg-blue-700' },
+  { type: 'LAND', label: '\u964d\u843d', icon: ArrowDown, color: 'bg-amber-600 hover:bg-amber-700' },
+  { type: 'HOLD', label: '\u60ac\u505c', icon: Pause, color: 'bg-orange-600 hover:bg-orange-700' },
+  { type: 'MARK_HOME', label: '\u6807\u8bb0Home', icon: Home, color: 'bg-teal-600 hover:bg-teal-700' },
+];
+
+export default function LeaderView({ token, username, partitions = [], onLogout }: LeaderViewProps) {
   const [drones, setDrones] = useState<DroneInfo[]>([]);
   const [teamInfo, setTeamInfo] = useState<{ teamId: string; teamName: string; leader: string; memberCount: number } | null>(null);
   const [members, setMembers] = useState<Array<{ userId: string; username: string; realName: string; role: string }>>([]);
@@ -74,23 +98,123 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
   const [logs, setLogs] = useState<OperationLog[]>([]);
   const [logPage, setLogPage] = useState(0);
   const [logTotalPages, setLogTotalPages] = useState(0);
+  const [logPageSize, setLogPageSize] = useState(8);
   const [commandFeedback, setCommandFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
+  const [commandAckFeedback, setCommandAckFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
   const [activeTab, setActiveTab] = useState<'drones' | 'members' | 'logs'>('drones');
 
-  // GOTO 参数
+  // GOTO params
   const [gotoLat, setGotoLat] = useState('39.9042');
   const [gotoLon, setGotoLon] = useState('116.4074');
   const [gotoAlt, setGotoAlt] = useState('50');
-  // 起飞高度
-  const [takeoffAlt, setTakeoffAlt] = useState('20');
+  const [gotoAddress, setGotoAddress] = useState('');
+  // Takeoff altitude
+  const [takeoffAlt, setTakeoffAlt] = useState('5');
+  // RTL params - single drone mode: 'home' or 'rally'
+  const [singleRtlMode, setSingleRtlMode] = useState<'home' | 'rally'>('home');
+  const [singleSelectedRallyId, setSingleSelectedRallyId] = useState<number | null>(null);
+  const [singleRallySearch, setSingleRallySearch] = useState('');
+
+  // Detail panel section collapse states (Issue 6: collapsed by default)
+  const [gotoExpanded, setGotoExpanded] = useState(false);
+  const [rtlExpanded, setRtlExpanded] = useState(false);
+  const [orbitExpanded, setOrbitExpanded] = useState(false);
+
+  // Orbit params (Issue 4)
+  const [orbitLat, setOrbitLat] = useState('');
+  const [orbitLon, setOrbitLon] = useState('');
+  const [orbitRadius, setOrbitRadius] = useState('5');
+
+  // Map click coordinates for dynamic fill (Issue 5)
+  const [mapClickCoords, setMapClickCoords] = useState<{ lat: number; lon: number } | null>(null);
+
+  // Multi-select panel section collapse states
+  const [batchGotoExpanded, setBatchGotoExpanded] = useState(false);
+  const [batchMarkHomeExpanded, setBatchMarkHomeExpanded] = useState(false);
+  const [batchRtlExpanded, setBatchRtlExpanded] = useState(false);
+  const [batchOrbitExpanded, setBatchOrbitExpanded] = useState(false);
+
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
 
-  // 详情控制面板状态（点击无人机显示/隐藏，可通过按钮一直隐藏）
+  // Home position display
+  const [homePosition, setHomePosition] = useState<{ lat: number; lon: number; alt: number } | null>(null);
+  const [homeMarker, setHomeMarker] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Multi-select MARK_HOME coordinate input
+  const [batchHomeLat, setBatchHomeLat] = useState('');
+  const [batchHomeLon, setBatchHomeLon] = useState('');
+  // Multi-select RTL mode: 'home' or 'rally'
+  const [batchRtlMode, setBatchRtlMode] = useState<'home' | 'rally'>('home');
+  const [rallyPoints, setRallyPoints] = useState<RallyPoint[]>([]);
+  const [selectedRallyPointId, setSelectedRallyPointId] = useState<number | null>(null);
+  const [rallySearchKeyword, setRallySearchKeyword] = useState('');
+
+  // Real-time telemetry from WebSocket
+  const [telemetryDrones, setTelemetryDrones] = useState<Map<string, MapDrone>>(new Map());
+
+  const handlePartitionData = useCallback((data: PartitionTelemetryMessage) => {
+    if (!data.drones || data.drones.length === 0) return;
+    setTelemetryDrones(prev => {
+      const next = new Map(prev);
+      data.drones.forEach(uav => {
+        next.set(uav.uavId, {
+          uavId: uav.uavId,
+          lat: uav.lat,
+          lng: uav.lon,
+          altitude: uav.alt,
+          battery: uav.batteryPercent != null && uav.batteryPercent >= 0 ? uav.batteryPercent : undefined,
+          flightStatus: uav.armed ? 'FLYING' : 'IDLE',
+          onlineStatus: true,
+          armed: uav.armed ?? uav.isActive ?? false,
+          heading: uav.heading,
+        });
+      });
+      return next;
+    });
+  }, []);
+
+  const handleDroneRemoved = useCallback((removedUavIds: string[]) => {
+    setTelemetryDrones(prev => {
+      const next = new Map(prev);
+      removedUavIds.forEach(id => next.delete(id));
+      return next;
+    });
+    setSelectedMapDrone(prev => {
+      if (prev && removedUavIds.includes(prev)) return null;
+      return prev;
+    });
+  }, []);
+
+  // Dedup ack feedback to prevent repeated toasts (especially for HOLD continuous updates)
+  const lastAckKeyRef = useRef<string>('');
+  const lastAckTimeRef = useRef<number>(0);
+  const handleCommandAck = useCallback((ack: CommandAckMessage) => {
+    const ackKey = `${ack.uavId}:${ack.command}:${ack.result}`;
+    const now = Date.now();
+    if (ackKey === lastAckKeyRef.current && now - lastAckTimeRef.current < 3000) {
+      return; // Suppress duplicate ack toast within 3s
+    }
+    lastAckKeyRef.current = ackKey;
+    lastAckTimeRef.current = now;
+    const success = ack.result === 0;
+    const msg = success
+      ? `PX4 \u786e\u8ba4\u6267\u884c: ${ack.resultText}`
+      : `PX4 \u62d2\u7edd: ${ack.resultText}`;
+    setCommandAckFeedback({ uavId: ack.uavId, message: msg, success });
+    setTimeout(() => setCommandAckFeedback(null), 4000);
+  }, []);
+
+  useTelemetryWebSocket({
+    enabled: partitions.length > 0,
+    partitions,
+    onPartitionDataReceived: handlePartitionData,
+    onDroneRemoved: handleDroneRemoved,
+    onCommandAck: handleCommandAck,
+  });
+
   const [showDetailPanel, setShowDetailPanel] = useState(false);
   const [detailPanelEnabled, setDetailPanelEnabled] = useState(true);
-
-  // 多选模式
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [selectedDrones, setSelectedDrones] = useState<Set<string>>(new Set());
 
@@ -101,7 +225,17 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
   const [transferLoading, setTransferLoading] = useState(false);
   const [transferResult, setTransferResult] = useState<{ success: boolean; message: string } | null>(null);
 
-  // Fetch team drones (Issue #7: team-scoped)
+  // Dynamic log page size based on viewport
+  useEffect(() => {
+    const calculatePageSize = () => {
+      const available = window.innerHeight - 220;
+      setLogPageSize(Math.max(4, Math.floor(available / 68)));
+    };
+    calculatePageSize();
+    window.addEventListener('resize', calculatePageSize);
+    return () => window.removeEventListener('resize', calculatePageSize);
+  }, []);
+
   const fetchDrones = useCallback(async () => {
     setLoading(true);
     try {
@@ -116,7 +250,6 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
     }
   }, [token]);
 
-  // Fetch team info and members
   const fetchTeamInfo = useCallback(async () => {
     try {
       const [infoRes, membersRes] = await Promise.all([
@@ -140,10 +273,9 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
     }
   }, [token]);
 
-  // Fetch team-scoped logs (Issue #7)
   const fetchLogs = useCallback(async (page: number = 0) => {
     try {
-      const res = await getLeaderTeamLogs(token, page, 10);
+      const res = await getLeaderTeamLogs(token, page, logPageSize);
       if (res.code === 0 && res.data) {
         setLogs(res.data.content || []);
         setLogTotalPages(res.data.totalPages || 0);
@@ -152,48 +284,129 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
     } catch (err) {
       console.error('Failed to fetch team logs:', err);
     }
+  }, [token, logPageSize]);
+
+  const fetchRallyPoints = useCallback(async () => {
+    try {
+      const res = await getEnabledRallyPoints(token);
+      if (res.code === 0 && res.data) {
+        setRallyPoints(Array.isArray(res.data) ? res.data : []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch rally points:', err);
+    }
   }, [token]);
 
   useEffect(() => {
     fetchDrones();
     fetchTeamInfo();
     fetchLogs();
+    fetchRallyPoints();
     const interval = setInterval(fetchDrones, 5000);
     return () => clearInterval(interval);
-  }, [fetchDrones, fetchTeamInfo, fetchLogs]);
+  }, [fetchDrones, fetchTeamInfo, fetchLogs, fetchRallyPoints]);
 
-  // Handle intra-team drone transfer (Issue #7)
+  // Fetch Home position from Redis when a drone is selected (cross-view sync)
+  useEffect(() => {
+    if (!selectedMapDrone) {
+      setHomePosition(null);
+      return;
+    }
+    // Clear previous Home immediately to avoid stale data from prior drone
+    setHomePosition(null);
+    (async () => {
+      try {
+        const res = await getDroneHomePosition(token, selectedMapDrone);
+        if (res.code === 0 && res.data && res.data.lat !== 0 && res.data.lon !== 0) {
+          setHomePosition({ lat: res.data.lat, lon: res.data.lon, alt: res.data.alt });
+        }
+      } catch {
+        // Silently ignore - Home may not be set yet
+      }
+    })();
+  }, [selectedMapDrone, token]);
+
   const handleTeamTransfer = async () => {
     if (!transferUavId || !transferToUserId) return;
     setTransferLoading(true);
     setTransferResult(null);
     try {
-      // userId 可能带 "U" 前缀（如 "U3"），需要去掉前缀再解析
       const numericUserId = parseInt(transferToUserId.replace(/^U/i, ''));
       const res = await leaderTransferDrone(token, [transferUavId], numericUserId);
       if (res.code === 0) {
-        setTransferResult({ success: true, message: '队内控制权转移成功' });
+        setTransferResult({ success: true, message: '\u961f\u5185\u63a7\u5236\u6743\u8f6c\u79fb\u6210\u529f' });
         setTransferUavId('');
         setTransferToUserId('');
         setTransferDialogOpen(false);
         fetchDrones();
         fetchLogs();
       } else {
-        setTransferResult({ success: false, message: res.msg || '转移失败' });
+        setTransferResult({ success: false, message: res.msg || '\u8f6c\u79fb\u5931\u8d25' });
       }
     } catch {
-      setTransferResult({ success: false, message: '网络错误' });
+      setTransferResult({ success: false, message: '\u7f51\u7edc\u9519\u8bef' });
     } finally {
       setTransferLoading(false);
     }
   };
 
+  // Unified command handler with full param support
   const handleQuickCommand = async (uavId: string, commandType: string) => {
     setCommandFeedback(null);
+    // Command protection (Issue 5): check drone online/armed status
+    const droneStatus = mapDrones.find(d => d.uavId === uavId);
+    if (droneStatus) {
+      if (!droneStatus.onlineStatus) {
+        setCommandFeedback({ uavId, message: '无人机离线，无法执行命令', success: false });
+        setTimeout(() => setCommandFeedback(null), 3000);
+        return;
+      }
+      if (!droneStatus.armed && !['ARM', 'TAKEOFF', 'MARK_HOME'].includes(commandType)) {
+        setCommandFeedback({ uavId, message: '无人机未解锁，请先ARM', success: false });
+        setTimeout(() => setCommandFeedback(null), 3000);
+        return;
+      }
+    }
     try {
-      const params = commandType === 'TAKEOFF' ? JSON.stringify({ altitude: parseFloat(takeoffAlt) || 20 })
-        : commandType === 'GOTO' ? JSON.stringify({ lat: parseFloat(gotoLat) || 0, lon: parseFloat(gotoLon) || 0, alt: parseFloat(gotoAlt) || 50 })
-        : '{}';
+      let params = '{}';
+      if (commandType === 'TAKEOFF') {
+        params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
+      } else if (commandType === 'GOTO') {
+        params = JSON.stringify({
+          lat: parseFloat(gotoLat) || 0,
+          lon: parseFloat(gotoLon) || 0,
+          alt: parseFloat(gotoAlt) || 50,
+          address: gotoAddress || undefined,
+        });
+      } else if (commandType === 'RTL') {
+        // RTL uses rally point coordinates if in rally mode
+        if (singleRtlMode === 'rally' && singleSelectedRallyId) {
+          const rp = rallyPoints.find(r => r.id === singleSelectedRallyId);
+          if (rp) {
+            params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude });
+          }
+        }
+        // Home mode: no extra params, drone returns to its Home point
+      } else if (commandType === 'ORBIT') {
+        // Include current drone altitude to prevent altitude loss during orbit
+        const droneAlt = mapDrones.find(d => d.uavId === uavId)?.altitude || 0;
+        params = JSON.stringify({
+          lat: parseFloat(orbitLat) || 0,
+          lon: parseFloat(orbitLon) || 0,
+          radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
+          alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
+        });
+      } else if (commandType === 'MARK_HOME') {
+        const droneInfo = mapDrones.find(d => d.uavId === uavId);
+        if (droneInfo && droneInfo.lat && droneInfo.lng) {
+          params = JSON.stringify({
+            lat: droneInfo.lat,
+            lon: droneInfo.lng,
+            alt: droneInfo.altitude || 0,
+          });
+        }
+      }
+
       const res = await sendControlCommand(token, {
         uavId,
         commandType,
@@ -201,18 +414,73 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
         confirmed: true,
       });
       if (res.code === 0) {
-        setCommandFeedback({ uavId, message: `${commandType} 指令已发送`, success: true });
+        setCommandFeedback({ uavId, message: `${commandType} \u6307\u4ee4\u5df2\u53d1\u9001`, success: true });
+        if (commandType === 'MARK_HOME' || commandType === 'TAKEOFF') {
+          const droneInfo = mapDrones.find(d => d.uavId === uavId);
+          if (droneInfo && droneInfo.lat && droneInfo.lng) {
+            setHomePosition({ lat: droneInfo.lat, lon: droneInfo.lng, alt: droneInfo.altitude || 0 });
+          }
+        }
       } else {
-        setCommandFeedback({ uavId, message: res.msg || '指令发送失败', success: false });
+        setCommandFeedback({ uavId, message: res.msg || '\u6307\u4ee4\u53d1\u9001\u5931\u8d25', success: false });
       }
     } catch {
-      setCommandFeedback({ uavId, message: '网络错误', success: false });
+      setCommandFeedback({ uavId, message: '\u7f51\u7edc\u9519\u8bef', success: false });
     }
     setTimeout(() => setCommandFeedback(null), 3000);
   };
 
-  // 多选聚合数据
-  const multiSelectedDrones = drones.filter(d => selectedDrones.has(d.uavId));
+  const locateHome = () => {
+    if (homePosition) {
+      setHomeMarker({ lat: homePosition.lat, lng: homePosition.lon });
+      setTimeout(() => setHomeMarker(null), 5000);
+    }
+  };
+
+  // Dynamic lat/lng fill from map click (Issue 5)
+  useEffect(() => {
+    if (!mapClickCoords) return;
+    setGotoLat(mapClickCoords.lat.toFixed(6));
+    setGotoLon(mapClickCoords.lon.toFixed(6));
+    setOrbitLat(mapClickCoords.lat.toFixed(6));
+    setOrbitLon(mapClickCoords.lon.toFixed(6));
+  }, [mapClickCoords]);
+
+  const formatTime = (ts: string) => {
+    if (!ts) return '-';
+    try { return new Date(ts).toLocaleString('zh-CN'); } catch { return ts; }
+  };
+
+  // Merge API drones with WebSocket telemetry
+  const mapDrones: MapDrone[] = (() => {
+    const droneMap = new Map<string, MapDrone>();
+    drones.forEach(d => {
+      droneMap.set(d.uavId, {
+        uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
+        battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
+        model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
+      });
+    });
+    telemetryDrones.forEach((td, uavId) => {
+      const existing = droneMap.get(uavId);
+      if (existing) {
+        existing.lat = td.lat;
+        existing.lng = td.lng;
+        existing.altitude = td.altitude;
+        existing.onlineStatus = td.onlineStatus;
+        existing.armed = td.armed;
+        if (td.battery != null) existing.battery = td.battery;
+        if (td.flightStatus) existing.flightStatus = td.flightStatus;
+        if (td.heading != null) existing.heading = td.heading;
+      } else {
+        droneMap.set(uavId, td);
+      }
+    });
+    return Array.from(droneMap.values());
+  })();
+
+  // Multi-select aggregate data
+  const multiSelectedDrones = mapDrones.filter(d => selectedDrones.has(d.uavId));
   const aggregateData = multiSelectedDrones.length >= 2 ? {
     count: multiSelectedDrones.length,
     maxAlt: Math.max(...multiSelectedDrones.map(d => d.altitude ?? 0)),
@@ -222,344 +490,523 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
     flyingCount: multiSelectedDrones.filter(d => d.flightStatus === 'FLYING').length,
   } : null;
 
-  const formatTime = (ts: string) => {
-    if (!ts) return '-';
-    try { return new Date(ts).toLocaleString('zh-CN'); } catch { return ts; }
-  };
-
-  // 将 DroneInfo 转换为 MapDrone 格式
-  const mapDrones: MapDrone[] = drones.map(d => ({
-    uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
-    battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
-    model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
-  }));
-
   return (
-    <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">
-      {/* 顶部栏 */}
-      <header className="flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
-        <h1 className="text-xl font-bold flex items-center gap-2">
-          <Users className="w-6 h-6 text-green-400" />
-          队长管理面板
+    <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden relative">
+      {/* Floating Toast feedback */}
+      {(commandFeedback || commandAckFeedback) && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-1.5 pointer-events-none" style={{ minWidth: 280, maxWidth: 420 }}>
+          {commandFeedback && (
+            <div className={`px-4 py-2 rounded-lg text-xs shadow-lg backdrop-blur-sm pointer-events-auto transition-all duration-300 ${
+              commandFeedback.success ? 'bg-green-900/70 border border-green-600/50 text-green-200' : 'bg-red-900/70 border border-red-600/50 text-red-200'
+            }`}>
+              <span className="font-medium">[{commandFeedback.uavId}]</span> {commandFeedback.message}
+            </div>
+          )}
+          {commandAckFeedback && (
+            <div className={`px-4 py-2 rounded-lg text-xs shadow-lg backdrop-blur-sm pointer-events-auto transition-all duration-300 ${
+              commandAckFeedback.success ? 'bg-emerald-900/70 border border-emerald-500/50 text-emerald-200' : 'bg-orange-900/70 border border-orange-500/50 text-orange-200'
+            }`}>
+              <span className="font-medium">[{commandAckFeedback.uavId}]</span> {commandAckFeedback.message}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Header */}
+      <header className="flex justify-between items-center px-4 py-1.5 bg-slate-800 border-b border-slate-700 shrink-0">
+        <h1 className="text-lg font-bold flex items-center gap-2">
+          <Users className="w-5 h-5 text-green-400" />
+          {'\u961f\u957f\u7ba1\u7406\u9762\u677f'}
           <Badge variant="outline" className="ml-2 text-green-300 border-green-500">{username}</Badge>
         </h1>
-        <div className="flex items-center gap-2">
-          {/* 显示/隐藏详情控制面板的勾选按钮 */}
+        <div className="flex items-center gap-1.5">
           <Button variant="outline" size="sm"
             onClick={() => {
               if (!multiSelectMode) {
-                // 进入多选模式：清除之前的单选状态
                 setSelectedDrones(new Set());
                 setShowDetailPanel(false);
                 setSelectedMapDrone(null);
               } else {
-                // 退出多选模式：清除多选状态
                 setSelectedDrones(new Set());
               }
               setMultiSelectMode(!multiSelectMode);
             }}
-            className={`text-xs ${multiSelectMode ? 'bg-amber-600/30 border-amber-500 text-amber-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
-            title={multiSelectMode ? '退出多选' : '多选模式'}>
-            <ListChecks className="w-4 h-4 mr-1" />
-            多选
+            className={`text-xs h-7 ${multiSelectMode ? 'bg-amber-600/30 border-amber-500 text-amber-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}>
+            <ListChecks className="w-3.5 h-3.5 mr-1" />{'\u591a\u9009'}
           </Button>
+          {multiSelectMode && (
+            <Button variant="outline" size="sm"
+              onClick={() => {
+                const allIds = new Set(mapDrones.map(d => d.uavId));
+                if (selectedDrones.size === mapDrones.length) {
+                  setSelectedDrones(new Set());
+                  setShowDetailPanel(false);
+                  setSelectedMapDrone(null);
+                } else {
+                  setSelectedDrones(allIds);
+                  setShowDetailPanel(false);
+                }
+              }}
+              className={`text-xs h-7 ${selectedDrones.size === mapDrones.length ? 'bg-green-600/30 border-green-500 text-green-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}>
+              {selectedDrones.size === mapDrones.length ? <CheckSquare className="w-3.5 h-3.5 mr-1" /> : <Square className="w-3.5 h-3.5 mr-1" />}
+              {'\u5168\u9009'}
+            </Button>
+          )}
           <Button variant="outline" size="sm"
             onClick={() => {
               const newEnabled = !detailPanelEnabled;
               setDetailPanelEnabled(newEnabled);
-              if (!newEnabled) {
-                // 关闭详情面板按钮 -> 隐藏面板
-                setShowDetailPanel(false);
-              } else {
-                // 开启详情面板按钮 -> 如果有选中无人机则立即显示
-                if (selectedMapDrone) setShowDetailPanel(true);
-              }
+              if (!newEnabled) setShowDetailPanel(false);
+              else if (selectedMapDrone) setShowDetailPanel(true);
             }}
-            className={`text-xs ${detailPanelEnabled ? 'bg-blue-600/30 border-blue-500 text-blue-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}
-            title={detailPanelEnabled ? '禁用详情面板' : '启用详情面板'}>
-            {detailPanelEnabled ? <Eye className="w-4 h-4 mr-1" /> : <EyeOff className="w-4 h-4 mr-1" />}
-            详情面板
+            className={`text-xs h-7 ${detailPanelEnabled ? 'bg-blue-600/30 border-blue-500 text-blue-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}>
+            {detailPanelEnabled ? <Eye className="w-3.5 h-3.5 mr-1" /> : <EyeOff className="w-3.5 h-3.5 mr-1" />}{'\u8be6\u60c5'}
           </Button>
           <Button variant="outline" size="sm" onClick={() => setLeftPanelCollapsed(!leftPanelCollapsed)}
-            className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50"
-            title={leftPanelCollapsed ? '展开控制面板' : '收起控制面板'}>
-            {leftPanelCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+            className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-7 text-xs">
+            {leftPanelCollapsed ? <PanelLeftOpen className="w-3.5 h-3.5" /> : <PanelLeftClose className="w-3.5 h-3.5" />}
           </Button>
           <Button variant="outline" size="sm" onClick={() => { fetchDrones(); fetchTeamInfo(); fetchLogs(); }} disabled={loading}
-            className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50">
-            <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />刷新
+            className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-7 text-xs">
+            <RefreshCw className={`w-3.5 h-3.5 mr-1 ${loading ? 'animate-spin' : ''}`} />{'\u5237\u65b0'}
           </Button>
           <Button variant="outline" size="sm" onClick={onLogout}
-            className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50">
-            <LogOut className="w-4 h-4 mr-1" />退出
+            className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-7 text-xs">
+            <LogOut className="w-3.5 h-3.5 mr-1" />{'\u9000\u51fa'}
           </Button>
         </div>
       </header>
 
-      {/* 主体: 左右分栏 */}
       <div className="flex-1 flex overflow-hidden">
-        {/* 左侧面板: 控制功能 */}
-        {!leftPanelCollapsed && (
-          <div className="w-[420px] min-w-[320px] bg-slate-900 border-r border-slate-700 flex flex-col">
-            {/* Tab 切换 */}
-            <div className="flex gap-0.5 bg-slate-800 border-b border-slate-700 p-1">
-              <button onClick={() => setActiveTab('drones')}
-                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'drones' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
-                <Plane className="w-3 h-3 mr-1" />无人机
-              </button>
-              <button onClick={() => setActiveTab('members')}
-                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'members' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
-                <Users className="w-3 h-3 mr-1" />成员
-              </button>
-              <button onClick={() => { setActiveTab('logs'); fetchLogs(0); }}
-                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'logs' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
-                <FileText className="w-3 h-3 mr-1" />日志
-              </button>
-            </div>
+        {/* Left panel: team management */}
+        <div className={`${leftPanelCollapsed ? 'w-0 min-w-0 overflow-hidden' : 'w-[380px] min-w-[300px]'} bg-slate-900 border-r border-slate-700 flex flex-col transition-all duration-500 ease-in-out shrink-0`}>
+          {/* Tab switch */}
+          <div className="flex gap-0.5 bg-slate-800 border-b border-slate-700 p-1">
+            <button onClick={() => setActiveTab('drones')}
+              className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'drones' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              <Plane className="w-3 h-3 mr-1" />{'\u65e0\u4eba\u673a'}
+            </button>
+            <button onClick={() => setActiveTab('members')}
+              className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'members' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              <Users className="w-3 h-3 mr-1" />{'\u6210\u5458'}
+            </button>
+            <button onClick={() => { setActiveTab('logs'); fetchLogs(0); }}
+              className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'logs' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              <FileText className="w-3 h-3 mr-1" />{'\u65e5\u5fd7'}
+            </button>
+          </div>
 
-            {/* Tab 内容 */}
-            <div className="flex-1 overflow-auto p-3">
-              {/* 无人机 Tab */}
-              {activeTab === 'drones' && (
-                <div className="space-y-3">
-                  {/* 指令反馈 */}
-                  {commandFeedback && (
-                    <div className={`p-2 rounded text-xs ${commandFeedback.success ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'}`}>
-                      <span className={commandFeedback.success ? 'text-green-300' : 'text-red-300'}>
-                        [{commandFeedback.uavId}] {commandFeedback.message}
-                      </span>
-                    </div>
-                  )}
-                  {/* 统计 */}
-                  <div className="grid grid-cols-2 gap-2">
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-blue-400">{drones.length}</div>
-                      <div className="text-[10px] text-slate-400">无人机数</div>
-                    </CardContent></Card>
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</div>
-                      <div className="text-[10px] text-slate-400">飞行中</div>
-                    </CardContent></Card>
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-cyan-400">{drones.filter(d => d.onlineStatus === true).length}</div>
-                      <div className="text-[10px] text-slate-400">在线</div>
-                    </CardContent></Card>
-                    <Card className="bg-slate-800 border-slate-700"><CardContent className="p-2 text-center">
-                      <div className="text-lg font-bold text-red-400">{drones.filter(d => (d.battery || 0) < 20).length}</div>
-                      <div className="text-[10px] text-slate-400">低电量</div>
-                    </CardContent></Card>
-                  </div>
-                  {/* 无人机列表（在线优先） */}
-                  <div className="space-y-1">
-                    {[...drones].sort((a, b) => {
-                      const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
-                      if (aO !== bO) return bO - aO;
-                      const aF = a.flightStatus === 'FLYING' ? 1 : 0, bF = b.flightStatus === 'FLYING' ? 1 : 0;
-                      return bF - aF;
-                    }).map(drone => (
-                      <div key={drone.uavId}
-                        className={`p-2 rounded text-xs cursor-pointer transition-all ${
-                          multiSelectMode && selectedDrones.has(drone.uavId) ? 'bg-amber-900/40 border border-amber-500' :
-                          selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
-                        onClick={() => {
-                          if (multiSelectMode) {
-                            // 多选模式：切换选中状态
-                            const newSet = new Set(selectedDrones);
-                            if (newSet.has(drone.uavId)) {
-                              newSet.delete(drone.uavId);
-                            } else {
-                              newSet.add(drone.uavId);
-                            }
-                            setSelectedDrones(newSet);
-                            // 多选模式下：选中1个显示详情面板，选中2+显示聚合面板（均受 detailPanelEnabled 控制）
-                            if (newSet.size === 1) {
-                              const singleId = Array.from(newSet)[0];
-                              setSelectedMapDrone(singleId);
-                              setShowDetailPanel(detailPanelEnabled);
-                            } else if (newSet.size === 0) {
-                              setSelectedMapDrone(null);
-                              setShowDetailPanel(false);
-                            } else {
-                              // 2+ 选中，由 aggregateData 面板接管（同样受 detailPanelEnabled 控制）
-                              setShowDetailPanel(false);
-                            }
-                          } else if (selectedMapDrone === drone.uavId) {
-                            setShowDetailPanel(false);
-                            setSelectedMapDrone(null);
-                          } else {
-                            setSelectedMapDrone(drone.uavId);
-                            // 详情面板显示条件：detailPanelEnabled && 有选中无人机
+          {/* Tab content */}
+          <div className="flex-1 overflow-auto p-2">
+            {/* Drones Tab */}
+            {activeTab === 'drones' && (
+              <div className="space-y-2">
+                {/* Stats */}
+                <div className="grid grid-cols-4 gap-1">
+                  <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
+                    <div className="text-sm font-bold text-blue-400">{mapDrones.length}</div>
+                    <div className="text-[9px] text-slate-400">{'\u65e0\u4eba\u673a'}</div>
+                  </CardContent></Card>
+                  <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
+                    <div className="text-sm font-bold text-green-400">{mapDrones.filter(d => d.armed === true).length}</div>
+                    <div className="text-[9px] text-slate-400">{'\u5df2\u89e3\u9501'}</div>
+                  </CardContent></Card>
+                  <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
+                    <div className="text-sm font-bold text-cyan-400">{mapDrones.filter(d => d.onlineStatus === true).length}</div>
+                    <div className="text-[9px] text-slate-400">{'\u5728\u7ebf'}</div>
+                  </CardContent></Card>
+                  <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
+                    <div className="text-sm font-bold text-red-400">{mapDrones.filter(d => (d.battery || 0) < 20).length}</div>
+                    <div className="text-[9px] text-slate-400">{'\u4f4e\u7535\u91cf'}</div>
+                  </CardContent></Card>
+                </div>
+                {/* Drone list */}
+                <div className="space-y-1">
+                  {[...mapDrones].sort((a, b) => {
+                    const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
+                    if (aO !== bO) return bO - aO;
+                    const aA = a.armed === true ? 1 : 0, bA = b.armed === true ? 1 : 0;
+                    return bA - aA;
+                  }).map(drone => (
+                    <div key={drone.uavId}
+                      className={`p-1.5 rounded text-xs cursor-pointer transition-all ${
+                        multiSelectMode && selectedDrones.has(drone.uavId) ? 'bg-amber-900/40 border border-amber-500' :
+                        selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
+                      onClick={() => {
+                        if (multiSelectMode) {
+                          const newSet = new Set(selectedDrones);
+                          if (newSet.has(drone.uavId)) newSet.delete(drone.uavId);
+                          else newSet.add(drone.uavId);
+                          setSelectedDrones(newSet);
+                          if (newSet.size === 1) {
+                            setSelectedMapDrone(Array.from(newSet)[0]);
                             setShowDetailPanel(detailPanelEnabled);
+                          } else if (newSet.size === 0) {
+                            setSelectedMapDrone(null);
+                            setShowDetailPanel(false);
+                          } else {
+                            setShowDetailPanel(false);
                           }
-                        }}>
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="font-bold text-blue-300 flex items-center gap-1">
-                            {multiSelectMode && (selectedDrones.has(drone.uavId)
-                              ? <CheckSquare className="w-3 h-3 text-amber-400" />
-                              : <Square className="w-3 h-3 text-slate-500" />)}
-                            {drone.uavId}
-                          </span>
-                          <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus === true ? 'bg-blue-600' : 'bg-slate-600'}`}>
-                            {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
-                          </Badge>
-                        </div>
-                        <div className="flex items-center gap-2 text-slate-400 mb-1">
-                          <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery}%` : 'N/A'}</span>
-                          <span>{drone.altitude != null ? `${drone.altitude}m` : ''}</span>
-                          <span className="text-slate-500">{drone.teamName || ''}</span>
-                          {drone.teamLeader && <span className="text-slate-500">队长:{drone.teamLeader}</span>}
-                        </div>
-                        {/* 快捷指令 + 转移 */}
-                        <div className="flex flex-wrap gap-0.5 mt-1">
-                          {COMMANDS.map(cmd => (
-                            <Button key={cmd.type} size="sm" variant="outline"
-                              className="text-[10px] h-5 px-1.5 bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600"
-                              onClick={e => { e.stopPropagation(); handleQuickCommand(drone.uavId, cmd.type); }}>{cmd.label}</Button>
-                          ))}
-                          <Button size="sm" variant="outline"
-                            className="text-[10px] h-5 px-1.5 bg-purple-700/50 border-purple-600 text-purple-300 hover:bg-purple-600"
-                            onClick={e => { e.stopPropagation(); setTransferUavId(drone.uavId); setTransferDialogOpen(true); }}>
-                            <ArrowRightLeft className="w-2.5 h-2.5 mr-0.5" />转移
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                    {drones.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无数据</div>}
-                  </div>
-                </div>
-              )}
-
-              {/* 成员 Tab */}
-              {activeTab === 'members' && (
-                <div className="space-y-3">
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardHeader className="pb-2 px-3 pt-3">
-                      <CardTitle className="flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-1"><Users className="w-3 h-3 text-green-400" />{teamInfo?.teamName || '我的队伍'}</div>
-                        <Badge variant="outline" className="text-slate-400 border-slate-600 text-[10px]">{members.length} 人</Badge>
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="px-3 pb-3">
-                      {teamInfo && <div className="text-xs text-slate-400 mb-2">队长: <span className="text-slate-300">{teamInfo.leader}</span></div>}
-                      <div className="space-y-0.5">
-                        {members.map(member => (
-                          <div key={member.userId} className="flex items-center justify-between text-[11px] p-1.5 rounded bg-slate-700/50">
-                            <div className="flex items-center gap-1">
-                              <span className="text-slate-300">{member.realName || member.username}</span>
-                              <span className="text-[10px] text-slate-500">ID:{member.userId}</span>
-                            </div>
-                            <Badge className="bg-slate-600 text-[10px] px-1 py-0">{member.role}</Badge>
-                          </div>
-                        ))}
-                        {members.length === 0 && <div className="text-center text-slate-500 py-3 text-xs">暂无成员数据</div>}
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-              )}
-
-              {/* 日志 Tab */}
-              {activeTab === 'logs' && (
-                <div className="space-y-2">
-                  {logs.map(log => (
-                    <div key={log.id} className="p-2 rounded bg-slate-800 border border-slate-700 text-xs">
+                        } else if (selectedMapDrone === drone.uavId) {
+                          setShowDetailPanel(false);
+                          setSelectedMapDrone(null);
+                        } else {
+                          setSelectedMapDrone(drone.uavId);
+                          setShowDetailPanel(detailPanelEnabled);
+                        }
+                      }}>
                       <div className="flex items-center justify-between mb-0.5">
-                        <span className="text-slate-500">{formatTime(log.createdAt)}</span>
-                        <Badge className={`text-[10px] px-1 py-0 ${log.result === 'SUCCESS' ? 'bg-green-600' : 'bg-red-600'}`}>
-                          {log.result === 'SUCCESS' ? '成功' : log.result === 'FAILURE' ? '失败' : log.result || '-'}
+                        <span className="font-bold text-blue-300 flex items-center gap-1 text-[11px]">
+                          {multiSelectMode && (selectedDrones.has(drone.uavId)
+                            ? <CheckSquare className="w-3 h-3 text-amber-400" />
+                            : <Square className="w-3 h-3 text-slate-500" />)}
+                          {drone.uavId}
+                        </span>
+                        <Badge className={`text-[9px] px-1 py-0 ${!drone.onlineStatus ? 'bg-slate-600' : drone.armed === true ? 'bg-green-600' : 'bg-blue-600'}`}>
+                          {!drone.onlineStatus ? '\u79bb\u7ebf' : drone.armed === true ? '\u98de\u884c\u4e2d' : '\u672a\u89e3\u9501'}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-2 text-slate-400 text-[10px] mb-0.5">
+                        <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}</span>
+                        <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
+                        <span className="text-slate-500">{drone.teamName || ''}</span>
+                      </div>
+                      {/* Quick commands + transfer */}
+                      <div className="flex flex-wrap gap-0.5 mt-0.5">
+                        {COMMANDS.map(cmd => {
+                          const isOffline = drone.onlineStatus !== true;
+                          const isDisarmed = drone.armed !== true;
+                          const shouldDisable = cmd.type !== 'TAKEOFF' && (isOffline || isDisarmed);
+                          return (
+                            <Button key={cmd.type} size="sm" variant="outline"
+                              className={`text-[9px] h-[18px] px-1.5 ${shouldDisable ? 'bg-slate-800 border-slate-700 text-slate-600 cursor-not-allowed' : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'}`}
+                              onClick={e => { e.stopPropagation(); if (!shouldDisable) handleQuickCommand(drone.uavId, cmd.type); }}
+                              disabled={shouldDisable}
+                              title={shouldDisable ? (isOffline ? '无人机离线' : '无人机未解锁') : cmd.type}>
+                              {cmd.label}
+                            </Button>
+                          );
+                        })}
+                        <Button size="sm" variant="outline"
+                          className="text-[9px] h-[18px] px-1.5 bg-purple-700/50 border-purple-600 text-purple-300 hover:bg-purple-600"
+                          onClick={e => { e.stopPropagation(); setTransferUavId(drone.uavId); setTransferResult(null); setTransferToUserId(''); setTransferDialogOpen(true); }}>
+                          <ArrowRightLeft className="w-2.5 h-2.5 mr-0.5" />{'\u8f6c\u79fb'}
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                  {mapDrones.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">{'\u6682\u65e0\u6570\u636e'}</div>}
+                </div>
+              </div>
+            )}
+
+            {/* Members Tab */}
+            {activeTab === 'members' && (
+              <div className="space-y-2">
+                <Card className="bg-slate-800 border-slate-700">
+                  <CardHeader className="pb-1 px-2 pt-2">
+                    <CardTitle className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-1"><Users className="w-3 h-3 text-green-400" />{teamInfo?.teamName || '\u6211\u7684\u961f\u4f0d'}</div>
+                      <Badge variant="outline" className="text-slate-400 border-slate-600 text-[10px]">{members.length} {'\u4eba'}</Badge>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-2 pb-2">
+                    {teamInfo && <div className="text-xs text-slate-400 mb-1">{'\u961f\u957f'}: <span className="text-slate-300">{teamInfo.leader}</span></div>}
+                    <div className="space-y-0.5">
+                      {members.map(member => (
+                        <div key={member.userId} className="flex items-center justify-between text-[10px] p-1 rounded bg-slate-700/50">
+                          <div className="flex items-center gap-1">
+                            <span className="text-slate-300">{member.realName || member.username}</span>
+                            <span className="text-[9px] text-slate-500">ID:{member.userId}</span>
+                          </div>
+                          <Badge className="bg-slate-600 text-[9px] px-1 py-0">{member.role}</Badge>
+                        </div>
+                      ))}
+                      {members.length === 0 && <div className="text-center text-slate-500 py-3 text-xs">{'\u6682\u65e0\u6210\u5458\u6570\u636e'}</div>}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {/* Logs Tab */}
+            {activeTab === 'logs' && (
+              <div className="flex flex-col h-full">
+                <div className="flex-1 space-y-1">
+                  {logs.map(log => (
+                    <div key={log.id} className="p-1.5 rounded bg-slate-800 border border-slate-700 text-xs">
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-slate-500 text-[10px]">{formatTime(log.createdAt)}</span>
+                        <Badge className={`text-[9px] px-1 py-0 ${log.result === 'SUCCESS' ? 'bg-green-600' : 'bg-red-600'}`}>
+                          {log.result === 'SUCCESS' ? '\u6210\u529f' : log.result === 'FAILURE' ? '\u5931\u8d25' : log.result || '-'}
                         </Badge>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Badge className="bg-blue-600 text-[10px] px-1 py-0">{log.operationType}</Badge>
-                        <span className="text-slate-300">{log.username || '-'}</span>
-                        {log.targetUavId && <span className="text-blue-300 font-mono">{log.targetUavId}</span>}
+                        <Badge className="bg-blue-600 text-[9px] px-1 py-0">{log.operationType}</Badge>
+                        <span className="text-slate-300 text-[10px]">{log.username || '-'}</span>
+                        {log.targetUavId && <span className="text-blue-300 font-mono text-[10px]">{log.targetUavId}</span>}
                       </div>
-                      {log.detail && <div className="text-slate-400 mt-0.5 truncate">{log.detail}</div>}
+                      {log.detail && <div className="text-slate-400 mt-0.5 truncate text-[10px]">{log.detail}</div>}
                     </div>
                   ))}
-                  {logs.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无日志</div>}
-                  {logTotalPages > 1 && (
-                    <div className="flex items-center justify-center gap-2 pt-2">
-                      <Button size="sm" variant="outline" disabled={logPage === 0} onClick={() => fetchLogs(logPage - 1)}
-                        className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronLeft className="w-3 h-3" /></Button>
-                      <span className="text-xs text-slate-400">{logPage + 1} / {logTotalPages}</span>
-                      <Button size="sm" variant="outline" disabled={logPage >= logTotalPages - 1} onClick={() => fetchLogs(logPage + 1)}
-                        className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronRight className="w-3 h-3" /></Button>
-                    </div>
-                  )}
+                  {logs.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">{'\u6682\u65e0\u65e5\u5fd7'}</div>}
                 </div>
-              )}
-            </div>
+                <div className="flex items-center justify-center gap-2 pt-1.5 flex-shrink-0 border-t border-slate-700 mt-1">
+                  <Button size="sm" variant="outline" disabled={logPage === 0} onClick={() => fetchLogs(logPage - 1)}
+                    className="bg-slate-700 border-slate-600 text-slate-300 h-5 text-xs"><ChevronLeft className="w-3 h-3" /></Button>
+                  <span className="text-xs text-slate-400">{logPage + 1} / {Math.max(1, logTotalPages)}</span>
+                  <Button size="sm" variant="outline" disabled={logPage >= logTotalPages - 1} onClick={() => fetchLogs(logPage + 1)}
+                    className="bg-slate-700 border-slate-600 text-slate-300 h-5 text-xs"><ChevronRight className="w-3 h-3" /></Button>
+                </div>
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
-        {/* 中间: 多选聚合数据面板（受 detailPanelEnabled 控制） */}
+        {/* Multi-select aggregate panel - enlarged layout */}
         {multiSelectMode && aggregateData && detailPanelEnabled && (
-          <div className="w-[280px] min-w-[240px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-3">
+          <div className="w-[320px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-2.5 shrink-0">
             <Card className="bg-slate-800 border-slate-700">
-              <CardHeader className="pb-2 px-3 pt-3">
-                <CardTitle className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-1">
-                    <ListChecks className="w-3 h-3 text-amber-400" />多机聚合信息
-                  </div>
-                  <Badge className="bg-amber-600 text-[10px]">{aggregateData.count} 架</Badge>
+              <CardHeader className="pb-1.5 px-3 pt-2.5">
+                <CardTitle className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-1.5"><ListChecks className="w-4 h-4 text-amber-400" />{'\u591a\u673a\u805a\u5408'}</div>
+                  <Badge className="bg-amber-600 text-xs px-2">{aggregateData.count} {'\u67b6'}</Badge>
                 </CardTitle>
               </CardHeader>
               <CardContent className="px-3 pb-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-slate-700/50 rounded p-2 text-center">
-                    <div className="text-[10px] text-slate-400 mb-0.5">最高高度</div>
-                    <div className="text-sm font-bold text-blue-300">{aggregateData.maxAlt}m</div>
+                    <div className="text-[10px] text-slate-400">{'\u6700\u9ad8/\u6700\u4f4e\u9ad8\u5ea6'}</div>
+                    <div className="text-[11px] font-bold text-blue-300">{aggregateData.maxAlt.toFixed(1)}m / {aggregateData.minAlt.toFixed(1)}m</div>
                   </div>
                   <div className="bg-slate-700/50 rounded p-2 text-center">
-                    <div className="text-[10px] text-slate-400 mb-0.5">最低高度</div>
-                    <div className="text-sm font-bold text-cyan-300">{aggregateData.minAlt}m</div>
-                  </div>
-                  <div className="bg-slate-700/50 rounded p-2 text-center">
-                    <div className="text-[10px] text-slate-400 mb-0.5">低电量</div>
-                    <div className="text-sm font-bold text-red-400">{aggregateData.lowBatteryCount} 架</div>
-                  </div>
-                  <div className="bg-slate-700/50 rounded p-2 text-center">
-                    <div className="text-[10px] text-slate-400 mb-0.5">在线</div>
-                    <div className="text-sm font-bold text-green-400">{aggregateData.onlineCount} 架</div>
-                  </div>
-                  <div className="bg-slate-700/50 rounded p-2 text-center col-span-2">
-                    <div className="text-[10px] text-slate-400 mb-0.5">飞行中</div>
-                    <div className="text-sm font-bold text-green-300">{aggregateData.flyingCount} 架</div>
+                    <div className="text-[10px] text-slate-400">{'\u5728\u7ebf/\u98de\u884c\u4e2d'}</div>
+                    <div className="text-[11px] font-bold text-green-300">{aggregateData.onlineCount} / {aggregateData.flyingCount}</div>
                   </div>
                 </div>
-                {/* 多机控制指令 */}
+                {/* Batch control - larger buttons */}
                 <div className="mt-3">
-                  <div className="text-[10px] text-slate-400 mb-1">批量控制指令</div>
-                  <div className="grid grid-cols-3 gap-1">
-                    {[
-                      { type: 'ARM', label: '全部解锁', icon: Unlock, color: 'bg-green-600 hover:bg-green-700' },
-                      { type: 'DISARM', label: '全部锁定', icon: Lock, color: 'bg-slate-600 hover:bg-slate-700' },
-                      { type: 'TAKEOFF', label: '全部起飞', icon: ArrowUp, color: 'bg-blue-600 hover:bg-blue-700' },
-                      { type: 'LAND', label: '全部降落', icon: ArrowDown, color: 'bg-amber-600 hover:bg-amber-700' },
-                      { type: 'RTL', label: '全部返航', icon: RotateCcw, color: 'bg-purple-600 hover:bg-purple-700' },
-                      { type: 'HOLD', label: '全部悬停', icon: Pause, color: 'bg-orange-600 hover:bg-orange-700' },
-                    ].map(cmd => {
+                  <div className="text-xs text-slate-400 mb-1.5 font-medium">{'\u6279\u91cf\u63a7\u5236'}</div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {BATCH_COMMANDS.map(cmd => {
                       const Icon = cmd.icon;
                       return (
                         <Button key={cmd.type}
-                          className={`h-auto py-1.5 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[10px]`}
-                          onClick={() => { multiSelectedDrones.forEach(d => handleQuickCommand(d.uavId, cmd.type)); }}>
-                          <Icon className="w-3.5 h-3.5" />
-                          <span className="font-bold">{cmd.label}</span>
+                          className={`h-auto py-1.5 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-xs`}
+                          onClick={() => {
+                            const uavIds = multiSelectedDrones.map(d => d.uavId);
+                            const params: Record<string, unknown> = {};
+                            if (cmd.type === 'TAKEOFF') params.altitude = parseFloat(takeoffAlt) || 5;
+                            sendBatchControlCommand(token, { uavIds, commandType: cmd.type, params: JSON.stringify(params), confirmed: true })
+                              .then(res => {
+                                if (res.code === 0) {
+                                  setCommandFeedback({ uavId: `${uavIds.length}\u67b6`, message: `${cmd.label}\u6307\u4ee4\u5df2\u53d1\u9001`, success: true });
+                                  if (cmd.type === 'TAKEOFF') {
+                                    setTelemetryDrones(prev => {
+                                      const next = new Map(prev);
+                                      uavIds.forEach(id => {
+                                        const existing = next.get(id);
+                                        if (existing) { next.set(id, { ...existing, armed: true, flightStatus: 'FLYING' }); }
+                                      });
+                                      return next;
+                                    });
+                                  }
+                                }
+                              })
+                              .catch(() => {});
+                            setTimeout(() => setCommandFeedback(null), 3000);
+                          }}>
+                          <Icon className="w-4 h-4" />
+                          <span className="font-bold text-[10px]">{cmd.label}</span>
                         </Button>
                       );
                     })}
                   </div>
                 </div>
-                {/* 已选无人机列表 */}
-                <div className="mt-3">
-                  <div className="text-[10px] text-slate-400 mb-1">已选无人机</div>
-                  <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                {/* Multi-select GOTO with coordinates - collapsible */}
+                <div className="mt-3 border-t border-slate-700 pt-2">
+                  <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1.5 cursor-pointer" onClick={() => setBatchGotoExpanded(!batchGotoExpanded)}>
+                    {batchGotoExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                    <Crosshair className="w-3.5 h-3.5 text-cyan-400" />{'\u524d\u5f80\u76ee\u6807'}
+                  </div>
+                  {batchGotoExpanded && <div className="space-y-1">
+                    <div className="flex items-center gap-1">
+                      <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u9ad8\u5ea6'}</label>
+                      <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" />
+                      <span className="text-[10px] text-slate-400">{'\u7c73'}</span>
+                    </div>
+                    <Button className="w-full text-xs h-7 bg-cyan-600 hover:bg-cyan-700 text-white mt-1.5"
+                    onClick={() => {
+                      const uavIds = multiSelectedDrones.map(d => d.uavId);
+                      const params = JSON.stringify({
+                        lat: parseFloat(gotoLat) || 0,
+                        lon: parseFloat(gotoLon) || 0,
+                        alt: parseFloat(gotoAlt) || 50,
+                        formation: true,
+                        droneCount: uavIds.length,
+                        droneArea: 6.25,
+                      });
+                      sendBatchControlCommand(token, { uavIds, commandType: 'GOTO', params, confirmed: true })
+                        .then(res => { if (res.code === 0) setCommandFeedback({ uavId: `${uavIds.length}\u67b6`, message: '\u524d\u5f80\u6307\u4ee4\u5df2\u53d1\u9001', success: true }); })
+                        .catch(() => {});
+                      setTimeout(() => setCommandFeedback(null), 3000);
+                    }}>
+                    <Navigation className="w-3.5 h-3.5 mr-1" />{'\u524d\u5f80'}
+                    </Button>
+                  </div>}
+                </div>
+                {/* Multi-select MARK_HOME with optional unified coordinates - collapsible */}
+                <div className="mt-3 border-t border-slate-700 pt-2">
+                  <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1.5 cursor-pointer" onClick={() => setBatchMarkHomeExpanded(!batchMarkHomeExpanded)}>
+                    {batchMarkHomeExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                    <Home className="w-3.5 h-3.5 text-teal-400" />{'\u6807\u8bb0Home'}
+                  </div>
+                  {batchMarkHomeExpanded && <div className="space-y-1">
+                    <div className="flex items-center gap-1">
+                      <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={batchHomeLat} onChange={e => setBatchHomeLat(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder={'\u7559\u7a7a=\u5404\u81ea\u5f53\u524d\u4f4d\u7f6e'} />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={batchHomeLon} onChange={e => setBatchHomeLon(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder={'\u7559\u7a7a=\u5404\u81ea\u5f53\u524d\u4f4d\u7f6e'} />
+                    </div>
+                    <Button className="w-full text-xs h-7 bg-teal-600 hover:bg-teal-700 text-white mt-1.5"
+                    onClick={() => {
+                      const lat = parseFloat(batchHomeLat);
+                      const lon = parseFloat(batchHomeLon);
+                      multiSelectedDrones.forEach(d => {
+                        const homeLat = lat && lon ? lat : d.lat;
+                        const homeLon = lat && lon ? lon : d.lng;
+                        const params = JSON.stringify({ lat: homeLat, lon: homeLon, alt: d.altitude || 0 });
+                        sendControlCommand(token, { uavId: d.uavId, commandType: 'MARK_HOME', params, confirmed: true });
+                      });
+                      setCommandFeedback({ uavId: `${multiSelectedDrones.length}\u67b6`, message: '\u6279\u91cfMARK_HOME\u6307\u4ee4\u5df2\u53d1\u9001', success: true });
+                      setTimeout(() => setCommandFeedback(null), 3000);
+                    }}>
+                    <Home className="w-3.5 h-3.5 mr-1" />{'\u6807\u8bb0Home'}
+                    </Button>
+                  </div>}
+                </div>
+                {/* Multi-select RTL with Home/Rally mode - collapsible */}
+                <div className="mt-3 border-t border-slate-700 pt-2">
+                  <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1.5 cursor-pointer" onClick={() => setBatchRtlExpanded(!batchRtlExpanded)}>
+                    {batchRtlExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                    <RotateCcw className="w-3.5 h-3.5 text-purple-400" />{'\u8fd4\u822a'}
+                  </div>
+                  {batchRtlExpanded && <>
+                  <div className="flex gap-1 mb-1.5">
+                    <button onClick={() => setBatchRtlMode('home')}
+                      className={`text-[10px] px-2 py-0.5 rounded ${batchRtlMode === 'home' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                      {'\u8fd4\u56deHome'}
+                    </button>
+                    <button onClick={() => setBatchRtlMode('rally')}
+                      className={`text-[10px] px-2 py-0.5 rounded ${batchRtlMode === 'rally' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                      {'\u8fd4\u56de\u96c6\u7ed3\u70b9'}
+                    </button>
+                  </div>
+                  {batchRtlMode === 'rally' && (
+                    <div className="space-y-1 mb-1.5">
+                      <Input value={rallySearchKeyword} onChange={e => setRallySearchKeyword(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-7" placeholder={'\u641c\u7d22\u96c6\u7ed3\u70b9...'} />
+                      <div className="max-h-20 overflow-y-auto space-y-0.5">
+                        {rallyPoints.filter(rp => !rallySearchKeyword || rp.name.toLowerCase().includes(rallySearchKeyword.toLowerCase()) || (rp.address || '').toLowerCase().includes(rallySearchKeyword.toLowerCase()))
+                          .map(rp => (
+                          <div key={rp.id}
+                            className={`flex items-center justify-between text-[10px] rounded px-2 py-1 cursor-pointer ${selectedRallyPointId === rp.id ? 'bg-purple-700/50 border border-purple-500' : 'bg-slate-700/50 hover:bg-slate-600/50'}`}
+                            onClick={() => setSelectedRallyPointId(rp.id)}>
+                            <span className="text-purple-300 truncate">{rp.name}</span>
+                            <span className="text-slate-400 text-[9px] shrink-0 ml-1">{rp.currentOccupancy}/{rp.capacity}</span>
+                          </div>
+                        ))}
+                        {rallyPoints.length === 0 && <div className="text-[9px] text-slate-500 text-center py-1">{'\u6682\u65e0\u96c6\u7ed3\u70b9'}</div>}
+                      </div>
+                    </div>
+                  )}
+                  <Button className="w-full text-xs h-7 bg-purple-600 hover:bg-purple-700 text-white"
+                    onClick={() => {
+                      if (batchRtlMode === 'rally' && selectedRallyPointId) {
+                        const rp = rallyPoints.find(r => r.id === selectedRallyPointId);
+                        if (rp) {
+                          multiSelectedDrones.forEach(d => {
+                            const params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude });
+                            sendControlCommand(token, { uavId: d.uavId, commandType: 'RTL', params, confirmed: true });
+                          });
+                        }
+                      } else {
+                        multiSelectedDrones.forEach(d => {
+                          sendControlCommand(token, { uavId: d.uavId, commandType: 'RTL', params: '{}', confirmed: true });
+                        });
+                      }
+                      setCommandFeedback({ uavId: `${multiSelectedDrones.length}\u67b6`, message: '\u8fd4\u822a\u6307\u4ee4\u5df2\u53d1\u9001', success: true });
+                      setTimeout(() => setCommandFeedback(null), 3000);
+                    }}>
+                    <RotateCcw className="w-3.5 h-3.5 mr-1" />{'\u8fd4\u822a'}
+                  </Button>
+                  </>}
+                </div>
+                {/* Multi-select Orbit - collapsible (Issue 4) */}
+                <div className="mt-3 border-t border-slate-700 pt-2">
+                  <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1.5 cursor-pointer" onClick={() => setBatchOrbitExpanded(!batchOrbitExpanded)}>
+                    {batchOrbitExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                    <Circle className="w-3.5 h-3.5 text-indigo-400" />{'\u76d8\u65cb'}
+                  </div>
+                  {batchOrbitExpanded && <>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1">
+                        <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
+                        <Input type="number" step="0.0001" value={orbitLat} onChange={e => setOrbitLat(e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder={'\u5706\u5fc3\u7eac\u5ea6(\u5fc5\u586b)'} />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
+                        <Input type="number" step="0.0001" value={orbitLon} onChange={e => setOrbitLon(e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder={'\u5706\u5fc3\u7ecf\u5ea6(\u5fc5\u586b)'} />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <label className="text-[10px] text-slate-500 w-8 shrink-0">{'\u534a\u5f84'}</label>
+                        <Input type="number" min="2.5" max="20" step="0.5" value={orbitRadius} onChange={e => setOrbitRadius(e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder="5" />
+                        <span className="text-[10px] text-slate-400">{'\u7c73(2.5-20)'}</span>
+                      </div>
+                    </div>
+                    <Button className="w-full text-xs h-7 bg-indigo-600 hover:bg-indigo-700 text-white mt-1.5"
+                      onClick={() => {
+                        const uavIds = multiSelectedDrones.map(d => d.uavId);
+                        const params = JSON.stringify({
+                          lat: parseFloat(orbitLat) || 0,
+                          lon: parseFloat(orbitLon) || 0,
+                          radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
+                        });
+                        sendBatchControlCommand(token, { uavIds, commandType: 'ORBIT', params, confirmed: true })
+                          .then(res => { if (res.code === 0) setCommandFeedback({ uavId: `${uavIds.length}\u67b6`, message: '\u76d8\u65cb\u6307\u4ee4\u5df2\u53d1\u9001', success: true }); })
+                          .catch(() => {});
+                        setTimeout(() => setCommandFeedback(null), 3000);
+                      }}>
+                      <Circle className="w-3.5 h-3.5 mr-1" />{'\u76d8\u65cb'}
+                    </Button>
+                  </>}
+                </div>
+                {/* Selected drones list */}
+                <div className="mt-3 border-t border-slate-700 pt-2">
+                  <div className="text-xs text-slate-400 mb-1">{'\u5df2\u9009'} ({multiSelectedDrones.length})</div>
+                  <div className="space-y-0.5 max-h-28 overflow-y-auto">
                     {multiSelectedDrones.map(d => (
                       <div key={d.uavId} className="flex items-center justify-between text-[10px] bg-slate-700/50 rounded px-2 py-1">
-                        <span className="text-blue-300">{d.uavId}</span>
-                        <span className="text-slate-400">{d.battery != null ? `${d.battery}%` : 'N/A'} | {d.altitude != null ? `${d.altitude}m` : 'N/A'}</span>
+                        <span className="text-blue-300 font-medium">{d.uavId}</span>
+                        <span className="text-slate-400">{d.battery != null ? `${d.battery.toFixed(0)}%` : '-'} | {d.altitude != null ? `${d.altitude.toFixed(1)}m` : '-'}</span>
                       </div>
                     ))}
                   </div>
@@ -569,83 +1016,81 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           </div>
         )}
 
-        {/* 中间: 详情控制面板（单选模式下点击显示，多选模式下选中1个时显示） */}
+        {/* Detail control panel */}
         {showDetailPanel && selectedMapDrone && !aggregateData && (() => {
-          const drone = drones.find(d => d.uavId === selectedMapDrone);
+          const drone = mapDrones.find(d => d.uavId === selectedMapDrone);
           if (!drone) return null;
           return (
-            <div className="w-[280px] min-w-[240px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-3 space-y-3">
-              {/* 无人机状态 */}
+            <div className="w-[280px] bg-slate-900 border-r border-slate-700 overflow-y-auto p-2 space-y-2 shrink-0">
+              {/* Drone status */}
               <Card className="bg-slate-800 border-slate-700">
-                <CardHeader className="pb-2 px-3 pt-3">
+                <CardHeader className="pb-1 px-2 pt-2">
                   <CardTitle className="flex items-center justify-between text-xs">
                     <div className="flex items-center gap-1">
-                      <Activity className="w-3 h-3 text-green-400" />{drone.uavId} 详情
+                      <Activity className="w-3 h-3 text-green-400" />{drone.uavId}
                     </div>
                     <Button size="sm" variant="outline" onClick={() => setShowDetailPanel(false)}
-                      className="bg-slate-700 border-slate-600 hover:bg-slate-600 text-xs h-5 px-1.5">关闭</Button>
+                      className="bg-slate-700 border-slate-600 hover:bg-slate-600 text-[10px] h-5 px-1.5">{'\u5173\u95ed'}</Button>
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="px-3 pb-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="bg-slate-700/50 rounded p-2 text-center">
-                      <div className="text-[10px] text-slate-400 mb-0.5">飞行状态</div>
-                      <Badge className={`text-[10px] ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : 'bg-slate-600'}`}>
-                        {drone.flightStatus === 'FLYING' ? '飞行中' : '待机'}
+                <CardContent className="px-2 pb-2">
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div className="bg-slate-700/50 rounded p-1.5 text-center">
+                      <div className="text-[9px] text-slate-400">{'\u72b6\u6001'}</div>
+                      <Badge className={`text-[9px] ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : 'bg-slate-600'}`}>
+                        {drone.flightStatus === 'FLYING' ? '\u98de\u884c\u4e2d' : '\u5f85\u673a'}
                       </Badge>
                     </div>
-                    <div className="bg-slate-700/50 rounded p-2 text-center">
-                      <div className="text-[10px] text-slate-400 mb-0.5">电量</div>
-                      <div className="text-sm font-bold flex items-center justify-center gap-0.5">
-                        <Battery className={`w-3 h-3 ${(drone.battery || 0) < 20 ? 'text-red-400' : 'text-green-400'}`} />
-                        {drone.battery != null ? `${drone.battery}%` : 'N/A'}
+                    <div className="bg-slate-700/50 rounded p-1.5 text-center">
+                      <div className="text-[9px] text-slate-400">{'\u7535\u91cf'}</div>
+                      <div className="text-xs font-bold flex items-center justify-center gap-0.5">
+                        <Battery className={`w-2.5 h-2.5 ${(drone.battery || 0) < 20 ? 'text-red-400' : 'text-green-400'}`} />
+                        {drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}
                       </div>
                     </div>
-                    <div className="bg-slate-700/50 rounded p-2 text-center">
-                      <div className="text-[10px] text-slate-400 mb-0.5">高度</div>
-                      <div className="text-sm font-bold">{drone.altitude != null ? `${drone.altitude}m` : 'N/A'}</div>
+                    <div className="bg-slate-700/50 rounded p-1.5 text-center">
+                      <div className="text-[9px] text-slate-400">{'\u9ad8\u5ea6'}</div>
+                      <div className="text-xs font-bold">{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : 'N/A'}</div>
                     </div>
-                    <div className="bg-slate-700/50 rounded p-2 text-center">
-                      <div className="text-[10px] text-slate-400 mb-0.5">位置</div>
-                      <div className="text-[10px] font-mono">
+                    <div className="bg-slate-700/50 rounded p-1.5 text-center">
+                      <div className="text-[9px] text-slate-400">{'\u4f4d\u7f6e'}</div>
+                      <div className="text-[9px] font-mono">
                         <MapPin className="w-2.5 h-2.5 inline mr-0.5" />
                         {drone.lat?.toFixed(4)}, {drone.lng?.toFixed(4)}
                       </div>
                     </div>
                   </div>
                   {(drone.owner || drone.model) && (
-                    <div className="flex items-center gap-3 mt-2 text-[10px] text-slate-400">
-                      {drone.owner && <span>控制员: <span className="text-slate-300">{drone.owner}</span></span>}
-                      {drone.model && <span>机型: <span className="text-slate-300">{drone.model}</span></span>}
+                    <div className="flex items-center gap-2 mt-1.5 text-[9px] text-slate-400">
+                      {drone.owner && <span>{'\u63a7\u5236\u5458'}: <span className="text-slate-300">{drone.owner}</span></span>}
+                      {drone.model && <span>{'\u673a\u578b'}: <span className="text-slate-300">{drone.model}</span></span>}
                     </div>
                   )}
                 </CardContent>
               </Card>
 
-              {/* 控制指令 */}
+              {/* Control commands */}
               <Card className="bg-slate-800 border-slate-700">
-                <CardHeader className="pb-2 px-3 pt-3">
+                <CardHeader className="pb-1 px-2 pt-2">
                   <CardTitle className="flex items-center gap-1 text-xs">
-                    <Navigation className="w-3 h-3 text-green-400" />控制指令
+                    <Navigation className="w-3 h-3 text-green-400" />{'\u63a7\u5236\u6307\u4ee4'}
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="px-3 pb-3">
+                <CardContent className="px-2 pb-2">
                   <div className="grid grid-cols-3 gap-1">
-                    {[
-                      { type: 'ARM', label: '解锁', icon: Unlock, color: 'bg-green-600 hover:bg-green-700' },
-                      { type: 'DISARM', label: '锁定', icon: Lock, color: 'bg-slate-600 hover:bg-slate-700' },
-                      { type: 'TAKEOFF', label: '起飞', icon: ArrowUp, color: 'bg-blue-600 hover:bg-blue-700' },
-                      { type: 'LAND', label: '降落', icon: ArrowDown, color: 'bg-amber-600 hover:bg-amber-700' },
-                      { type: 'RTL', label: '返航', icon: RotateCcw, color: 'bg-purple-600 hover:bg-purple-700' },
-                      { type: 'HOLD', label: '悬停', icon: Pause, color: 'bg-orange-600 hover:bg-orange-700' },
-                    ].map(cmd => {
+                    {DETAIL_COMMANDS.map(cmd => {
                       const Icon = cmd.icon;
+                      const isOffline = drone.onlineStatus !== true;
+                      const isDisarmed = drone.armed !== true;
+                      const shouldDisable = cmd.type !== 'TAKEOFF' && (isOffline || isDisarmed);
                       return (
                         <Button key={cmd.type}
-                          className={`h-auto py-1.5 flex flex-col items-center gap-0.5 ${cmd.color} text-white text-[10px]`}
-                          onClick={() => handleQuickCommand(drone.uavId, cmd.type)}>
-                          <Icon className="w-3.5 h-3.5" />
-                          <span className="font-bold">{cmd.label}</span>
+                          className={`h-auto py-1 flex flex-col items-center gap-0.5 ${shouldDisable ? 'bg-slate-700 text-slate-500 cursor-not-allowed' : cmd.color} text-white text-[9px]`}
+                          onClick={() => { if (!shouldDisable) handleQuickCommand(drone.uavId, cmd.type); }}
+                          disabled={shouldDisable}
+                          title={shouldDisable ? (isOffline ? '无人机离线' : '无人机未解锁') : cmd.type}>
+                          <Icon className="w-3 h-3" />
+                          <span className="font-bold text-[9px]">{cmd.label}</span>
                         </Button>
                       );
                     })}
@@ -653,63 +1098,182 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                 </CardContent>
               </Card>
 
-              {/* 参数设置 - 起飞高度 + 前往目标（纵向排列，间距紧凑） */}
-              <div className="space-y-1">
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardContent className="px-3 py-1.5">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-slate-400 whitespace-nowrap flex items-center gap-0.5"><ArrowUp className="w-2.5 h-2.5 text-blue-400" />起飞高度</span>
-                      <Input type="number" value={takeoffAlt} onChange={e => setTakeoffAlt(e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder="20" />
-                      <span className="text-[10px] text-slate-400">米</span>
+              {/* Takeoff altitude */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardContent className="px-2 py-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] text-slate-400 whitespace-nowrap flex items-center gap-0.5"><ArrowUp className="w-2.5 h-2.5 text-blue-400" />{'\u8d77\u98de\u9ad8\u5ea6'}</span>
+                    <Input type="number" value={takeoffAlt} onChange={e => setTakeoffAlt(e.target.value)}
+                      className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder="5" />
+                    <span className="text-[9px] text-slate-400">{'\u7c73'}</span>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* GOTO target - collapsible */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardContent className="px-2 py-1.5 space-y-1">
+                  <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setGotoExpanded(!gotoExpanded)}>
+                    {gotoExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
+                    <Crosshair className="w-2.5 h-2.5 text-cyan-400" />{'\u524d\u5f80\u76ee\u6807'}
+                  </div>
+                  {gotoExpanded && <>
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1">
+                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u5730\u5740'}</label>
+                      <Input value={gotoAddress} onChange={e => setGotoAddress(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u5730\u5740/\u5730\u540d(\u53ef\u9009)'} />
                     </div>
-                  </CardContent>
-                </Card>
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardContent className="px-3 py-1.5 space-y-1">
-                    <div className="flex items-center gap-1 text-[10px] text-slate-400"><Navigation className="w-2.5 h-2.5 text-cyan-400" />前往目标</div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
+                      <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u9ad8\u5ea6'}</label>
+                      <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
+                      <span className="text-[9px] text-slate-400">{'\u7c73'}</span>
+                    </div>
+                  </div>
+                  <Button className="w-full text-xs h-6 bg-cyan-600 hover:bg-cyan-700 text-white"
+                    onClick={() => handleQuickCommand(drone.uavId, 'GOTO')}>
+                    <Navigation className="w-3 h-3 mr-1" />{'\u524d\u5f80'}
+                  </Button>
+                  </>}
+                </CardContent>
+              </Card>
+
+              {/* RTL with Home/Rally mode - collapsible */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardContent className="px-2 py-1.5 space-y-1">
+                  <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setRtlExpanded(!rtlExpanded)}>
+                    {rtlExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
+                    <RotateCcw className="w-2.5 h-2.5 text-purple-400" />{'\u8fd4\u822a\u8bbe\u7f6e'}
+                  </div>
+                  {rtlExpanded && <>
+                  <div className="flex gap-1 mb-1">
+                    <button onClick={() => setSingleRtlMode('home')}
+                      className={`text-[9px] px-2 py-0.5 rounded ${singleRtlMode === 'home' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                      {'\u8fd4\u56deHome'}
+                    </button>
+                    <button onClick={() => setSingleRtlMode('rally')}
+                      className={`text-[9px] px-2 py-0.5 rounded ${singleRtlMode === 'rally' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                      {'\u8fd4\u56de\u96c6\u7ed3\u70b9'}
+                    </button>
+                  </div>
+                  {singleRtlMode === 'home' && (
+                    <div className="flex items-center gap-1 text-[9px]">
+                      <Home className="w-2.5 h-2.5 text-teal-400" />
+                      {homePosition ? (
+                        <span className="text-teal-300">Home: {homePosition.lat.toFixed(6)}, {homePosition.lon.toFixed(6)}</span>
+                      ) : (
+                        <span className="text-slate-500">{'\u672a\u8bbe\u7f6eHome'}</span>
+                      )}
+                      <Button size="sm" variant="outline" onClick={locateHome}
+                        className="h-4 px-1 text-[8px] bg-teal-700/50 border-teal-600 text-teal-300 ml-auto">
+                        <Locate className="w-2 h-2 mr-0.5" />{'\u5b9a\u4f4d'}
+                      </Button>
+                    </div>
+                  )}
+                  {singleRtlMode === 'rally' && (
+                    <div className="space-y-1">
+                      <Input value={singleRallySearch} onChange={e => setSingleRallySearch(e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white text-[9px] h-6" placeholder={'\u641c\u7d22\u96c6\u7ed3\u70b9...'} />
+                      <div className="max-h-20 overflow-y-auto space-y-0.5">
+                        {rallyPoints.filter(rp => !singleRallySearch || rp.name.toLowerCase().includes(singleRallySearch.toLowerCase()) || (rp.address || '').toLowerCase().includes(singleRallySearch.toLowerCase()))
+                          .map(rp => (
+                          <div key={rp.id}
+                            className={`flex items-center justify-between text-[9px] rounded px-2 py-0.5 cursor-pointer ${singleSelectedRallyId === rp.id ? 'bg-purple-700/50 border border-purple-500' : 'bg-slate-700/50 hover:bg-slate-600/50'}`}
+                            onClick={() => setSingleSelectedRallyId(rp.id)}>
+                            <span className="text-purple-300 truncate">{rp.name}</span>
+                            <span className="text-slate-400 text-[8px] shrink-0 ml-1">{rp.currentOccupancy}/{rp.capacity}</span>
+                          </div>
+                        ))}
+                        {rallyPoints.length === 0 && <div className="text-[8px] text-slate-500 text-center py-1">{'\u6682\u65e0\u96c6\u7ed3\u70b9'}</div>}
+                      </div>
+                    </div>
+                  )}
+                  <Button className="w-full text-xs h-6 bg-purple-600 hover:bg-purple-700 text-white"
+                    onClick={() => handleQuickCommand(drone.uavId, 'RTL')}>
+                    <RotateCcw className="w-3 h-3 mr-1" />{'\u8fd4\u822a'}
+                  </Button>
+                  </>}
+                </CardContent>
+              </Card>
+
+              {/* Orbit - collapsible (Issue 4) */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardContent className="px-2 py-1.5 space-y-1">
+                  <div className="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" onClick={() => setOrbitExpanded(!orbitExpanded)}>
+                    {orbitExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
+                    <Circle className="w-2.5 h-2.5 text-indigo-400" />{'\u76d8\u65cb'}
+                  </div>
+                  {orbitExpanded && <>
                     <div className="space-y-0.5">
                       <div className="flex items-center gap-1">
-                        <label className="text-[10px] text-slate-500 w-10 shrink-0">纬度</label>
-                        <Input type="number" step="0.0001" value={gotoLat} onChange={e => setGotoLat(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
+                        <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7eac\u5ea6'}</label>
+                        <Input type="number" step="0.0001" value={orbitLat} onChange={e => setOrbitLat(e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u5706\u5fc3\u7eac\u5ea6(\u5fc5\u586b)'} />
                       </div>
                       <div className="flex items-center gap-1">
-                        <label className="text-[10px] text-slate-500 w-10 shrink-0">经度</label>
-                        <Input type="number" step="0.0001" value={gotoLon} onChange={e => setGotoLon(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
+                        <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u7ecf\u5ea6'}</label>
+                        <Input type="number" step="0.0001" value={orbitLon} onChange={e => setOrbitLon(e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder={'\u5706\u5fc3\u7ecf\u5ea6(\u5fc5\u586b)'} />
                       </div>
                       <div className="flex items-center gap-1">
-                        <label className="text-[10px] text-slate-500 w-10 shrink-0">高度(m)</label>
-                        <Input type="number" value={gotoAlt} onChange={e => setGotoAlt(e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" />
+                        <label className="text-[9px] text-slate-500 w-8 shrink-0">{'\u534a\u5f84'}</label>
+                        <Input type="number" min="2.5" max="20" step="0.5" value={orbitRadius} onChange={e => setOrbitRadius(e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder="5" />
+                        <span className="text-[9px] text-slate-400">{'\u7c73(2.5-20)'}</span>
                       </div>
                     </div>
-                    <Button className="w-full text-xs h-6 bg-cyan-600 hover:bg-cyan-700 text-white"
-                      onClick={() => handleQuickCommand(drone.uavId, 'GOTO')}>
-                      <Navigation className="w-3 h-3 mr-1" />前往
+                    <Button className="w-full text-xs h-6 bg-indigo-600 hover:bg-indigo-700 text-white"
+                      onClick={() => handleQuickCommand(drone.uavId, 'ORBIT')}>
+                      <Circle className="w-3 h-3 mr-1" />{'\u76d8\u65cb'}
                     </Button>
-                  </CardContent>
-                </Card>
-              </div>
-
+                  </>}
+                </CardContent>
+              </Card>
             </div>
           );
         })()}
 
-        {/* 右侧面板: 地图视图 */}
+        {/* Right: Map view */}
         <div className="flex-1 h-full">
           <MapPanel drones={mapDrones} selectedDroneId={selectedMapDrone}
             selectedDroneIds={multiSelectMode ? selectedDrones : undefined}
+            homeMarker={homeMarker}
+            hasDroneSelected={!!selectedMapDrone || selectedDrones.size > 0}
+            onMapClick={(lat, lon) => setMapClickCoords({ lat, lon })}
+            onMapClickCommand={(command, lat, lon) => {
+              const targetUavId = selectedMapDrone || (selectedDrones.size === 1 ? Array.from(selectedDrones)[0] : null);
+              if (!targetUavId) return;
+              if (command === 'GOTO') {
+                setGotoLat(lat.toFixed(6));
+                setGotoLon(lon.toFixed(6));
+                handleQuickCommand(targetUavId, 'GOTO');
+              } else if (command === 'ORBIT') {
+                setOrbitLat(lat.toFixed(6));
+                setOrbitLon(lon.toFixed(6));
+                handleQuickCommand(targetUavId, 'ORBIT');
+              } else if (command === 'MARK_HOME') {
+                handleQuickCommand(targetUavId, 'MARK_HOME');
+              }
+            }}
+            rallyPoints={rallyPoints.map(rp => ({ id: rp.id, name: rp.name, latitude: rp.latitude, longitude: rp.longitude, capacity: rp.capacity, currentOccupancy: rp.currentOccupancy, status: rp.status, serviceType: rp.serviceType }))}
             onDroneClick={(id) => {
               if (multiSelectMode) {
-                // 多选模式下地图点击也切换选中状态
                 const newSet = new Set(selectedDrones);
                 if (newSet.has(id)) { newSet.delete(id); } else { newSet.add(id); }
                 setSelectedDrones(newSet);
                 if (newSet.size === 1) {
                   setSelectedMapDrone(Array.from(newSet)[0]);
-                  // 详情面板显示条件：detailPanelEnabled && 有选中无人机
                   setShowDetailPanel(detailPanelEnabled);
                 } else if (newSet.size === 0) {
                   setSelectedMapDrone(null);
@@ -718,13 +1282,11 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
                   setShowDetailPanel(false);
                 }
               } else {
-                // 单选模式：点击同时高亮 + 显示基本信息弹窗
                 if (selectedMapDrone === id) {
                   setShowDetailPanel(false);
                   setSelectedMapDrone(null);
                 } else {
                   setSelectedMapDrone(id);
-                  // 详情面板显示条件：detailPanelEnabled && 有选中无人机
                   setShowDetailPanel(detailPanelEnabled);
                 }
               }
@@ -733,24 +1295,24 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
         </div>
       </div>
 
-      {/* 转移对话框 */}
+      {/* Transfer dialog */}
       <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
         <DialogContent className="bg-slate-800 border-slate-700 text-white">
           <DialogHeader>
-            <DialogTitle className="text-white">队内控制权转移</DialogTitle>
+            <DialogTitle className="text-white">{'\u961f\u5185\u63a7\u5236\u6743\u8f6c\u79fb'}</DialogTitle>
             <DialogDescription className="text-slate-400">
-              将无人机 {transferUavId} 的控制权转移给队内成员
+              {'\u5c06\u65e0\u4eba\u673a'} {transferUavId} {'\u7684\u63a7\u5236\u6743\u8f6c\u79fb\u7ed9\u961f\u5185\u6210\u5458'}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <label className="text-sm text-slate-300 mb-1 block">目标成员</label>
+              <label className="text-sm text-slate-300 mb-1 block">{'\u76ee\u6807\u6210\u5458'}</label>
               <select
                 value={transferToUserId}
                 onChange={e => setTransferToUserId(e.target.value)}
                 className="w-full rounded-md bg-slate-700 border-slate-600 text-white px-3 py-2 text-sm"
               >
-                <option value="">选择队内成员...</option>
+                <option value="">{'\u9009\u62e9\u961f\u5185\u6210\u5458...'}</option>
                 {members.map(m => (
                   <option key={m.userId} value={m.userId}>
                     {m.realName || m.username} ({m.role})
@@ -771,11 +1333,11 @@ export default function LeaderView({ token, username, onLogout }: LeaderViewProp
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setTransferDialogOpen(false); setTransferResult(null); }}
-              className="bg-slate-700 border-slate-600 text-slate-300">取消</Button>
+              className="bg-slate-700 border-slate-600 text-slate-300">{'\u53d6\u6d88'}</Button>
             <Button onClick={handleTeamTransfer} disabled={transferLoading || !transferToUserId}
               className="bg-purple-600 hover:bg-purple-700">
               {transferLoading ? <RefreshCw className="w-4 h-4 animate-spin mr-1" /> : null}
-              确认转移
+              {'\u786e\u8ba4\u8f6c\u79fb'}
             </Button>
           </DialogFooter>
         </DialogContent>

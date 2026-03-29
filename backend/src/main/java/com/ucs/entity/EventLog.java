@@ -24,7 +24,7 @@ public class EventLog {
     @Column(length = 20)
     private String level;
     
-    @Column(columnDefinition = "TEXT")
+    @Column(length = 2000)
     private String message;
     
     @Column(name = "created_at")

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -28,6 +28,10 @@ import {
   PanelRightClose,
   PanelLeftOpen,
   PanelRightOpen,
+  MapPin,
+  Plus,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 import {
   getFleetOverview,
@@ -38,18 +42,27 @@ import {
   getCommanderTeams,
   getTeamMembers,
   getCommanderUsers,
+  getRallyPoints,
+  createRallyPoint,
+  updateRallyPoint,
+  deleteRallyPoint,
+  geocodeAddress,
   type DroneInfo,
   type OperationLog,
+  type RallyPoint,
 } from '@/services/api';
-import MapPanel, { type MapDrone } from '@/components/MapPanel';
+import MapPanel, { type MapDrone, type MapRallyPoint } from '@/components/MapPanel';
+import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
+import { PieChart, Pie, BarChart, Bar, XAxis, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface CommanderViewProps {
   token: string;
   username: string;
+  partitions?: string[];
   onLogout: () => void;
 }
 
-export default function CommanderView({ token, username, onLogout }: CommanderViewProps) {
+export default function CommanderView({ token, username, partitions = [], onLogout }: CommanderViewProps) {
   // Fleet state
   const [drones, setDrones] = useState<DroneInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -70,9 +83,21 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
   const [logTotalPages, setLogTotalPages] = useState(0);
   const [logFilter, setLogFilter] = useState('ALL');
   const [logLoading, setLogLoading] = useState(false);
+  const [logPageSize, setLogPageSize] = useState(10);
+
+  // Chart state
+  const [chartType, setChartType] = useState<'pie' | 'bar'>('pie');
 
   // Active tab state
-  const [activeTab, setActiveTab] = useState<'fleet' | 'permission' | 'logs' | 'teams'>('fleet');
+  const [activeTab, setActiveTab] = useState<'fleet' | 'permission' | 'logs' | 'teams' | 'rally'>('fleet');
+
+  // Rally point state
+  const [rallyPoints, setRallyPoints] = useState<RallyPoint[]>([]);
+  const [rpEditOpen, setRpEditOpen] = useState(false);
+  const [rpEditData, setRpEditData] = useState<Partial<RallyPoint>>({});
+  const [rpEditId, setRpEditId] = useState<number | null>(null);
+  const [rpLoading, setRpLoading] = useState(false);
+  const [rpGeocoding, setRpGeocoding] = useState(false);
 
   // Teams state
   const [teams, setTeams] = useState<Array<{ teamId: string; teamName: string; leader: string; memberCount: number; droneCount?: number; description?: string }>>([]);
@@ -87,6 +112,57 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
   // 地图选中的无人机
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
 
+  // Real-time telemetry drones from WebSocket partition subscription
+  const [telemetryDrones, setTelemetryDrones] = useState<Map<string, MapDrone>>(new Map());
+
+  // WebSocket telemetry handler - updates drone positions in real-time
+  const handlePartitionData = useCallback((data: PartitionTelemetryMessage) => {
+    if (!data.drones || data.drones.length === 0) return;
+    console.log('[CommanderView] handlePartitionData:', data.partition, data.drones.length, 'drones');
+    setTelemetryDrones(prev => {
+      const next = new Map(prev);
+      data.drones.forEach(uav => {
+        next.set(uav.uavId, {
+          uavId: uav.uavId,
+          lat: uav.lat,
+          lng: uav.lon,
+          altitude: uav.alt,
+          battery: uav.batteryPercent != null && uav.batteryPercent >= 0 ? uav.batteryPercent : undefined,
+          flightStatus: uav.armed ? 'FLYING' : 'IDLE',
+          onlineStatus: true, // Receiving telemetry = online
+          armed: uav.armed ?? uav.isActive ?? false,
+          model: undefined,
+          owner: undefined,
+          heading: uav.heading,
+        });
+      });
+      return next;
+    });
+  }, []);
+
+  // Handle drone removal notification from WebSocket (permission transfer)
+  const handleDroneRemoved = useCallback((removedUavIds: string[]) => {
+    console.log('[CommanderView] Drones removed from partition:', removedUavIds);
+    setTelemetryDrones(prev => {
+      const next = new Map(prev);
+      removedUavIds.forEach(id => next.delete(id));
+      return next;
+    });
+    // Clear selection if the selected drone was removed (don't auto-jump)
+    setSelectedMapDrone(prev => {
+      if (prev && removedUavIds.includes(prev)) return null;
+      return prev;
+    });
+  }, []);
+
+  // Subscribe to partition-specific WebSocket topics for real-time telemetry
+  useTelemetryWebSocket({
+    enabled: partitions.length > 0,
+    partitions,
+    onPartitionDataReceived: handlePartitionData,
+    onDroneRemoved: handleDroneRemoved,
+  });
+
   // 快捷转接弹窗状态
   const [quickTransferOpen, setQuickTransferOpen] = useState(false);
   const [quickTransferUavId, setQuickTransferUavId] = useState('');
@@ -98,6 +174,69 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
 
   // 注册用户列表（用于下拉选择）
   const [registeredUsers, setRegisteredUsers] = useState<Array<{ userId: number; username: string; realName: string; role: string }>>([]);
+
+  // Fetch rally points
+  const fetchRallyPoints = useCallback(async () => {
+    try {
+      const res = await getRallyPoints(token);
+      if (res.code === 0 && res.data) {
+        setRallyPoints(Array.isArray(res.data) ? res.data : []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch rally points:', err);
+    }
+  }, [token]);
+
+  // Rally point CRUD handlers
+  const SERVICE_TYPE_LABELS: Record<number, string> = { 0: '停机', 1: '充电', 2: '维修', 3: '补给' };
+  const STATUS_LABELS: Record<number, string> = { 0: '禁用', 1: '启用', 2: '维护中' };
+  const SERVICE_TYPE_COLORS: Record<number, string> = { 0: '#f59e0b', 1: '#22c55e', 2: '#f97316', 3: '#8b5cf6' };
+
+  const handleRpSave = async () => {
+    setRpLoading(true);
+    try {
+      const res = rpEditId
+        ? await updateRallyPoint(token, rpEditId, rpEditData)
+        : await createRallyPoint(token, rpEditData);
+      if (res.code === 0) {
+        setRpEditOpen(false);
+        setRpEditData({});
+        setRpEditId(null);
+        fetchRallyPoints();
+      }
+    } catch (err) {
+      console.error('Failed to save rally point:', err);
+    } finally {
+      setRpLoading(false);
+    }
+  };
+
+  const handleRpDelete = async (id: number) => {
+    if (!confirm('确定删除该集结点？')) return;
+    try {
+      const res = await deleteRallyPoint(token, id);
+      if (res.code === 0) fetchRallyPoints();
+    } catch (err) {
+      console.error('Failed to delete rally point:', err);
+    }
+  };
+
+  const openRpEdit = (rp?: RallyPoint) => {
+    if (rp) {
+      setRpEditId(rp.id);
+      setRpEditData({ name: rp.name, latitude: rp.latitude, longitude: rp.longitude, altitude: rp.altitude, capacity: rp.capacity, status: rp.status, scope: rp.scope, teamId: rp.teamId, radius: rp.radius, serviceType: rp.serviceType, description: rp.description, address: rp.address });
+    } else {
+      setRpEditId(null);
+      setRpEditData({ status: 1, scope: 0, capacity: 10, radius: 5.0, serviceType: 0 });
+    }
+    setRpEditOpen(true);
+  };
+
+  // Map rally points for MapPanel
+  const mapRallyPoints: MapRallyPoint[] = rallyPoints.map(rp => ({
+    id: rp.id, name: rp.name, latitude: rp.latitude, longitude: rp.longitude,
+    capacity: rp.capacity, currentOccupancy: rp.currentOccupancy, status: rp.status, serviceType: rp.serviceType,
+  }));
 
   // Fetch fleet data
   const fetchFleet = useCallback(async () => {
@@ -115,13 +254,25 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
     }
   }, [token]);
 
+  // Dynamic log page size based on viewport
+  useEffect(() => {
+    const calculatePageSize = () => {
+      // Each log item ~68px, overhead ~220px (header, tabs, filters, pagination)
+      const available = window.innerHeight - 220;
+      setLogPageSize(Math.max(5, Math.floor(available / 68)));
+    };
+    calculatePageSize();
+    window.addEventListener('resize', calculatePageSize);
+    return () => window.removeEventListener('resize', calculatePageSize);
+  }, []);
+
   // Fetch operation logs
   const fetchLogs = useCallback(async (page: number = 0, filter: string = 'ALL') => {
     setLogLoading(true);
     try {
       const res = filter === 'ALL'
-        ? await getOperationLogs(token, page, 15)
-        : await getLogsByType(token, filter, page, 15);
+        ? await getOperationLogs(token, page, logPageSize)
+        : await getLogsByType(token, filter, page, logPageSize);
       if (res.code === 0 && res.data) {
         setLogs(res.data.content || []);
         setLogTotalPages(res.data.totalPages || 0);
@@ -132,7 +283,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
     } finally {
       setLogLoading(false);
     }
-  }, [token]);
+  }, [token, logPageSize]);
 
   // Fetch teams via commander API (fixes Issue #2: "暂无团队数据")
   const fetchTeams = useCallback(async () => {
@@ -180,9 +331,10 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
     fetchLogs(0, 'ALL');
     fetchTeams();
     fetchUsers();
+    fetchRallyPoints();
     const interval = setInterval(fetchFleet, 5000);
     return () => clearInterval(interval);
-  }, [fetchFleet, fetchLogs, fetchTeams, fetchUsers]);
+  }, [fetchFleet, fetchLogs, fetchTeams, fetchUsers, fetchRallyPoints]);
 
   // Toggle drone selection for permission transfer
   const toggleDroneSelection = (uavId: string) => {
@@ -311,12 +463,53 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
     return 'bg-slate-600';
   };
 
-  // 将 DroneInfo 转换为 MapDrone 格式
-  const mapDrones: MapDrone[] = drones.map(d => ({
-    uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
-    battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
-    model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
-  }));
+  // 将 DroneInfo 转换为 MapDrone 格式，并合并 WebSocket 实时遥测数据
+  const mapDrones: MapDrone[] = (() => {
+    // Start with REST API drones
+    const droneMap = new Map<string, MapDrone>();
+    drones.forEach(d => {
+      droneMap.set(d.uavId, {
+        uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
+        battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
+        model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
+        controlOwnerName: d.controlOwnerName,
+      });
+    });
+    // Merge real-time telemetry data (WebSocket takes priority for position/battery)
+    telemetryDrones.forEach((td, uavId) => {
+      const existing = droneMap.get(uavId);
+      if (existing) {
+        // Update position from real-time telemetry
+        existing.lat = td.lat;
+        existing.lng = td.lng;
+        existing.altitude = td.altitude;
+        existing.onlineStatus = td.onlineStatus;
+        existing.armed = td.armed;
+        if (td.battery != null) existing.battery = td.battery;
+        if (td.flightStatus) existing.flightStatus = td.flightStatus;
+      } else {
+        // New drone only seen via WebSocket telemetry
+        droneMap.set(uavId, td);
+      }
+    });
+    const result = Array.from(droneMap.values());
+    if (telemetryDrones.size > 0) {
+      console.log('[CommanderView] mapDrones:', result.length, 'total,', telemetryDrones.size, 'from WS');
+    }
+    return result;
+  })();
+
+  // Chart data for fleet overview
+  const droneChartData = useMemo(() => {
+    const armed = mapDrones.filter(d => d.onlineStatus === true && d.armed === true).length;
+    const disarmed = mapDrones.filter(d => d.onlineStatus === true && d.armed !== true).length;
+    const offline = mapDrones.filter(d => !d.onlineStatus).length;
+    return [
+      { name: '飞行中', value: armed, color: '#22c55e' },
+      { name: '在线未解锁', value: disarmed, color: '#3b82f6' },
+      { name: '离线', value: offline, color: '#64748b' },
+    ].filter(d => d.value > 0);
+  }, [mapDrones]);
 
   // 事件日志格式化为地图面板使用
   const eventLogsForMap = logs.slice(0, 20).map(log => ({
@@ -358,8 +551,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
       {/* 主体: 左右分栏布局 */}
       <div className="flex-1 flex overflow-hidden">
         {/* 左侧面板: 控制功能 - 右侧收起时自动扩展 */}
-        {!leftPanelCollapsed && (
-          <div className={`${rightPanelCollapsed ? 'flex-1' : 'w-[420px] min-w-[320px]'} bg-slate-900 border-r border-slate-700 flex flex-col`}>
+          <div className={`${leftPanelCollapsed ? 'w-0 min-w-0 overflow-hidden' : rightPanelCollapsed ? 'flex-1' : 'w-[420px] min-w-[320px]'} bg-slate-900 border-r border-slate-700 flex flex-col transition-all duration-500 ease-in-out`}>
             {/* Tab 切换 */}
             <div className="flex gap-0.5 bg-slate-800 border-b border-slate-700 p-1">
               <button onClick={() => setActiveTab('fleet')}
@@ -378,6 +570,10 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                 className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'teams' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
                 <Users className="w-3 h-3 mr-1" />团队
               </button>
+              <button onClick={() => { setActiveTab('rally'); fetchRallyPoints(); }}
+                className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'rally' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+                <MapPin className="w-3 h-3 mr-1" />集结点
+              </button>
             </div>
 
             {/* Tab 内容 */}
@@ -388,46 +584,117 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                   {/* 统计卡片 - 始终固定显示 */}
                   <div className="grid grid-cols-4 gap-1.5 mb-2 flex-shrink-0">
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                      <div className="text-base font-bold text-blue-400">{drones.length}</div>
+                      <div className="text-base font-bold text-blue-400">{mapDrones.length}</div>
                       <div className="text-[9px] text-slate-400">总数</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                      <div className="text-base font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</div>
+                      <div className="text-base font-bold text-green-400">{mapDrones.filter(d => d.armed === true).length}</div>
                       <div className="text-[9px] text-slate-400">飞行中</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                      <div className="text-base font-bold text-cyan-400">{drones.filter(d => d.onlineStatus === true).length}</div>
+                      <div className="text-base font-bold text-cyan-400">{mapDrones.filter(d => d.onlineStatus === true).length}</div>
                       <div className="text-[9px] text-slate-400">在线</div>
                     </CardContent></Card>
                     <Card className="bg-slate-800 border-slate-700"><CardContent className="p-1.5 text-center">
-                      <div className="text-base font-bold text-red-400">{drones.filter(d => (d.battery || 0) < 20).length}</div>
+                      <div className="text-base font-bold text-red-400">{mapDrones.filter(d => (d.battery || 0) < 20).length}</div>
                       <div className="text-[9px] text-slate-400">低电量</div>
                     </CardContent></Card>
                   </div>
-                  {/* 无人机列表（在线优先排序）- 独立滚动区域 */}
+                  {/* 状态分布图表 */}
+                  {droneChartData.length > 0 && (
+                    <div className="mb-2 flex-shrink-0">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[10px] text-slate-400">状态分布</span>
+                        <div className="flex gap-0.5">
+                          <button onClick={() => setChartType('pie')}
+                            className={`text-[9px] px-1.5 py-0.5 rounded ${chartType === 'pie' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}>饼图</button>
+                          <button onClick={() => setChartType('bar')}
+                            className={`text-[9px] px-1.5 py-0.5 rounded ${chartType === 'bar' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}>柱状图</button>
+                        </div>
+                      </div>
+                      <div className="bg-slate-800 rounded border border-slate-700 p-1" style={{ height: chartType === 'pie' ? 90 : 100 }}>
+                        {chartType === 'pie' ? (
+                          <div className="flex items-center h-full">
+                            <div style={{ width: 80, height: 80 }}>
+                              <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                  <Pie data={droneChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={35} innerRadius={18}
+                                    animationDuration={600} labelLine={false} fontSize={9} strokeWidth={1}>
+                                    {droneChartData.map((entry, index) => (
+                                      <Cell key={`cell-${index}`} fill={entry.color} />
+                                    ))}
+                                  </Pie>
+                                </PieChart>
+                              </ResponsiveContainer>
+                            </div>
+                            <div className="flex-1 pl-2 space-y-1">
+                              {droneChartData.map((entry) => (
+                                <div key={entry.name} className="flex items-center gap-1.5 text-[10px]">
+                                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: entry.color }} />
+                                  <span className="text-slate-300 truncate">{entry.name}</span>
+                                  <span className="text-white font-bold ml-auto">{entry.value}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={droneChartData} barCategoryGap="20%">
+                              <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                              <Bar dataKey="value" animationDuration={600} radius={[4, 4, 0, 0]}
+                                label={{ position: 'top', fontSize: 10, fill: '#e2e8f0' }}>
+                                {droneChartData.map((entry, index) => (
+                                  <Cell key={`cell-${index}`} fill={entry.color} />
+                                ))}
+                              </Bar>
+                              <Tooltip cursor={false}
+                                contentStyle={{ background: '#1e293b', border: '1px solid #475569', fontSize: 11 }}
+                                formatter={(value: number, name: string, props: { payload?: { name?: string } }) => [value, props.payload?.name || name]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {/* 一键全选 + 无人机列表 */}
+                  <div className="flex items-center justify-between mb-1 flex-shrink-0">
+                    <span className="text-[10px] text-slate-400">{mapDrones.length} 架无人机</span>
+                    <Button size="sm" variant="outline"
+                      onClick={() => {
+                        if (selectedUavIds.length === drones.length && drones.length > 0) {
+                          setSelectedUavIds([]);
+                        } else {
+                          setSelectedUavIds(drones.map(d => d.uavId));
+                        }
+                      }}
+                      className={`text-[9px] h-5 px-2 ${selectedUavIds.length === drones.length && drones.length > 0 ? 'bg-green-600/30 border-green-500 text-green-300' : 'bg-slate-700/50 border-slate-500/50 text-slate-400'}`}>
+                      全选
+                    </Button>
+                  </div>
                   <div className="flex-1 overflow-y-auto space-y-1 scrollbar-thin" style={{ scrollbarWidth: 'thin', scrollbarColor: '#475569 #1e293b' }}>
-                    {[...drones].sort((a, b) => {
+                    {[...mapDrones].sort((a, b) => {
                       const aO = a.onlineStatus === true ? 1 : 0, bO = b.onlineStatus === true ? 1 : 0;
                       if (aO !== bO) return bO - aO;
-                      const aF = a.flightStatus === 'FLYING' ? 1 : 0, bF = b.flightStatus === 'FLYING' ? 1 : 0;
-                      return bF - aF;
+                      const aA = a.armed === true ? 1 : 0, bA = b.armed === true ? 1 : 0;
+                      return bA - aA;
                     }).map(drone => (
                       <div key={drone.uavId}
                         className={`p-2 rounded text-xs cursor-pointer transition-all ${selectedMapDrone === drone.uavId ? 'bg-blue-900/50 border border-blue-500' : 'bg-slate-800 border border-slate-700 hover:border-slate-500'}`}
-                        onClick={() => setSelectedMapDrone(drone.uavId)}>
+                        onClick={() => setSelectedMapDrone(prev => prev === drone.uavId ? null : drone.uavId)}>
                         <div className="flex items-center justify-between mb-0.5">
                           <span className="font-bold text-blue-300">{drone.uavId}</span>
                           <div className="flex items-center gap-1">
-                            <Badge className={`text-[10px] px-1 py-0 ${drone.flightStatus === 'FLYING' ? 'bg-green-600' : drone.onlineStatus === true ? 'bg-blue-600' : 'bg-slate-600'}`}>
-                              {drone.flightStatus === 'FLYING' ? '飞行中' : drone.onlineStatus === true ? '在线' : '离线'}
+                            <Badge className={`text-[10px] px-1 py-0 ${!drone.onlineStatus ? 'bg-slate-600' : drone.armed === true ? 'bg-green-600' : 'bg-blue-600'}`}>
+                              {!drone.onlineStatus ? '离线' : drone.armed === true ? '飞行中' : '未解锁'}
                             </Badge>
                           </div>
                         </div>
                         <div className="flex items-center gap-2 text-slate-400">
-                          <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery}%` : 'N/A'}</span>
-                          <span>{drone.altitude != null ? `${drone.altitude}m` : ''}</span>
+                          <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}</span>
+                          <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
                           <span className="text-slate-500">{drone.teamName || ''}</span>
                           {drone.teamLeader && <span className="text-slate-500">队长:{drone.teamLeader}</span>}
+                          {drone.controlOwnerName && <span className="text-amber-400">控制:{drone.controlOwnerName}</span>}
                           <Button size="sm" variant="outline"
                             className="text-[9px] h-4 px-1 py-0 bg-purple-700/30 border-purple-600/50 text-purple-300 hover:bg-purple-600 ml-auto"
                             onClick={e => {
@@ -444,7 +711,7 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                         </div>
                       </div>
                     ))}
-                    {drones.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无无人机数据</div>}
+                    {mapDrones.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无无人机数据</div>}
                   </div>
                 </div>
               )}
@@ -530,15 +797,15 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
 
               {/* 操作日志 */}
               {activeTab === 'logs' && (
-                <div className="space-y-3">
-                  <div className="flex flex-wrap gap-1 mb-2">
+                <div className="flex flex-col h-full">
+                  <div className="flex flex-wrap gap-1 mb-2 flex-shrink-0">
                     {LOG_TYPES.map(lt => (
                       <Button key={lt.value} size="sm" variant={logFilter === lt.value ? 'default' : 'outline'}
                         className={`text-xs h-6 ${logFilter === lt.value ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'}`}
                         onClick={() => { setLogFilter(lt.value); fetchLogs(0, lt.value); }}>{lt.label}</Button>
                     ))}
                   </div>
-                  <div className="space-y-1">
+                  <div className="flex-1 space-y-1">
                     {logs.map(log => (
                       <div key={log.id} className="p-2 rounded bg-slate-800 border border-slate-700 text-xs">
                         <div className="flex items-center justify-between mb-0.5">
@@ -557,13 +824,169 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
                     ))}
                     {logs.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">{logLoading ? '加载中...' : '暂无操作日志'}</div>}
                   </div>
-                  {logTotalPages > 1 && (
-                    <div className="flex items-center justify-center gap-2 pt-2">
-                      <Button size="sm" variant="outline" disabled={logPage === 0} onClick={() => fetchLogs(logPage - 1, logFilter)}
-                        className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronLeft className="w-3 h-3" /></Button>
-                      <span className="text-xs text-slate-400">{logPage + 1} / {logTotalPages}</span>
-                      <Button size="sm" variant="outline" disabled={logPage >= logTotalPages - 1} onClick={() => fetchLogs(logPage + 1, logFilter)}
-                        className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronRight className="w-3 h-3" /></Button>
+                  <div className="flex items-center justify-center gap-2 pt-2 flex-shrink-0 border-t border-slate-700 mt-1">
+                    <Button size="sm" variant="outline" disabled={logPage === 0} onClick={() => fetchLogs(logPage - 1, logFilter)}
+                      className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronLeft className="w-3 h-3" /></Button>
+                    <span className="text-xs text-slate-400">{logPage + 1} / {Math.max(1, logTotalPages)}</span>
+                    <Button size="sm" variant="outline" disabled={logPage >= logTotalPages - 1} onClick={() => fetchLogs(logPage + 1, logFilter)}
+                      className="bg-slate-700 border-slate-600 text-slate-300 h-6 text-xs"><ChevronRight className="w-3 h-3" /></Button>
+                  </div>
+                </div>
+              )}
+
+              {/* 集结点管理 */}
+              {activeTab === 'rally' && (
+                <div className="flex flex-col h-full">
+                  <div className="flex items-center justify-between mb-2 flex-shrink-0">
+                    <span className="text-xs text-slate-400">共 {rallyPoints.length} 个集结点</span>
+                    <Button size="sm" onClick={() => openRpEdit()} className="bg-amber-600 hover:bg-amber-700 text-xs h-6 px-2">
+                      <Plus className="w-3 h-3 mr-1" />新增
+                    </Button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto space-y-1.5 scrollbar-thin" style={{ scrollbarWidth: 'thin', scrollbarColor: '#475569 #1e293b' }}>
+                    {rallyPoints.map(rp => (
+                      <Card key={rp.id} className="bg-slate-800 border-slate-700">
+                        <CardContent className="p-2">
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: SERVICE_TYPE_COLORS[rp.serviceType] || '#f59e0b' }} />
+                              <span className="text-xs font-bold text-slate-200">{rp.name}</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Badge className={`text-[9px] px-1 py-0 ${rp.status === 1 ? 'bg-green-600' : rp.status === 2 ? 'bg-orange-600' : 'bg-slate-600'}`}>
+                                {STATUS_LABELS[rp.status] || '未知'}
+                              </Badge>
+                              <Button size="sm" variant="ghost" className="h-5 w-5 p-0 text-slate-400 hover:text-blue-400" onClick={() => openRpEdit(rp)}>
+                                <Pencil className="w-3 h-3" />
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-5 w-5 p-0 text-slate-400 hover:text-red-400" onClick={() => handleRpDelete(rp.id)}>
+                                <Trash2 className="w-3 h-3" />
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-x-2 text-[10px] text-slate-400">
+                            <span>类型: <span className="text-slate-300">{SERVICE_TYPE_LABELS[rp.serviceType] || '未知'}</span></span>
+                            <span>容量: <span className="text-slate-300">{rp.currentOccupancy}/{rp.capacity}</span></span>
+                            <span>范围: <span className="text-slate-300">{rp.scope === 0 ? '全局' : `团队 ${rp.teamId || ''}`}</span></span>
+                            <span>半径: <span className="text-slate-300">{rp.radius}m</span></span>
+                          </div>
+                          <div className="text-[9px] text-slate-500 mt-0.5">
+                            {rp.latitude?.toFixed(6)}, {rp.longitude?.toFixed(6)}
+                            {rp.address && <span className="ml-1">· {rp.address}</span>}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                    {rallyPoints.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">暂无集结点数据</div>}
+                  </div>
+
+                  {/* Rally Point Edit/Create Dialog */}
+                  {rpEditOpen && (
+                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setRpEditOpen(false)}>
+                      <div className="bg-slate-800 border border-slate-600 rounded-lg p-4 w-[360px] max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-sm font-bold text-white mb-3">{rpEditId ? '编辑集结点' : '新增集结点'}</h3>
+                        <div className="space-y-2">
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">名称 *</label>
+                            <Input value={rpEditData.name || ''} onChange={e => setRpEditData(p => ({ ...p, name: e.target.value }))}
+                              className="bg-slate-700 border-slate-600 text-white text-xs h-7" placeholder="集结点名称" />
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">纬度 *</label>
+                              <Input type="number" step="0.000001" value={rpEditData.latitude ?? ''} onChange={e => setRpEditData(p => ({ ...p, latitude: parseFloat(e.target.value) }))}
+                                className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">经度 *</label>
+                              <Input type="number" step="0.000001" value={rpEditData.longitude ?? ''} onChange={e => setRpEditData(p => ({ ...p, longitude: parseFloat(e.target.value) }))}
+                                className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">高度 (m)</label>
+                              <Input type="number" value={rpEditData.altitude ?? ''} onChange={e => setRpEditData(p => ({ ...p, altitude: e.target.value ? parseFloat(e.target.value) : null }))}
+                                className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">半径 (m)</label>
+                              <Input type="number" value={rpEditData.radius ?? 5} onChange={e => setRpEditData(p => ({ ...p, radius: parseFloat(e.target.value) }))}
+                                className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">容量</label>
+                              <Input type="number" value={rpEditData.capacity ?? 10} onChange={e => setRpEditData(p => ({ ...p, capacity: parseInt(e.target.value) }))}
+                                className="bg-slate-700 border-slate-600 text-white text-xs h-7" />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">服务类型</label>
+                              <select value={rpEditData.serviceType ?? 0} onChange={e => setRpEditData(p => ({ ...p, serviceType: parseInt(e.target.value) }))}
+                                className="w-full rounded-md bg-slate-700 border-slate-600 text-white px-2 py-1 text-xs h-7">
+                                <option value={0}>停机</option><option value={1}>充电</option><option value={2}>维修</option><option value={3}>补给</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">状态</label>
+                              <select value={rpEditData.status ?? 1} onChange={e => setRpEditData(p => ({ ...p, status: parseInt(e.target.value) }))}
+                                className="w-full rounded-md bg-slate-700 border-slate-600 text-white px-2 py-1 text-xs h-7">
+                                <option value={0}>禁用</option><option value={1}>启用</option><option value={2}>维护中</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">范围</label>
+                              <select value={rpEditData.scope ?? 0} onChange={e => setRpEditData(p => ({ ...p, scope: parseInt(e.target.value) }))}
+                                className="w-full rounded-md bg-slate-700 border-slate-600 text-white px-2 py-1 text-xs h-7">
+                                <option value={0}>全局</option><option value={1}>团队专属</option>
+                              </select>
+                            </div>
+                          </div>
+                          {rpEditData.scope === 1 && (
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">团队ID</label>
+                              <Input value={rpEditData.teamId || ''} onChange={e => setRpEditData(p => ({ ...p, teamId: e.target.value }))}
+                                className="bg-slate-700 border-slate-600 text-white text-xs h-7" placeholder="输入团队ID" />
+                            </div>
+                          )}
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">地址 (填写后可自动填充坐标)</label>
+                            <div className="flex gap-1">
+                              <Input value={rpEditData.address || ''} onChange={e => setRpEditData(p => ({ ...p, address: e.target.value }))}
+                                className="bg-slate-700 border-slate-600 text-white text-xs h-7 flex-1" placeholder="输入地址自动获取坐标" />
+                              <Button size="sm" className="h-7 px-2 text-[10px] bg-teal-600 hover:bg-teal-700" disabled={rpGeocoding || !rpEditData.address}
+                                onClick={async () => {
+                                  if (!rpEditData.address) return;
+                                  setRpGeocoding(true);
+                                  const result = await geocodeAddress(rpEditData.address);
+                                  if (result) {
+                                    setRpEditData(p => ({ ...p, latitude: result.lat, longitude: result.lon }));
+                                  } else {
+                                    alert('地址解析失败，请尝试更具体的地址或手动输入坐标');
+                                  }
+                                  setRpGeocoding(false);
+                                }}>
+                                {rpGeocoding ? <RefreshCw className="w-3 h-3 animate-spin" /> : <MapPin className="w-3 h-3" />}
+                              </Button>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">描述</label>
+                            <Input value={rpEditData.description || ''} onChange={e => setRpEditData(p => ({ ...p, description: e.target.value }))}
+                              className="bg-slate-700 border-slate-600 text-white text-xs h-7" placeholder="集结点描述" />
+                          </div>
+                        </div>
+                        <div className="flex gap-2 mt-3">
+                          <Button variant="outline" className="flex-1 text-xs h-7 bg-slate-700 border-slate-600 text-slate-300" onClick={() => setRpEditOpen(false)}>取消</Button>
+                          <Button className="flex-1 text-xs h-7 bg-amber-600 hover:bg-amber-700" onClick={handleRpSave} disabled={rpLoading || !rpEditData.name || rpEditData.latitude == null || rpEditData.longitude == null}>
+                            {rpLoading ? <RefreshCw className="w-3 h-3 animate-spin mr-1" /> : null}
+                            {rpEditId ? '保存' : '创建'}
+                          </Button>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -608,15 +1031,13 @@ export default function CommanderView({ token, username, onLogout }: CommanderVi
               )}
             </div>
           </div>
-        )}
 
         {/* 右侧面板: 地图视图 (约2/3宽度) */}
-        {!rightPanelCollapsed && (
-          <div className="flex-1 h-full">
+          <div className={`${rightPanelCollapsed ? 'w-0 overflow-hidden' : 'flex-1'} h-full transition-all duration-500 ease-in-out`}>
             <MapPanel drones={mapDrones} selectedDroneId={selectedMapDrone} onDroneClick={setSelectedMapDrone}
+              rallyPoints={mapRallyPoints}
               showDroneList={leftPanelCollapsed} showEventLog={true} eventLogs={eventLogsForMap} />
           </div>
-        )}
 
         {/* 两侧都收起时显示提示 */}
         {leftPanelCollapsed && rightPanelCollapsed && (

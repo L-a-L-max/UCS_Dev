@@ -36,13 +36,13 @@ public class DroneStatus {
     @Column
     private Float battery;
     
-    @Column(name = "health_status", columnDefinition = "SMALLINT DEFAULT 0")
+    @Column(name = "health_status")
     private Integer healthStatus = 0;
     
-    @Column(name = "risk_level", columnDefinition = "SMALLINT DEFAULT 0")
+    @Column(name = "risk_level")
     private Integer riskLevel = 0;
     
-    @Column(name = "payload_state", columnDefinition = "JSON")
+    @Column(name = "payload_state", length = 2000)
     private String payloadState;
     
     @Column(name = "grid_x")

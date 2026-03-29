@@ -7,10 +7,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ucs.util.PartitionNameUtil;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -38,6 +41,9 @@ public class PermissionService {
     private final TeamDroneMapRepository teamDroneMapRepository;
     private final RedisService redisService;
     private final OperationLogService operationLogService;
+    private final PartitionRoutingService partitionRoutingService;
+    private final UserRoleMapRepository userRoleMapRepository;
+    private final WebSocketGatewayService webSocketGatewayService;
     
     /**
      * Transfer control permission for a drone from current owner to target user.
@@ -125,7 +131,10 @@ public class PermissionService {
             // 3. Update Redis cache
             redisService.setDroneController(uavId, toUserId);
             
-            // 4. Log operation
+            // 4. Recalculate and update drone partitions based on new ownership
+            recalculateDronePartitions(uavId, toUserId);
+            
+            // 5. Log operation
             operationLogService.recordOperation(operatorId, operatorName, "PERMISSION_TRANSFER",
                     drone.getId(), uavId, toUserId,
                     buildTransferDetail(fromUserId, toUserId),
@@ -312,7 +321,10 @@ public class PermissionService {
             // 4. Update Redis cache
             redisService.setDroneController(uavId, toUserId);
             
-            // 5. Log operation with human-readable detail
+            // 5. Recalculate and update drone partitions based on new team ownership
+            recalculateDronePartitionsForTeam(uavId, toTeamId, toUserId);
+            
+            // 6. Log operation with human-readable detail
             String leaderName = userRepository.findById(toUserId)
                     .map(u -> u.getRealName() != null ? u.getRealName() : u.getUsername())
                     .orElse("用户#" + toUserId);
@@ -336,6 +348,157 @@ public class PermissionService {
         }
     }
     
+    /**
+     * Recalculate drone partitions after individual ownership transfer.
+     * 
+     * Rules:
+     *   - Always include: observer + commander
+     *   - If new owner is a Leader: + leader's partition only
+     *   - If new owner is a Pilot: + pilot's partition + their team leader's partition
+     */
+    private void recalculateDronePartitions(String uavId, Long newOwnerId) {
+        Set<String> newPartitions = new LinkedHashSet<>();
+        newPartitions.add("observer");
+        newPartitions.add("commander");
+
+        // Add new owner's partition
+        Optional<User> ownerOpt = userRepository.findById(newOwnerId);
+        if (ownerOpt.isPresent()) {
+            User owner = ownerOpt.get();
+            String ownerPartition = getOrComputePartition(owner);
+            if (ownerPartition != null) {
+                newPartitions.add(ownerPartition);
+            }
+
+            // If target is a Pilot (not Leader), also add their team leader's partition
+            List<TeamMember> memberships = teamMemberRepository.findByUserId(newOwnerId);
+            if (!memberships.isEmpty()) {
+                TeamMember membership = memberships.get(0);
+                // Check if this user is a Pilot (not Leader)
+                boolean isLeader = membership.getTeamRole() != null &&
+                        membership.getTeamRole().getRoleName().equalsIgnoreCase("Leader");
+                if (!isLeader) {
+                    // Find the team leader and add their partition
+                    List<TeamMember> teamMembers = teamMemberRepository.findByTeamIdWithUser(membership.getTeamId());
+                    for (TeamMember tm : teamMembers) {
+                        if (tm.getTeamRole() != null &&
+                                tm.getTeamRole().getRoleName().equalsIgnoreCase("Leader")) {
+                            Optional<User> leaderOpt = userRepository.findById(tm.getUserId());
+                            if (leaderOpt.isPresent()) {
+                                String leaderPartition = getOrComputePartition(leaderOpt.get());
+                                if (leaderPartition != null) {
+                                    newPartitions.add(leaderPartition);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update drone entity with new control owner
+        Optional<Drone> droneOpt = droneRepository.findByUavId(uavId);
+        if (droneOpt.isPresent()) {
+            Drone drone = droneOpt.get();
+            drone.setControlOwnerId(newOwnerId);
+            drone.setViewOwnerId(newOwnerId);
+            droneRepository.save(drone);
+        }
+
+        // Get old partitions before updating to compute removed set
+        Set<String> oldPartitions = partitionRoutingService.getPartitionsForDrone(uavId);
+
+        partitionRoutingService.updateDronePartitions(uavId, newPartitions);
+
+        // Notify old partitions (that are no longer in new set) about drone removal
+        Set<String> removedPartitions = new LinkedHashSet<>(oldPartitions);
+        removedPartitions.removeAll(newPartitions);
+        if (!removedPartitions.isEmpty()) {
+            webSocketGatewayService.notifyDroneRemoved(uavId, removedPartitions);
+        }
+
+        log.info("Recalculated partitions for drone {} after transfer to user {}: {} (removed from: {})",
+                uavId, newOwnerId, newPartitions, removedPartitions);
+    }
+
+    /**
+     * Recalculate drone partitions after team ownership transfer.
+     * Assigns to team leader, so partitions = observer + commander + leader's partition ONLY.
+     * (Not all team members - they get access only when drone is further transferred to them)
+     */
+    private void recalculateDronePartitionsForTeam(String uavId, Long teamId, Long leaderId) {
+        Set<String> newPartitions = new LinkedHashSet<>();
+        newPartitions.add("observer");
+        newPartitions.add("commander");
+
+        // Add ONLY the team leader's partition (not all team members)
+        Optional<User> leaderOpt = userRepository.findById(leaderId);
+        if (leaderOpt.isPresent()) {
+            String leaderPartition = getOrComputePartition(leaderOpt.get());
+            if (leaderPartition != null) {
+                newPartitions.add(leaderPartition);
+            }
+        }
+
+        // Update drone entity with new control owner (team leader) and view owner
+        Optional<Drone> droneOpt = droneRepository.findByUavId(uavId);
+        if (droneOpt.isPresent()) {
+            Drone drone = droneOpt.get();
+            drone.setControlOwnerId(leaderId);
+            drone.setViewOwnerId(leaderId);
+            droneRepository.save(drone);
+        }
+
+        // Get old partitions before updating to compute removed set
+        Set<String> oldPartitions = partitionRoutingService.getPartitionsForDrone(uavId);
+
+        partitionRoutingService.updateDronePartitions(uavId, newPartitions);
+
+        // Notify old partitions (that are no longer in new set) about drone removal
+        Set<String> removedPartitions = new LinkedHashSet<>(oldPartitions);
+        removedPartitions.removeAll(newPartitions);
+        if (!removedPartitions.isEmpty()) {
+            webSocketGatewayService.notifyDroneRemoved(uavId, removedPartitions);
+        }
+
+        log.info("Recalculated partitions for drone {} after transfer to team {}: {} (removed from: {})",
+                uavId, teamId, newPartitions, removedPartitions);
+    }
+
+    /**
+     * Add all team members' partitions to the partition set.
+     */
+    private void addTeamMemberPartitions(Long teamId, Set<String> partitions) {
+        List<TeamMember> members = teamMemberRepository.findByTeamId(teamId);
+        for (TeamMember member : members) {
+            Optional<User> memberUserOpt = userRepository.findById(member.getUserId());
+            if (memberUserOpt.isPresent()) {
+                String memberPartition = getOrComputePartition(memberUserOpt.get());
+                if (memberPartition != null) {
+                    partitions.add(memberPartition);
+                }
+            }
+        }
+    }
+
+    /**
+     * Get or compute partition name for a user.
+     * If partition_name is null in DB, compute it and persist.
+     */
+    private String getOrComputePartition(User user) {
+        if (user.getPartitionName() != null && !user.getPartitionName().isEmpty()) {
+            return user.getPartitionName();
+        }
+        // Compute partition name from role
+        List<UserRoleMap> userRoles = userRoleMapRepository.findByUserIdWithRole(user.getId());
+        String primaryRole = userRoles.isEmpty() ? "operator" : userRoles.get(0).getRole().getRoleName();
+        String partition = PartitionNameUtil.computePartitionName(primaryRole, user.getUsername(), user.getId());
+        user.setPartitionName(partition);
+        userRepository.save(user);
+        return partition;
+    }
+
     /**
      * Batch transfer permissions to a team.
      *

@@ -25,6 +25,10 @@ export interface LoginResponse {
     roles: string[];
     userId: number;
     username: string;
+    realName: string;
+    teamId: number | null;
+    teamName: string | null;
+    partitions: string[];
   };
 }
 
@@ -52,6 +56,7 @@ export interface DroneInfo {
   owner: string;
   teamName: string;
   teamLeader?: string;
+  controlOwnerName?: string;
   onlineStatus: boolean;
   lastHeartbeat: string;
 }
@@ -422,6 +427,200 @@ export async function getCommanderUsers(
     headers: authHeaders(token),
   });
   return response.json();
+}
+
+// ==================== Rally Point API ====================
+
+export interface RallyPoint {
+  id: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  altitude: number | null;
+  city: string | null;
+  address: string | null;
+  capacity: number;
+  currentOccupancy: number;
+  status: number; // 0=disabled, 1=enabled, 2=maintenance
+  scope: number; // 0=global, 1=team-specific
+  teamId: string | null;
+  radius: number;
+  serviceType: number; // 0=parking, 1=charging, 2=maintenance, 3=supply
+  description: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getRallyPoints(token: string): Promise<ApiResponse<RallyPoint[]>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+export async function getEnabledRallyPoints(token: string): Promise<ApiResponse<RallyPoint[]>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points/enabled`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+export async function getAvailableRallyPoints(token: string): Promise<ApiResponse<RallyPoint[]>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points/available`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+export async function searchRallyPoints(token: string, keyword: string): Promise<ApiResponse<RallyPoint[]>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points/search?keyword=${encodeURIComponent(keyword)}`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+export async function createRallyPoint(token: string, data: Partial<RallyPoint>): Promise<ApiResponse<RallyPoint>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(data),
+  });
+  return response.json();
+}
+
+export async function updateRallyPoint(token: string, id: number, data: Partial<RallyPoint>): Promise<ApiResponse<RallyPoint>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points/${id}`, {
+    method: 'PUT',
+    headers: authHeaders(token),
+    body: JSON.stringify(data),
+  });
+  return response.json();
+}
+
+export async function deleteRallyPoint(token: string, id: number): Promise<ApiResponse<{ id: number; deleted: boolean }>> {
+  const response = await fetch(`${API_BASE}/api/v1/rally-points/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+// ==================== Drone Home Position API ====================
+
+/**
+ * Get cached Home position for a drone from Redis.
+ * Used to sync Home position across PilotView and LeaderView.
+ */
+export async function getDroneHomePosition(
+  token: string,
+  uavId: string
+): Promise<ApiResponse<{ uavId: string; lat: number; lon: number; alt: number }>> {
+  const response = await fetch(`${API_BASE}/api/v1/control/home/${uavId}`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+// ==================== Geocoding API ====================
+
+/** Helper: fetch with timeout via AbortController */
+function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = 5000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Geocode an address string to lat/lon coordinates.
+ * Priority: backend proxy (reliable) > Nominatim direct (may be blocked in China).
+ */
+export async function geocodeAddress(address: string): Promise<{ lat: number; lon: number; displayName: string } | null> {
+  // Primary: Backend proxy geocoding (server-side, avoids GFW/CORS issues)
+  try {
+    const response = await fetchWithTimeout(
+      `${API_BASE}/api/v1/public/geocode?address=${encodeURIComponent(address)}`,
+      {},
+      8000
+    );
+    if (response.ok) {
+      const data = await response.json();
+      if (data.code === 0 && data.data) {
+        return {
+          lat: data.data.lat,
+          lon: data.data.lon,
+          displayName: data.data.displayName || address,
+        };
+      }
+    }
+  } catch {
+    // Fall through to direct Nominatim
+  }
+  // Fallback: Nominatim direct from browser (may be slow/blocked in China)
+  try {
+    const response = await fetchWithTimeout(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=5&accept-language=zh-CN`,
+      { headers: { 'User-Agent': 'UCS-Dashboard/1.0 (drone-management-system)' } },
+      5000
+    );
+    if (response.ok) {
+      const results = await response.json();
+      if (results && results.length > 0) {
+        const lat = parseFloat(results[0].lat);
+        const lon = parseFloat(results[0].lon);
+        if (!isNaN(lat) && !isNaN(lon)) {
+          return {
+            lat,
+            lon,
+            displayName: results[0].display_name,
+          };
+        }
+      }
+    }
+  } catch {
+    // Both methods failed
+  }
+  return null;
+}
+
+/**
+ * Reverse geocode lat/lon to address string.
+ * Priority: backend proxy (reliable) > Nominatim direct.
+ */
+export async function reverseGeocode(lat: number, lon: number): Promise<string | null> {
+  // Primary: Backend proxy reverse geocoding
+  try {
+    const response = await fetchWithTimeout(
+      `${API_BASE}/api/v1/public/reverse-geocode?lat=${lat}&lon=${lon}`,
+      {},
+      8000
+    );
+    if (response.ok) {
+      const data = await response.json();
+      if (data.code === 0 && data.data?.displayName) {
+        return data.data.displayName;
+      }
+    }
+  } catch {
+    // Fall through to Nominatim direct
+  }
+  // Fallback: Nominatim direct
+  try {
+    const response = await fetchWithTimeout(
+      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&accept-language=zh-CN`,
+      { headers: { 'User-Agent': 'UCS-Dashboard/1.0 (drone-management-system)' } },
+      5000
+    );
+    if (response.ok) {
+      const data = await response.json();
+      if (data.display_name) {
+        return data.display_name;
+      }
+    }
+  } catch {
+    // Both methods failed
+  }
+  return null;
 }
 
 // ==================== Pilot API ====================

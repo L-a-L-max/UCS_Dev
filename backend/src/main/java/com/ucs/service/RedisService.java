@@ -58,8 +58,13 @@ public class RedisService {
      * Check if drone is online (key exists and not expired).
      */
     public boolean isDroneOnline(String uavId) {
-        String key = String.format(DRONE_ONLINE_PREFIX, uavId);
-        return Boolean.TRUE.equals(stringRedisTemplate.hasKey(key));
+        try {
+            String key = String.format(DRONE_ONLINE_PREFIX, uavId);
+            return Boolean.TRUE.equals(stringRedisTemplate.hasKey(key));
+        } catch (Exception e) {
+            log.debug("Redis unavailable for isDroneOnline({}), returning false", uavId);
+            return false;
+        }
     }
     
     // ========== Drone Partition Mapping ==========
@@ -95,6 +100,16 @@ public class RedisService {
     }
     
     /**
+     * Remove a drone from a specific partition (reverse index cleanup).
+     */
+    public void removeDroneFromPartition(String uavId, String partitionName) {
+        String droneKey = String.format(DRONE_PARTITIONS_PREFIX, uavId);
+        String partKey = String.format(PARTITION_DRONES_PREFIX, partitionName);
+        stringRedisTemplate.opsForSet().remove(droneKey, partitionName);
+        stringRedisTemplate.opsForSet().remove(partKey, uavId);
+    }
+
+    /**
      * Get all drones in a partition.
      */
     public Set<String> getDronesInPartition(String partitionName) {
@@ -117,9 +132,14 @@ public class RedisService {
      * Get the current controller user ID for a drone.
      */
     public Long getDroneController(String uavId) {
-        String key = String.format(DRONE_CONTROLLER_PREFIX, uavId);
-        String value = stringRedisTemplate.opsForValue().get(key);
-        return value != null ? Long.parseLong(value) : null;
+        try {
+            String key = String.format(DRONE_CONTROLLER_PREFIX, uavId);
+            String value = stringRedisTemplate.opsForValue().get(key);
+            return value != null ? Long.parseLong(value) : null;
+        } catch (Exception e) {
+            log.debug("Redis unavailable for getDroneController({}), returning null", uavId);
+            return null;
+        }
     }
     
     /**
@@ -127,6 +147,54 @@ public class RedisService {
      */
     public void removeDroneController(String uavId) {
         String key = String.format(DRONE_CONTROLLER_PREFIX, uavId);
+        stringRedisTemplate.delete(key);
+    }
+    
+    // ========== Drone Home Position Cache ==========
+    
+    private static final String DRONE_HOME_PREFIX = "drone:%s:home";
+    
+    /**
+     * Cache drone home position in Redis.
+     * Stored as "lat,lon,alt" string for fast retrieval.
+     */
+    public void setDroneHome(String uavId, double lat, double lon, double alt) {
+        String key = String.format(DRONE_HOME_PREFIX, uavId);
+        String value = String.format("%.8f,%.8f,%.4f", lat, lon, alt);
+        stringRedisTemplate.opsForValue().set(key, value);
+        log.debug("Cached home for drone {}: {}", uavId, value);
+    }
+    
+    /**
+     * Get cached drone home position from Redis.
+     * @return double array [lat, lon, alt] or null if not cached
+     */
+    public double[] getDroneHome(String uavId) {
+        try {
+            String key = String.format(DRONE_HOME_PREFIX, uavId);
+            String value = stringRedisTemplate.opsForValue().get(key);
+            if (value != null) {
+                String[] parts = value.split(",");
+                if (parts.length == 3) {
+                    return new double[] {
+                        Double.parseDouble(parts[0]),
+                        Double.parseDouble(parts[1]),
+                        Double.parseDouble(parts[2])
+                    };
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            log.debug("Redis unavailable for getDroneHome({}), returning null", uavId);
+            return null;
+        }
+    }
+    
+    /**
+     * Remove cached home position for a drone.
+     */
+    public void removeDroneHome(String uavId) {
+        String key = String.format(DRONE_HOME_PREFIX, uavId);
         stringRedisTemplate.delete(key);
     }
     

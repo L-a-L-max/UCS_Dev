@@ -14,14 +14,18 @@ const getApiBase = () => {
 const API_BASE = getApiBase();
 
 // Convert HTTP URL to WebSocket URL
+// Use /ws/websocket path for raw WebSocket through SockJS transport layer.
+// Spring Boot registers SockJS at /ws which intercepts raw /ws connections;
+// the actual raw WebSocket endpoint is at /ws/websocket.
 const getWsUrl = () => {
   const url = new URL(API_BASE);
   const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${url.host}/ws`;
+  return `${protocol}//${url.host}/ws/websocket`;
 };
 
 export interface TelemetryData {
-  uavId: number;
+  uavId: string;
+  uavName: string;
   timestamp: string;
   lat: number;
   lon: number;
@@ -38,6 +42,9 @@ export interface TelemetryData {
   dataAge: number;
   msgCount: number;
   isActive: boolean;
+  armed: boolean;
+  flightMode: string;
+  batteryPercent?: number;
 }
 
 export interface TelemetryBatch {
@@ -51,28 +58,100 @@ export interface TelemetryBatch {
   uavs: TelemetryData[];
 }
 
+/**
+ * Partition-specific telemetry message from server routing gateway.
+ */
+export interface PartitionTelemetryMessage {
+  partition: string;
+  timestamp: string;
+  type?: string; // 'drone_removed' for removal notifications
+  drones: TelemetryData[];
+  removedDrones?: string[]; // uavIds removed from this partition
+}
+
+/**
+ * Command acknowledgment message from PX4 via DDS gateway -> backend -> WebSocket.
+ * Used for two-stage command feedback:
+ *   Stage 1: Backend accepted the command (immediate HTTP response)
+ *   Stage 2: PX4 acknowledged execution (this WebSocket message)
+ */
+export interface CommandAckMessage {
+  type: 'command_ack';
+  uavId: string;
+  command: number;
+  result: number;
+  resultText: string;
+  timestamp: string;
+}
+
 interface UseTelemetryWebSocketOptions {
   enabled?: boolean;
+  partitions?: string[];
   onTelemetryReceived?: (batch: TelemetryBatch) => void;
+  onPartitionDataReceived?: (data: PartitionTelemetryMessage) => void;
+  onDroneRemoved?: (removedUavIds: string[]) => void;
+  onCommandAck?: (ack: CommandAckMessage) => void;
   onConnectionChange?: (connected: boolean) => void;
 }
 
 export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}) {
-  const { enabled = true, onTelemetryReceived, onConnectionChange } = options;
+  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onDroneRemoved, onCommandAck, onConnectionChange } = options;
   const clientRef = useRef<Client | null>(null);
   const [connected, setConnected] = useState(false);
   const [lastBatch, setLastBatch] = useState<TelemetryBatch | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Use refs for callbacks and partitions to avoid recreating connect/disconnect on every render
+  const onTelemetryReceivedRef = useRef(onTelemetryReceived);
+  const onPartitionDataReceivedRef = useRef(onPartitionDataReceived);
+  const onDroneRemovedRef = useRef(onDroneRemoved);
+  const onCommandAckRef = useRef(onCommandAck);
+  const onConnectionChangeRef = useRef(onConnectionChange);
+  const partitionsRef = useRef(partitions);
+
+  // Keep refs in sync with latest props
+  useEffect(() => { onTelemetryReceivedRef.current = onTelemetryReceived; }, [onTelemetryReceived]);
+  useEffect(() => { onPartitionDataReceivedRef.current = onPartitionDataReceived; }, [onPartitionDataReceived]);
+  useEffect(() => { onDroneRemovedRef.current = onDroneRemoved; }, [onDroneRemoved]);
+  useEffect(() => { onCommandAckRef.current = onCommandAck; }, [onCommandAck]);
+  useEffect(() => { onConnectionChangeRef.current = onConnectionChange; }, [onConnectionChange]);
+  useEffect(() => { partitionsRef.current = partitions; }, [partitions]);
+
   const handleMessage = useCallback((message: IMessage) => {
     try {
       const batch: TelemetryBatch = JSON.parse(message.body);
       setLastBatch(batch);
-      onTelemetryReceived?.(batch);
+      onTelemetryReceivedRef.current?.(batch);
     } catch (error) {
       console.error('Failed to parse telemetry message:', error);
     }
-  }, [onTelemetryReceived]);
+  }, []);
+
+  const handlePartitionMessage = useCallback((message: IMessage) => {
+    try {
+      const data: PartitionTelemetryMessage = JSON.parse(message.body);
+      // Handle drone removal notifications
+      if (data.type === 'drone_removed' && data.removedDrones && data.removedDrones.length > 0) {
+        console.log('[WS] Drone removal notification:', data.partition, 'removed:', data.removedDrones);
+        onDroneRemovedRef.current?.(data.removedDrones);
+        return;
+      }
+      console.log('[WS] Partition message received:', data.partition, 'drones:', data.drones?.length, data.drones?.map(d => `${d.uavId}(${d.lat},${d.lon},armed=${d.armed})`));
+      onPartitionDataReceivedRef.current?.(data);
+    } catch (error) {
+      console.error('Failed to parse partition telemetry message:', error);
+    }
+  }, []);
+
+  const handleCommandAck = useCallback((message: IMessage) => {
+    try {
+      const ack: CommandAckMessage = JSON.parse(message.body);
+      console.log('[WS] Command ack received:', ack.uavId, 'result:', ack.resultText);
+      onCommandAckRef.current?.(ack);
+    } catch (error) {
+      console.error('Failed to parse command ack message:', error);
+    }
+  }, []);
 
   const connect = useCallback(() => {
     if (clientRef.current?.active) {
@@ -80,7 +159,9 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
     }
 
     const wsUrl = getWsUrl();
-    console.log('Connecting to WebSocket:', wsUrl);
+    console.log('[WS] Connecting to WebSocket:', wsUrl);
+
+    const currentPartitions = partitionsRef.current;
 
     const client = new Client({
       brokerURL: wsUrl,
@@ -88,33 +169,52 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
       heartbeatIncoming: 4000,
       heartbeatOutgoing: 4000,
       onConnect: () => {
-        console.log('WebSocket connected');
+        console.log('[WS] WebSocket connected');
         setConnected(true);
-        onConnectionChange?.(true);
+        onConnectionChangeRef.current?.(true);
         
-        // Subscribe to telemetry topic
+        // Subscribe to legacy telemetry topic (backward compatibility)
         client.subscribe('/topic/telemetry', handleMessage);
+        console.log('[WS] Subscribed to /topic/telemetry');
+        
+        // Subscribe to command acknowledgment topic
+        client.subscribe('/topic/command-ack', handleCommandAck);
+        console.log('[WS] Subscribed to /topic/command-ack');
+        
+        // Subscribe to partition-specific topics if partitions are provided
+        if (currentPartitions && currentPartitions.length > 0) {
+          console.log('[WS] Subscribing to partition topics:', currentPartitions);
+          currentPartitions.forEach(partition => {
+            const topic = `/topic/telemetry/partition/${partition}`;
+            console.log('[WS] Subscribing to:', topic);
+            client.subscribe(topic, handlePartitionMessage);
+            // Subscribe to partition-specific command acks
+            client.subscribe(`/topic/command-ack/partition/${partition}`, handleCommandAck);
+          });
+        } else {
+          console.warn('[WS] No partitions provided, partition topics will not be subscribed');
+        }
       },
       onDisconnect: () => {
-        console.log('WebSocket disconnected');
+        console.log('[WS] WebSocket disconnected');
         setConnected(false);
-        onConnectionChange?.(false);
+        onConnectionChangeRef.current?.(false);
       },
       onStompError: (frame) => {
-        console.error('STOMP error:', frame.headers['message']);
+        console.error('[WS] STOMP error:', frame.headers['message']);
         setConnected(false);
-        onConnectionChange?.(false);
+        onConnectionChangeRef.current?.(false);
       },
       onWebSocketError: (event) => {
-        console.error('WebSocket error:', event);
+        console.error('[WS] WebSocket error:', event);
         setConnected(false);
-        onConnectionChange?.(false);
+        onConnectionChangeRef.current?.(false);
       },
     });
 
     clientRef.current = client;
     client.activate();
-  }, [handleMessage, onConnectionChange]);
+  }, [handleMessage, handlePartitionMessage, handleCommandAck]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -140,7 +240,8 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
     return () => {
       disconnect();
     };
-  }, [enabled, connect, disconnect]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
 
   return {
     connected,

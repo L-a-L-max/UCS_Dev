@@ -5,9 +5,11 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 /**
- * Maps drones to Zenoh partitions.
- * Each drone belongs to one or more partitions for data distribution.
- * Partition naming convention: partition_{teamName}_{phone} or partition_{uavId}
+ * Maps drones to DDS partitions for data distribution.
+ * Each drone belongs to one or more partitions.
+ * Partition naming convention:
+ * - "observer" / "commander" (special roles, always included)
+ * - "user_{id}" (regular users, e.g., user_10001)
  */
 @Data
 @Entity
@@ -29,7 +31,7 @@ public class DronePartitionMap {
     @Column(name = "partition_name", nullable = false, length = 200)
     private String partitionName;
     
-    @Column(name = "is_active", columnDefinition = "BOOLEAN DEFAULT TRUE")
+    @Column(name = "is_active")
     private Boolean isActive = true;
     
     @Column(name = "created_at")
