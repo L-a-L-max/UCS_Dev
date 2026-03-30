@@ -10,8 +10,16 @@ import java.util.Optional;
 @Repository
 public interface DroneRepository extends JpaRepository<Drone, Long> {
     Optional<Drone> findByDroneSn(String droneSn);
+    
+    Optional<Drone> findByUavId(String uavId);
+    
     List<Drone> findByDefaultTeamId(Long teamId);
+    
+    List<Drone> findByOnlineStatusTrue();
     
     @Query("SELECT d FROM Drone d WHERE d.id IN :ids")
     List<Drone> findByIdIn(List<Long> ids);
+    
+    @Query("SELECT d FROM Drone d WHERE d.uavId IN :uavIds")
+    List<Drone> findByUavIdIn(List<String> uavIds);
 }

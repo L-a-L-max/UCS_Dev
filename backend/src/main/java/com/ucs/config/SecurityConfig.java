@@ -39,13 +39,20 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/auth/**").permitAll()
                 .requestMatchers("/api/v1/public/**").permitAll()
                 .requestMatchers("/api/v1/map/**").permitAll()
-                .requestMatchers("/api/v1/telemetry/**").permitAll() // Allow ROS 2 gateway access
+                .requestMatchers("/api/v1/telemetry/**").permitAll() // Allow ROS 2 / Zenoh gateway access
                 .requestMatchers("/ws/**").permitAll()
                 .requestMatchers("/h2-console/**").permitAll()
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
-                .requestMatchers("/api/v1/screen/**").hasRole("OBSERVER")
-                .requestMatchers("/api/v1/pilot/**").hasAnyRole("PILOT", "LEADER", "COMMANDER")
+                // Role-based access control (RBAC)
+                .requestMatchers("/api/v1/screen/**").authenticated()
+                .requestMatchers("/api/v1/pilot/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
                 .requestMatchers("/api/v1/leader/**").hasAnyRole("LEADER", "COMMANDER")
+                // Zenoh control endpoints - pilots/operators and above can send commands
+                .requestMatchers("/api/v1/control/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
+                // Commander-only endpoints - permission transfer, global management
+                .requestMatchers("/api/v1/commander/**").hasRole("COMMANDER")
+                // Operation logs - all authenticated users can view
+                .requestMatchers("/api/v1/operations/**").authenticated()
                 .anyRequest().authenticated()
             )
             .headers(headers -> headers.frameOptions(frame -> frame.disable()))

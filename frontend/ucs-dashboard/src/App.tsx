@@ -33,6 +33,9 @@ import {
 } from 'lucide-react';
 import './App.css';
 import { useTelemetryWebSocket, TelemetryBatch } from './hooks/useTelemetryWebSocket';
+import PilotView from './pages/PilotView';
+import CommanderView from './pages/CommanderView';
+import LeaderView from './pages/LeaderView';
 
 // Popup auto-close timing constants (watchdog mechanism)
 const POPUP_DEFAULT_TIMEOUT = 6000; // 6 seconds default
@@ -68,7 +71,7 @@ const zhCN = {
   username: '用户名',
   password: '密码',
   login: '登录',
-  loginHint: '观察员账号: observer / 123456',
+  loginHint: '测试账号: commander/observer/zhangsan/lisi 密码: 123456',
   loginFailed: '登录失败',
   connectionFailed: '连接失败',
   observerOnly: '仅观察员角色可访问大屏',
@@ -394,7 +397,7 @@ function App() {
   const [password, setPassword] = useState('');
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
-  const [_userRoles, setUserRoles] = useState<string[]>([]);
+  const [userRoles, setUserRoles] = useState<string[]>([]);
   
   const [drones, setDrones] = useState<DroneStatus[]>([]);
   const [taskSummary, setTaskSummary] = useState<TaskSummary | null>(null);
@@ -495,15 +498,12 @@ function App() {
       const data = await response.json();
       if (data.code === 0) {
         const roles = data.data.roles || [];
-        if (!roles.includes('OBSERVER') && !roles.includes('observer')) {
-          setError(zhCN.observerOnly);
-          return;
-        }
         setToken(data.data.token);
         setUserRoles(roles);
         setIsLoggedIn(true);
         localStorage.setItem('token', data.data.token);
         localStorage.setItem('roles', JSON.stringify(roles));
+        localStorage.setItem('username', username);
       } else {
         setError(data.msg || zhCN.loginFailed);
       }
@@ -1746,13 +1746,13 @@ function App() {
   useEffect(() => {
     const savedToken = localStorage.getItem('token');
     const savedRoles = localStorage.getItem('roles');
+    const savedUsername = localStorage.getItem('username');
     if (savedToken && savedRoles) {
       const roles = JSON.parse(savedRoles);
-      if (roles.includes('OBSERVER') || roles.includes('observer')) {
-        setToken(savedToken);
-        setUserRoles(roles);
-        setIsLoggedIn(true);
-      }
+      setToken(savedToken);
+      setUserRoles(roles);
+      setIsLoggedIn(true);
+      if (savedUsername) setUsername(savedUsername);
     }
     // Pre-warm geolocation to avoid cold-start delay
     preWarmGeolocation();
@@ -1871,7 +1871,31 @@ function App() {
               };
             }, [trackingDroneId]);
 
-    if (!isLoggedIn) {
+    // Logout handler shared across all views
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('roles');
+    localStorage.removeItem('username');
+    setIsLoggedIn(false);
+    setToken('');
+    setUserRoles([]);
+    setUsername('');
+    setPassword('');
+  }, []);
+
+  // Determine user's primary role for routing
+  const getPrimaryRole = (): string => {
+    const rolesPriority = ['COMMANDER', 'LEADER', 'PILOT', 'OBSERVER'];
+    const normalizedRoles = userRoles.map(r => r.toUpperCase());
+    for (const role of rolesPriority) {
+      if (normalizedRoles.includes(role)) return role;
+    }
+    // Fallback: check for operator role (maps to pilot view)
+    if (normalizedRoles.includes('OPERATOR')) return 'PILOT';
+    return 'OBSERVER';
+  };
+
+  if (!isLoggedIn) {
     return (
       <div className="min-h-screen login-bg flex items-center justify-center">
         {/* Sci-fi background effects */}
@@ -1908,6 +1932,19 @@ function App() {
     );
   }
 
+  // Role-based routing: non-observer roles get their dedicated views
+  const primaryRole = getPrimaryRole();
+  if (primaryRole === 'COMMANDER') {
+    return <CommanderView token={token} username={username} onLogout={handleLogout} />;
+  }
+  if (primaryRole === 'PILOT') {
+    return <PilotView token={token} username={username} onLogout={handleLogout} />;
+  }
+  if (primaryRole === 'LEADER') {
+    return <LeaderView token={token} username={username} onLogout={handleLogout} />;
+  }
+
+  // OBSERVER role (default): show the existing big screen dashboard
   return (
     <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">
       <header className="flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
@@ -1919,7 +1956,7 @@ function App() {
           <Button variant="outline" size="sm" onClick={fetchAllData} disabled={loading} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 hover:text-white">
             <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />{zhCN.refresh}
           </Button>
-          <Button variant="outline" size="sm" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('roles'); setIsLoggedIn(false); setToken(''); }} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 hover:text-white">{zhCN.logout}</Button>
+          <Button variant="outline" size="sm" onClick={handleLogout} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 hover:text-white">{zhCN.logout}</Button>
         </div>
       </header>
 
