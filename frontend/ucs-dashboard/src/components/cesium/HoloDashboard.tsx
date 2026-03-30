@@ -92,6 +92,16 @@ export function HoloDashboard({
 
   const handleCommand = useCallback((cmd: string, uavIds?: string[]) => { onCommand?.(cmd, uavIds); }, [onCommand]);
 
+  // Issue 7: Dialog state lifted to top-level so dialogs render outside HoloPanel's backdropFilter
+  const [showTransferDialog, setShowTransferDialog] = useState(false);
+  const [showRallyDialog, setShowRallyDialog] = useState(false);
+  const [editingRallyPoint, setEditingRallyPoint] = useState<MapRallyPoint | null>(null);
+
+  const openRpDialog = useCallback((rp?: MapRallyPoint) => {
+    setEditingRallyPoint(rp || null);
+    setShowRallyDialog(true);
+  }, []);
+
   return (
     <div className={`fixed inset-0 z-50 overflow-hidden ${className}`}
       style={{ background: '#050a1e', fontFamily: '"Microsoft YaHei", sans-serif', userSelect: 'none' }}>
@@ -132,8 +142,9 @@ export function HoloDashboard({
               onDroneClick={onDroneClick} onDroneToggleSelect={onDroneToggleSelect}
               teams={teams} registeredUsers={registeredUsers} rallyPoints={rallyPoints}
               logs={logs} logPage={logPage} logTotalPages={logTotalPages} logFilter={logFilter} logLoading={logLoading}
-              onTransferPermission={onTransferPermission} onFetchLogs={onFetchLogs}
-              onRallyPointCreate={onRallyPointCreate} onRallyPointEdit={onRallyPointEdit} onRallyPointDelete={onRallyPointDelete}
+              onFetchLogs={onFetchLogs} onRallyPointDelete={onRallyPointDelete}
+              onOpenTransferDialog={() => setShowTransferDialog(true)}
+              onOpenRallyDialog={openRpDialog}
               consoleContent={consoleContent} />
           </HoloPanel>
         </div>
@@ -197,6 +208,12 @@ export function HoloDashboard({
           </div>
         )}
       </div>
+
+      {/* Dialogs rendered at top level, outside HoloPanel's backdropFilter */}
+      <PermissionTransferDialog open={showTransferDialog} onOpenChange={setShowTransferDialog}
+        drones={drones} teams={teams} registeredUsers={registeredUsers} onTransferPermission={onTransferPermission} />
+      <RallyPointDialog open={showRallyDialog} onOpenChange={setShowRallyDialog}
+        editRp={editingRallyPoint} onRallyPointCreate={onRallyPointCreate} onRallyPointEdit={onRallyPointEdit} />
     </div>
   );
 }
@@ -216,11 +233,10 @@ interface ConsolePanelProps {
   logTotalPages: number;
   logFilter: string;
   logLoading: boolean;
-  onTransferPermission?: (uavIds: string[], toUserId?: number, toTeamId?: number, mode?: 'user' | 'team') => void;
   onFetchLogs?: (page: number, filter: string) => void;
-  onRallyPointCreate?: (data: Partial<MapRallyPoint>) => void;
-  onRallyPointEdit?: (rp: MapRallyPoint, data: Partial<MapRallyPoint>) => void;
   onRallyPointDelete?: (id: number) => void;
+  onOpenTransferDialog?: () => void;
+  onOpenRallyDialog?: (rp?: MapRallyPoint) => void;
   consoleContent?: ReactNode;
 }
 
@@ -459,16 +475,11 @@ function ConsolePanel({
   drones, selectedDroneId, selectedDroneIds, onDroneClick, onDroneToggleSelect,
   teams, registeredUsers, rallyPoints,
   logs, logPage, logTotalPages, logFilter, logLoading,
-  onTransferPermission, onFetchLogs,
-  onRallyPointCreate, onRallyPointEdit, onRallyPointDelete, consoleContent,
+  onFetchLogs, onRallyPointDelete,
+  onOpenTransferDialog, onOpenRallyDialog, consoleContent,
 }: ConsolePanelProps) {
   const [activeTab, setActiveTab] = useState('fleet');
   const [localLogFilter, setLocalLogFilter] = useState(logFilter);
-
-  // Issue 7: React Dialog state (replaces window.open popups)
-  const [showTransferDialog, setShowTransferDialog] = useState(false);
-  const [showRallyDialog, setShowRallyDialog] = useState(false);
-  const [editingRallyPoint, setEditingRallyPoint] = useState<MapRallyPoint | null>(null);
 
   const tabs = [
     { key: 'fleet', label: '机队' }, { key: 'permission', label: '权限' },
@@ -478,11 +489,6 @@ function ConsolePanel({
   const SERVICE_LABELS: Record<number, string> = { 0: '停机', 1: '充电', 2: '维修', 3: '补给' };
   const STATUS_LABELS: Record<number, string> = { 0: '禁用', 1: '启用', 2: '维护中' };
   const STATUS_COLORS: Record<number, string> = { 0: '#64748b', 1: '#00ff7f', 2: '#ffd700' };
-
-  const openRpDialog = useCallback((rp?: MapRallyPoint) => {
-    setEditingRallyPoint(rp || null);
-    setShowRallyDialog(true);
-  }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -536,14 +542,12 @@ function ConsolePanel({
 
           {activeTab === 'permission' && (<div>
             <div style={{ fontSize: '11px', color: '#a0cfff', marginBottom: '8px' }}>点击下方按钮进行权限转移操作:</div>
-            <button onClick={() => setShowTransferDialog(true)}
+            <button onClick={() => onOpenTransferDialog?.()}
               style={{ width: '100%', padding: '8px', borderRadius: '4px', fontSize: '12px', fontWeight: 600,
                 background: '#52a8ff', border: '1px solid #52a8ff', color: '#fff', cursor: 'pointer', transition: 'all 0.2s' }}>
               权限转移
             </button>
             <div style={{ fontSize: '10px', color: '#64748b', marginTop: '6px', textAlign: 'center' }}>在弹窗中选择无人机和转移目标</div>
-            <PermissionTransferDialog open={showTransferDialog} onOpenChange={setShowTransferDialog}
-              drones={drones} teams={teams} registeredUsers={registeredUsers} onTransferPermission={onTransferPermission} />
           </div>)}
 
           {activeTab === 'log' && (<div>
@@ -584,7 +588,7 @@ function ConsolePanel({
           {activeTab === 'point' && (<div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
               <span style={{ fontSize: '11px', color: '#a0cfff' }}>集结点列表</span>
-              <button onClick={() => openRpDialog()} style={{ padding: '2px 8px', borderRadius: '3px', fontSize: '10px', cursor: 'pointer',
+              <button onClick={() => onOpenRallyDialog?.()} style={{ padding: '2px 8px', borderRadius: '3px', fontSize: '10px', cursor: 'pointer',
                 background: 'rgba(82,168,255,0.2)', border: '1px solid rgba(82,168,255,0.4)', color: '#52a8ff' }}>+ 新增</button>
             </div>
             {rallyPoints.length === 0 ? <div style={{ textAlign: 'center', color: '#a0cfff', fontSize: '12px', padding: '20px 0' }}>暂无集结点</div>
@@ -603,7 +607,7 @@ function ConsolePanel({
                 容量: {rp.currentOccupancy}/{rp.capacity} | 坐标: {rp.latitude.toFixed(4)}, {rp.longitude.toFixed(4)}
               </div>
               <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-                <button onClick={() => openRpDialog(rp)} style={{ padding: '1px 6px', borderRadius: '2px', fontSize: '9px', cursor: 'pointer',
+                <button onClick={() => onOpenRallyDialog?.(rp)} style={{ padding: '1px 6px', borderRadius: '2px', fontSize: '9px', cursor: 'pointer',
                   background: 'rgba(82,168,255,0.15)', border: '1px solid rgba(82,168,255,0.3)', color: '#52a8ff' }}>编辑</button>
                 <button onClick={() => onRallyPointDelete?.(rp.id)} style={{ padding: '1px 6px', borderRadius: '2px', fontSize: '9px', cursor: 'pointer',
                   background: 'rgba(255,77,79,0.15)', border: '1px solid rgba(255,77,79,0.3)', color: '#ff4d4f' }}>删除</button>
@@ -612,8 +616,6 @@ function ConsolePanel({
           </div>)}
         </>)}
       </div>
-      <RallyPointDialog open={showRallyDialog} onOpenChange={setShowRallyDialog}
-        editRp={editingRallyPoint} onRallyPointCreate={onRallyPointCreate} onRallyPointEdit={onRallyPointEdit} />
     </div>
   );
 }
