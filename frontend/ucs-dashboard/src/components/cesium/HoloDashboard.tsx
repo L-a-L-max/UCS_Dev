@@ -1,6 +1,7 @@
 /**
- * Holographic Dashboard - Phase 6 (Bug Fixes & Full Functionality)
- * Fixed panel positioning: no overlaps, fixed sizes.
+ * Holographic Dashboard - Phase 7 (React Dialog + Pure % Layout)
+ * Issue 6: Pure percentage-based layout with CSS calc() - no pixel Math.max()
+ * Issue 7: window.open() popups replaced with React Dialog components
  * Console panel: 4 tabs (removed team), rally points CRUD with dialog.
  * Multi-select support throughout.
  */
@@ -129,9 +130,9 @@ export function HoloDashboard({
           <HoloPanel title="管理控制台" delay={0.2} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             <ConsolePanel drones={drones} selectedDroneId={selectedDroneId} selectedDroneIds={selectedDroneIds}
               onDroneClick={onDroneClick} onDroneToggleSelect={onDroneToggleSelect}
-              teams={teams} teamMembers={teamMembers} registeredUsers={registeredUsers} rallyPoints={rallyPoints}
+              teams={teams} registeredUsers={registeredUsers} rallyPoints={rallyPoints}
               logs={logs} logPage={logPage} logTotalPages={logTotalPages} logFilter={logFilter} logLoading={logLoading}
-              onTransferPermission={onTransferPermission} onFetchLogs={onFetchLogs} onTeamExpand={onTeamExpand}
+              onTransferPermission={onTransferPermission} onFetchLogs={onFetchLogs}
               onRallyPointCreate={onRallyPointCreate} onRallyPointEdit={onRallyPointEdit} onRallyPointDelete={onRallyPointDelete}
               consoleContent={consoleContent} />
           </HoloPanel>
@@ -208,7 +209,6 @@ interface ConsolePanelProps {
   onDroneClick?: (uavId: string) => void;
   onDroneToggleSelect?: (uavId: string) => void;
   teams: HoloTeam[];
-  teamMembers: Record<string, Array<{ userId: string; username: string; realName: string; role: string }>>;
   registeredUsers: Array<{ userId: number; username: string; realName: string; role: string }>;
   rallyPoints: MapRallyPoint[];
   logs: LogEntry[];
@@ -218,7 +218,6 @@ interface ConsolePanelProps {
   logLoading: boolean;
   onTransferPermission?: (uavIds: string[], toUserId?: number, toTeamId?: number, mode?: 'user' | 'team') => void;
   onFetchLogs?: (page: number, filter: string) => void;
-  onTeamExpand?: (teamId: string) => void;
   onRallyPointCreate?: (data: Partial<MapRallyPoint>) => void;
   onRallyPointEdit?: (rp: MapRallyPoint, data: Partial<MapRallyPoint>) => void;
   onRallyPointDelete?: (id: number) => void;
@@ -228,109 +227,220 @@ interface ConsolePanelProps {
 const TAB_ACTIVE = { background: 'rgba(60, 120, 220, 0.4)', border: '1px solid #52a8ff', color: '#fff' };
 const TAB_INACTIVE = { background: 'rgba(20, 40, 80, 0.8)', border: '1px solid rgba(60, 120, 220, 0.4)', color: '#c0d8ff' };
 
-// ===== Helper: Generate popup window HTML for permission transfer =====
-function buildPermissionTransferPopupHtml(
-  dronesJson: string, teamsJson: string, usersJson: string,
-): string {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>权限转移</title>
-<style>
-  body { margin:0; padding:20px; background:#0a1428; color:#c0d8ff; font-family:'Microsoft YaHei',sans-serif; }
-  h2 { color:#52a8ff; margin-bottom:16px; font-size:18px; }
-  .section { margin-bottom:16px; }
-  .section-title { font-size:13px; color:#a0cfff; margin-bottom:8px; }
-  .drone-list { max-height:200px; overflow-y:auto; border:1px solid rgba(60,120,220,0.4); border-radius:6px; padding:8px; background:rgba(20,40,80,0.5); }
-  .drone-item { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:4px; cursor:pointer; font-size:13px; }
-  .drone-item:hover { background:rgba(82,168,255,0.1); }
-  .drone-item.selected { background:rgba(82,168,255,0.2); }
-  input[type=checkbox] { accent-color:#52a8ff; width:16px; height:16px; cursor:pointer; }
-  .mode-btns { display:flex; gap:8px; margin-bottom:12px; }
-  .mode-btn { flex:1; padding:8px; border-radius:6px; font-size:13px; cursor:pointer; text-align:center; border:1px solid rgba(60,120,220,0.4); background:rgba(20,40,80,0.8); color:#c0d8ff; transition:all 0.2s; }
-  .mode-btn.active { background:rgba(60,120,220,0.4); border-color:#52a8ff; color:#fff; }
-  select { width:100%; padding:8px 12px; background:rgba(20,40,80,0.8); border:1px solid rgba(60,120,220,0.4); border-radius:6px; color:#c0d8ff; font-size:13px; margin-bottom:12px; }
-  .submit-btn { width:100%; padding:10px; border-radius:6px; font-size:14px; font-weight:600; border:1px solid #52a8ff; color:#fff; cursor:pointer; transition:all 0.2s; }
-  .submit-btn.enabled { background:#52a8ff; }
-  .submit-btn.disabled { background:rgba(82,168,255,0.2); cursor:not-allowed; opacity:0.5; }
-  .status { font-size:11px; opacity:0.7; margin-left:auto; }
-</style></head><body>
-<h2>无人机权限转移</h2>
-<div class="section"><div class="section-title">选择需要转移的无人机（可多选）:</div>
-<div class="drone-list" id="droneList"></div></div>
-<div class="section"><div class="section-title">转移目标:</div>
-<div class="mode-btns"><div class="mode-btn active" id="btnTeam" onclick="setMode('team')">转给团队</div>
-<div class="mode-btn" id="btnUser" onclick="setMode('user')">转给用户</div></div>
-<select id="targetSelect"><option value="">请选择...</option></select></div>
-<button class="submit-btn disabled" id="submitBtn" onclick="doSubmit()">确认转移</button>
-<script>
-var drones=${dronesJson};
-var teams=${teamsJson};
-var users=${usersJson};
-var selectedIds=new Set();
-var mode='team';
-function renderDrones(){var el=document.getElementById('droneList');el.innerHTML='';
-drones.forEach(function(d){var div=document.createElement('div');div.className='drone-item'+(selectedIds.has(d.uavId)?' selected':'');
-var cb=document.createElement('input');cb.type='checkbox';cb.checked=selectedIds.has(d.uavId);
-cb.onchange=function(){if(selectedIds.has(d.uavId))selectedIds.delete(d.uavId);else selectedIds.add(d.uavId);renderDrones();updateBtn();};
-div.appendChild(cb);var sp=document.createElement('span');sp.textContent=d.uavId;div.appendChild(sp);
-var st=document.createElement('span');st.className='status';st.textContent=d.onlineStatus?(d.armed?'飞行中':'在线'):'离线';div.appendChild(st);
-div.onclick=function(e){if(e.target!==cb){cb.checked=!cb.checked;if(selectedIds.has(d.uavId))selectedIds.delete(d.uavId);else selectedIds.add(d.uavId);renderDrones();updateBtn();}};
-el.appendChild(div);});}
-function setMode(m){mode=m;document.getElementById('btnTeam').className='mode-btn'+(m==='team'?' active':'');
-document.getElementById('btnUser').className='mode-btn'+(m==='user'?' active':'');renderTarget();}
-function renderTarget(){var sel=document.getElementById('targetSelect');sel.innerHTML='<option value="">'+(mode==='team'?'选择目标团队...':'选择目标用户...')+'</option>';
-var items=mode==='team'?teams:users.filter(function(u){return u.role!=='OBSERVER';});
-items.forEach(function(item){var opt=document.createElement('option');
-opt.value=mode==='team'?item.teamId:item.userId;
-opt.textContent=mode==='team'?(item.teamName+' ('+item.leader+')'):(item.realName||item.username)+' ('+item.role+')';sel.appendChild(opt);});}
-function updateBtn(){var btn=document.getElementById('submitBtn');var target=document.getElementById('targetSelect').value;
-if(selectedIds.size>0&&target){btn.className='submit-btn enabled';btn.textContent='确认转移 ('+selectedIds.size+' 架)';}else{btn.className='submit-btn disabled';btn.textContent='确认转移 ('+selectedIds.size+' 架)';}}
-document.getElementById('targetSelect').onchange=updateBtn;
-function doSubmit(){var target=document.getElementById('targetSelect').value;
-if(selectedIds.size===0||!target)return;var n=parseInt(target);if(isNaN(n))return;
-window.opener.postMessage({type:'permissionTransfer',uavIds:Array.from(selectedIds),mode:mode,targetId:n},'*');window.close();}
-renderDrones();renderTarget();
-</script></body></html>`;
+// ===== Permission Transfer Dialog (React component, replaces window.open) =====
+function PermissionTransferDialog({
+  open, onOpenChange, drones, teams, registeredUsers, onTransferPermission,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  drones: MapDrone[];
+  teams: HoloTeam[];
+  registeredUsers: Array<{ userId: number; username: string; realName: string; role: string }>;
+  onTransferPermission?: (uavIds: string[], toUserId?: number, toTeamId?: number, mode?: 'user' | 'team') => void;
+}) {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [mode, setMode] = useState<'team' | 'user'>('team');
+  const [targetId, setTargetId] = useState('');
+
+  const toggleDrone = (uavId: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(uavId)) next.delete(uavId); else next.add(uavId);
+      return next;
+    });
+  };
+
+  const canSubmit = selectedIds.size > 0 && targetId !== '';
+
+  const handleSubmit = () => {
+    if (!canSubmit) return;
+    const id = parseInt(targetId);
+    if (isNaN(id)) return;
+    onTransferPermission?.(
+      Array.from(selectedIds),
+      mode === 'user' ? id : undefined,
+      mode === 'team' ? id : undefined,
+      mode,
+    );
+    onOpenChange(false);
+    setSelectedIds(new Set());
+    setTargetId('');
+  };
+
+  if (!open) return null;
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onOpenChange(false); }}>
+      <div style={{ background: DIALOG_BG, border: `1px solid ${DIALOG_BORDER}`, borderRadius: '10px', padding: '24px', width: '480px', maxHeight: '80vh', overflowY: 'auto',
+        color: '#c0d8ff', fontFamily: "'Microsoft YaHei', sans-serif", boxShadow: '0 0 30px rgba(82,168,255,0.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <h2 style={{ color: '#52a8ff', fontSize: '18px', margin: 0 }}>无人机权限转移</h2>
+          <button onClick={() => onOpenChange(false)} style={{ background: 'none', border: 'none', color: '#a0cfff', fontSize: '20px', cursor: 'pointer', padding: '0 4px' }}>&times;</button>
+        </div>
+
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{ fontSize: '13px', color: '#a0cfff', marginBottom: '8px' }}>选择需要转移的无人机（可多选）:</div>
+          <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid rgba(60,120,220,0.4)', borderRadius: '6px', padding: '8px', background: 'rgba(20,40,80,0.5)' }}>
+            {drones.map(d => {
+              const checked = selectedIds.has(d.uavId);
+              return (
+                <div key={d.uavId} onClick={() => toggleDrone(d.uavId)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '13px',
+                    background: checked ? 'rgba(82,168,255,0.2)' : 'transparent' }}>
+                  <input type="checkbox" checked={checked} onChange={() => toggleDrone(d.uavId)}
+                    onClick={e => e.stopPropagation()} style={{ accentColor: '#52a8ff', width: '16px', height: '16px', cursor: 'pointer' }} />
+                  <span>{d.uavId}</span>
+                  <span style={{ fontSize: '11px', opacity: 0.7, marginLeft: 'auto' }}>
+                    {d.onlineStatus ? (d.armed ? '飞行中' : '在线') : '离线'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{ fontSize: '13px', color: '#a0cfff', marginBottom: '8px' }}>转移目标:</div>
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+            {(['team', 'user'] as const).map(m => (
+              <button key={m} onClick={() => { setMode(m); setTargetId(''); }}
+                style={{ flex: 1, padding: '8px', borderRadius: '6px', fontSize: '13px', cursor: 'pointer', textAlign: 'center', transition: 'all 0.2s',
+                  border: mode === m ? '1px solid #52a8ff' : '1px solid rgba(60,120,220,0.4)',
+                  background: mode === m ? 'rgba(60,120,220,0.4)' : 'rgba(20,40,80,0.8)',
+                  color: mode === m ? '#fff' : '#c0d8ff' }}>
+                {m === 'team' ? '转给团队' : '转给用户'}
+              </button>
+            ))}
+          </div>
+          <select value={targetId} onChange={e => setTargetId(e.target.value)}
+            style={{ ...INPUT_STYLE, marginBottom: '12px' }}>
+            <option value="">{mode === 'team' ? '选择目标团队...' : '选择目标用户...'}</option>
+            {mode === 'team'
+              ? teams.map(t => <option key={t.teamId} value={t.teamId}>{t.teamName} ({t.leader})</option>)
+              : registeredUsers.filter(u => u.role !== 'OBSERVER').map(u => <option key={u.userId} value={u.userId}>{(u.realName || u.username)} ({u.role})</option>)
+            }
+          </select>
+        </div>
+
+        <button onClick={handleSubmit} disabled={!canSubmit}
+          style={{ width: '100%', padding: '10px', borderRadius: '6px', fontSize: '14px', fontWeight: 600,
+            border: '1px solid #52a8ff', color: '#fff', cursor: canSubmit ? 'pointer' : 'not-allowed', transition: 'all 0.2s',
+            background: canSubmit ? '#52a8ff' : 'rgba(82,168,255,0.2)', opacity: canSubmit ? 1 : 0.5 }}>
+          确认转移 ({selectedIds.size} 架)
+        </button>
+      </div>
+    </div>
+  );
 }
 
-// ===== Helper: Generate popup window HTML for rally point create/edit =====
-function buildRallyPointPopupHtml(isEdit: boolean, rpData?: { name: string; latitude: number; longitude: number; capacity: number; status: number; serviceType: number; id?: number }): string {
-  const d = rpData || { name: '', latitude: '', longitude: '', capacity: 10, status: 1, serviceType: 0 };
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${isEdit ? '编辑集结点' : '新增集结点'}</title>
-<style>
-  body { margin:0; padding:20px; background:#0a1428; color:#c0d8ff; font-family:'Microsoft YaHei',sans-serif; }
-  h2 { color:#52a8ff; margin-bottom:16px; font-size:18px; }
-  .form-group { margin-bottom:14px; }
-  label { display:block; font-size:13px; color:#a0cfff; margin-bottom:4px; }
-  input, select { width:100%; padding:8px 12px; background:rgba(20,40,80,0.8); border:1px solid rgba(60,120,220,0.4); border-radius:6px; color:#c0d8ff; font-size:13px; box-sizing:border-box; }
-  .row { display:flex; gap:12px; }
-  .row > div { flex:1; }
-  .btn-row { display:flex; gap:12px; margin-top:20px; justify-content:flex-end; }
-  .btn { padding:8px 20px; border-radius:6px; font-size:13px; cursor:pointer; border:1px solid; transition:all 0.2s; }
-  .btn-cancel { background:rgba(20,40,80,0.8); border-color:rgba(60,120,220,0.4); color:#a0cfff; }
-  .btn-submit { background:#52a8ff; border-color:#52a8ff; color:#fff; font-weight:600; }
-</style></head><body>
-<h2>${isEdit ? '编辑集结点' : '新增集结点'}</h2>
-<div class="form-group"><label>名称 *</label><input id="rpName" value="${d.name}" placeholder="集结点名称"></div>
-<div class="row"><div class="form-group"><label>纬度 *</label><input id="rpLat" type="number" step="0.0001" value="${d.latitude}" placeholder="39.9042"></div>
-<div class="form-group"><label>经度 *</label><input id="rpLng" type="number" step="0.0001" value="${d.longitude}" placeholder="116.4074"></div></div>
-<div class="form-group"><label>容量</label><input id="rpCap" type="number" value="${d.capacity}"></div>
-<div class="row"><div class="form-group"><label>状态</label><select id="rpStatus">
-<option value="0"${d.status===0?' selected':''}>禁用</option><option value="1"${d.status===1?' selected':''}>启用</option><option value="2"${d.status===2?' selected':''}>维护中</option></select></div>
-<div class="form-group"><label>服务类型</label><select id="rpService">
-<option value="0"${d.serviceType===0?' selected':''}>停机</option><option value="1"${d.serviceType===1?' selected':''}>充电</option><option value="2"${d.serviceType===2?' selected':''}>维修</option><option value="3"${d.serviceType===3?' selected':''}>补给</option></select></div></div>
-<div class="btn-row"><button class="btn btn-cancel" onclick="window.close()">取消</button>
-<button class="btn btn-submit" onclick="doSubmit()">${isEdit ? '保存' : '创建'}</button></div>
-<script>
-function doSubmit(){
-  var name=document.getElementById('rpName').value;
-  var lat=parseFloat(document.getElementById('rpLat').value);
-  var lng=parseFloat(document.getElementById('rpLng').value);
-  var cap=parseInt(document.getElementById('rpCap').value);
-  if(!name||isNaN(lat)||isNaN(lng)||isNaN(cap)){alert('请填写所有必填字段');return;}
-  window.opener.postMessage({type:'rallyPoint',isEdit:${isEdit},${isEdit && rpData?.id != null ? `editId:${rpData.id},` : ''}
-    data:{name:name,latitude:lat,longitude:lng,capacity:cap,status:parseInt(document.getElementById('rpStatus').value),serviceType:parseInt(document.getElementById('rpService').value),currentOccupancy:0}},'*');
-  window.close();
-}
-</script></body></html>`;
+// ===== Rally Point Dialog (React component, replaces window.open) =====
+function RallyPointDialog({
+  open, onOpenChange, editRp, onRallyPointCreate, onRallyPointEdit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  editRp?: MapRallyPoint | null;
+  onRallyPointCreate?: (data: Partial<MapRallyPoint>) => void;
+  onRallyPointEdit?: (rp: MapRallyPoint, data: Partial<MapRallyPoint>) => void;
+}) {
+  const isEdit = !!editRp;
+  const [name, setName] = useState(editRp?.name || '');
+  const [lat, setLat] = useState(editRp?.latitude?.toString() || '');
+  const [lng, setLng] = useState(editRp?.longitude?.toString() || '');
+  const [capacity, setCapacity] = useState(editRp?.capacity?.toString() || '10');
+  const [status, setStatus] = useState(editRp?.status?.toString() || '1');
+  const [serviceType, setServiceType] = useState(editRp?.serviceType?.toString() || '0');
+
+  // Reset form when editRp changes
+  useEffect(() => {
+    if (open) {
+      setName(editRp?.name || '');
+      setLat(editRp?.latitude?.toString() || '');
+      setLng(editRp?.longitude?.toString() || '');
+      setCapacity(editRp?.capacity?.toString() || '10');
+      setStatus(editRp?.status?.toString() || '1');
+      setServiceType(editRp?.serviceType?.toString() || '0');
+    }
+  }, [open, editRp]);
+
+  const handleSubmit = () => {
+    const latNum = parseFloat(lat);
+    const lngNum = parseFloat(lng);
+    const capNum = parseInt(capacity);
+    if (!name || isNaN(latNum) || isNaN(lngNum) || isNaN(capNum)) {
+      alert('请填写所有必填字段');
+      return;
+    }
+    const data = { name, latitude: latNum, longitude: lngNum, capacity: capNum, status: parseInt(status), serviceType: parseInt(serviceType), currentOccupancy: 0 };
+    if (isEdit && editRp) {
+      onRallyPointEdit?.(editRp, data);
+    } else {
+      onRallyPointCreate?.(data);
+    }
+    onOpenChange(false);
+  };
+
+  if (!open) return null;
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onOpenChange(false); }}>
+      <div style={{ background: DIALOG_BG, border: `1px solid ${DIALOG_BORDER}`, borderRadius: '10px', padding: '24px', width: '440px', maxHeight: '80vh', overflowY: 'auto',
+        color: '#c0d8ff', fontFamily: "'Microsoft YaHei', sans-serif", boxShadow: '0 0 30px rgba(82,168,255,0.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <h2 style={{ color: '#52a8ff', fontSize: '18px', margin: 0 }}>{isEdit ? '编辑集结点' : '新增集结点'}</h2>
+          <button onClick={() => onOpenChange(false)} style={{ background: 'none', border: 'none', color: '#a0cfff', fontSize: '20px', cursor: 'pointer', padding: '0 4px' }}>&times;</button>
+        </div>
+
+        <div style={{ marginBottom: '14px' }}>
+          <label style={LABEL_STYLE}>名称 *</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="集结点名称" style={INPUT_STYLE} />
+        </div>
+        <div style={{ display: 'flex', gap: '12px', marginBottom: '14px' }}>
+          <div style={{ flex: 1 }}>
+            <label style={LABEL_STYLE}>纬度 *</label>
+            <input type="number" step="0.0001" value={lat} onChange={e => setLat(e.target.value)} placeholder="39.9042" style={INPUT_STYLE} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={LABEL_STYLE}>经度 *</label>
+            <input type="number" step="0.0001" value={lng} onChange={e => setLng(e.target.value)} placeholder="116.4074" style={INPUT_STYLE} />
+          </div>
+        </div>
+        <div style={{ marginBottom: '14px' }}>
+          <label style={LABEL_STYLE}>容量</label>
+          <input type="number" value={capacity} onChange={e => setCapacity(e.target.value)} style={INPUT_STYLE} />
+        </div>
+        <div style={{ display: 'flex', gap: '12px', marginBottom: '14px' }}>
+          <div style={{ flex: 1 }}>
+            <label style={LABEL_STYLE}>状态</label>
+            <select value={status} onChange={e => setStatus(e.target.value)} style={INPUT_STYLE}>
+              <option value="0">禁用</option><option value="1">启用</option><option value="2">维护中</option>
+            </select>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={LABEL_STYLE}>服务类型</label>
+            <select value={serviceType} onChange={e => setServiceType(e.target.value)} style={INPUT_STYLE}>
+              <option value="0">停机</option><option value="1">充电</option><option value="2">维修</option><option value="3">补给</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '20px' }}>
+          <button onClick={() => onOpenChange(false)}
+            style={{ padding: '8px 20px', borderRadius: '6px', fontSize: '13px', cursor: 'pointer',
+              background: 'rgba(20,40,80,0.8)', border: '1px solid rgba(60,120,220,0.4)', color: '#a0cfff' }}>
+            取消
+          </button>
+          <button onClick={handleSubmit}
+            style={{ padding: '8px 20px', borderRadius: '6px', fontSize: '13px', cursor: 'pointer', fontWeight: 600,
+              background: '#52a8ff', border: '1px solid #52a8ff', color: '#fff' }}>
+            {isEdit ? '保存' : '创建'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ConsolePanel({
@@ -343,6 +453,11 @@ function ConsolePanel({
   const [activeTab, setActiveTab] = useState('fleet');
   const [localLogFilter, setLocalLogFilter] = useState(logFilter);
 
+  // Issue 7: React Dialog state (replaces window.open popups)
+  const [showTransferDialog, setShowTransferDialog] = useState(false);
+  const [showRallyDialog, setShowRallyDialog] = useState(false);
+  const [editingRallyPoint, setEditingRallyPoint] = useState<MapRallyPoint | null>(null);
+
   const tabs = [
     { key: 'fleet', label: '机队' }, { key: 'permission', label: '权限' },
     { key: 'log', label: '日志' }, { key: 'point', label: '集结点' },
@@ -352,61 +467,9 @@ function ConsolePanel({
   const STATUS_LABELS: Record<number, string> = { 0: '禁用', 1: '启用', 2: '维护中' };
   const STATUS_COLORS: Record<number, string> = { 0: '#64748b', 1: '#00ff7f', 2: '#ffd700' };
 
-  // Refs to keep latest callback references for postMessage listener
-  const onTransferPermissionRef = useRef(onTransferPermission);
-  const onRallyPointCreateRef = useRef(onRallyPointCreate);
-  const onRallyPointEditRef = useRef(onRallyPointEdit);
-  const rallyPointsRef = useRef(rallyPoints);
-  useEffect(() => { onTransferPermissionRef.current = onTransferPermission; }, [onTransferPermission]);
-  useEffect(() => { onRallyPointCreateRef.current = onRallyPointCreate; }, [onRallyPointCreate]);
-  useEffect(() => { onRallyPointEditRef.current = onRallyPointEdit; }, [onRallyPointEdit]);
-  useEffect(() => { rallyPointsRef.current = rallyPoints; }, [rallyPoints]);
-
-  // Listen for postMessage from popup windows
-  useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      const msg = event.data;
-      if (!msg || typeof msg !== 'object') return;
-      if (msg.type === 'permissionTransfer') {
-        const { uavIds, mode, targetId } = msg;
-        onTransferPermissionRef.current?.(
-          uavIds,
-          mode === 'user' ? targetId : undefined,
-          mode === 'team' ? targetId : undefined,
-          mode,
-        );
-      } else if (msg.type === 'rallyPoint') {
-        if (msg.isEdit && msg.editId != null) {
-          const rp = rallyPointsRef.current.find(r => r.id === msg.editId);
-          if (rp) onRallyPointEditRef.current?.(rp, msg.data);
-        } else {
-          onRallyPointCreateRef.current?.(msg.data);
-        }
-      }
-    };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, []);
-
-  // Open permission transfer popup
-  const openTransferPopup = useCallback(() => {
-    const dronesData = drones.map(d => ({ uavId: d.uavId, onlineStatus: d.onlineStatus, armed: d.armed }));
-    const teamsData = teams.map(t => ({ teamId: t.teamId, teamName: t.teamName, leader: t.leader }));
-    const usersData = registeredUsers.map(u => ({ userId: u.userId, username: u.username, realName: u.realName, role: u.role }));
-    const html = buildPermissionTransferPopupHtml(
-      JSON.stringify(dronesData), JSON.stringify(teamsData), JSON.stringify(usersData),
-    );
-    const popup = window.open('', '_blank', 'width=520,height=600,scrollbars=yes,resizable=yes');
-    if (popup) { popup.document.write(html); popup.document.close(); }
-  }, [drones, teams, registeredUsers]);
-
-  // Open rally point popup (create or edit)
-  const openRpPopup = useCallback((rp?: MapRallyPoint) => {
-    const isEdit = !!rp;
-    const rpData = rp ? { name: rp.name, latitude: rp.latitude, longitude: rp.longitude, capacity: rp.capacity, status: rp.status, serviceType: rp.serviceType, id: rp.id } : undefined;
-    const html = buildRallyPointPopupHtml(isEdit, rpData);
-    const popup = window.open('', '_blank', 'width=480,height=500,scrollbars=yes,resizable=yes');
-    if (popup) { popup.document.write(html); popup.document.close(); }
+  const openRpDialog = useCallback((rp?: MapRallyPoint) => {
+    setEditingRallyPoint(rp || null);
+    setShowRallyDialog(true);
   }, []);
 
   return (
@@ -460,13 +523,15 @@ function ConsolePanel({
           </div>)}
 
           {activeTab === 'permission' && (<div>
-            <div style={{ fontSize: '11px', color: '#a0cfff', marginBottom: '8px' }}>点击下方按钮在新窗口中进行权限转移操作:</div>
-            <button onClick={openTransferPopup}
+            <div style={{ fontSize: '11px', color: '#a0cfff', marginBottom: '8px' }}>点击下方按钮进行权限转移操作:</div>
+            <button onClick={() => setShowTransferDialog(true)}
               style={{ width: '100%', padding: '8px', borderRadius: '4px', fontSize: '12px', fontWeight: 600,
                 background: '#52a8ff', border: '1px solid #52a8ff', color: '#fff', cursor: 'pointer', transition: 'all 0.2s' }}>
-              打开权限转移窗口
+              权限转移
             </button>
-            <div style={{ fontSize: '10px', color: '#64748b', marginTop: '6px', textAlign: 'center' }}>将在新浏览器窗口中选择无人机和转移目标</div>
+            <div style={{ fontSize: '10px', color: '#64748b', marginTop: '6px', textAlign: 'center' }}>在弹窗中选择无人机和转移目标</div>
+            <PermissionTransferDialog open={showTransferDialog} onOpenChange={setShowTransferDialog}
+              drones={drones} teams={teams} registeredUsers={registeredUsers} onTransferPermission={onTransferPermission} />
           </div>)}
 
           {activeTab === 'log' && (<div>
@@ -507,7 +572,7 @@ function ConsolePanel({
           {activeTab === 'point' && (<div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
               <span style={{ fontSize: '11px', color: '#a0cfff' }}>集结点列表</span>
-              <button onClick={() => openRpPopup()} style={{ padding: '2px 8px', borderRadius: '3px', fontSize: '10px', cursor: 'pointer',
+              <button onClick={() => openRpDialog()} style={{ padding: '2px 8px', borderRadius: '3px', fontSize: '10px', cursor: 'pointer',
                 background: 'rgba(82,168,255,0.2)', border: '1px solid rgba(82,168,255,0.4)', color: '#52a8ff' }}>+ 新增</button>
             </div>
             {rallyPoints.length === 0 ? <div style={{ textAlign: 'center', color: '#a0cfff', fontSize: '12px', padding: '20px 0' }}>暂无集结点</div>
@@ -526,7 +591,7 @@ function ConsolePanel({
                 容量: {rp.currentOccupancy}/{rp.capacity} | 坐标: {rp.latitude.toFixed(4)}, {rp.longitude.toFixed(4)}
               </div>
               <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-                <button onClick={() => openRpPopup(rp)} style={{ padding: '1px 6px', borderRadius: '2px', fontSize: '9px', cursor: 'pointer',
+                <button onClick={() => openRpDialog(rp)} style={{ padding: '1px 6px', borderRadius: '2px', fontSize: '9px', cursor: 'pointer',
                   background: 'rgba(82,168,255,0.15)', border: '1px solid rgba(82,168,255,0.3)', color: '#52a8ff' }}>编辑</button>
                 <button onClick={() => onRallyPointDelete?.(rp.id)} style={{ padding: '1px 6px', borderRadius: '2px', fontSize: '9px', cursor: 'pointer',
                   background: 'rgba(255,77,79,0.15)', border: '1px solid rgba(255,77,79,0.3)', color: '#ff4d4f' }}>删除</button>
@@ -535,6 +600,8 @@ function ConsolePanel({
           </div>)}
         </>)}
       </div>
+      <RallyPointDialog open={showRallyDialog} onOpenChange={setShowRallyDialog}
+        editRp={editingRallyPoint} onRallyPointCreate={onRallyPointCreate} onRallyPointEdit={onRallyPointEdit} />
     </div>
   );
 }
