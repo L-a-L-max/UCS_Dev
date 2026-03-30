@@ -5,7 +5,7 @@
  * Console panel: 4 tabs (removed team), rally points CRUD with dialog.
  * Multi-select support throughout.
  */
-import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
+import React, { useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { lazy, Suspense } from 'react';
 import type { MapDrone, MapRallyPoint } from '../MapPanel';
 import { HoloPanel } from './HoloPanel';
@@ -226,6 +226,18 @@ interface ConsolePanelProps {
 
 const TAB_ACTIVE = { background: 'rgba(60, 120, 220, 0.4)', border: '1px solid #52a8ff', color: '#fff' };
 const TAB_INACTIVE = { background: 'rgba(20, 40, 80, 0.8)', border: '1px solid rgba(60, 120, 220, 0.4)', color: '#c0d8ff' };
+
+// Dialog style constants
+const DIALOG_BG = 'rgba(10, 20, 50, 0.97)';
+const DIALOG_BORDER = 'rgba(82, 168, 255, 0.5)';
+const INPUT_STYLE: React.CSSProperties = {
+  width: '100%', padding: '8px 10px', borderRadius: '6px', fontSize: '13px',
+  background: 'rgba(20, 40, 80, 0.8)', border: '1px solid rgba(60, 120, 220, 0.4)',
+  color: '#c0d8ff', outline: 'none', fontFamily: 'inherit',
+};
+const LABEL_STYLE: React.CSSProperties = {
+  display: 'block', fontSize: '12px', color: '#a0cfff', marginBottom: '4px',
+};
 
 // ===== Permission Transfer Dialog (React component, replaces window.open) =====
 function PermissionTransferDialog({
