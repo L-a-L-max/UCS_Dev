@@ -1145,6 +1145,13 @@ class DDSGateway:
                             # Publish online event to Kafka
                             self.send_event_to_kafka('DRONE_ONLINE', uid, 'INFO',
                                                      f'Drone {uid} connected (epoch={epoch})')
+                        else:
+                            # Retry subscription for drones with incomplete subscriptions.
+                            # On first discovery, some PX4 topics (e.g. global_position)
+                            # may not exist yet. Re-calling subscribe_to_drone will pick up
+                            # newly available topics without duplicating existing ones
+                            # (sub_key check in _subscribe_with_px4_msgs prevents duplicates).
+                            self.subscribe_to_drone(uid)
                     if not new_drones and cycle == 0:
                         logger.warning(
                             "[Discovery] No drones found. "
