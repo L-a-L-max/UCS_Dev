@@ -96,6 +96,12 @@ class DroneState:
     home_alt: float = 0.0
     # Epoch (generation ID) - incremented on each reconnection
     epoch: int = 0
+    # Position validity: True only after first valid VehicleGlobalPosition received
+    # Prevents sending default (0,0) coords before real GPS data arrives
+    position_valid: bool = False
+    # Timestamp of last VehicleGlobalPosition message (separate from last_update
+    # which is set by ANY topic callback)
+    last_global_position_time: float = 0.0
 
 
 def _latlon_to_ned(lat: float, lon: float, alt: float,
@@ -120,7 +126,8 @@ class DDSGateway:
     Creates a ROS2 node visible via `ros2 node list`.
     """
 
-    def __init__(self, backend_url: str, api_key: str, poll_interval: float = 1.0):
+    def __init__(self, backend_url: str, api_key: str, poll_interval: float = 1.0,
+                 instance_id: int = 0, total_instances: int = 1):
         self.backend_url = backend_url.rstrip('/')
         self.api_key = api_key
         self.poll_interval = poll_interval
@@ -132,6 +139,10 @@ class DDSGateway:
         self._lock = threading.Lock()
         self._stats = defaultdict(int)
         self._last_stats_time = time.time()
+
+        # Multi-instance partitioning
+        self.instance_id = instance_id
+        self.total_instances = total_instances
 
         # Epoch map: uav_id -> epoch (generation ID)
         self._epoch_map: Dict[str, int] = {}
@@ -173,7 +184,12 @@ class DDSGateway:
             logger.warning("[Init] px4_msgs not available")
 
     def _init_ros2_node(self):
-        """Initialize the ROS2 node."""
+        """Initialize the ROS2 node.
+
+        For multi-instance mode, each instance gets a unique node name
+        (e.g. ucs_dds_gateway_0, ucs_dds_gateway_1) so they can coexist
+        on the same ROS2 network without name collisions.
+        """
         if not self._rclpy_available:
             return False
         try:
@@ -181,12 +197,28 @@ class DDSGateway:
             if not rclpy.ok():
                 rclpy.init()
                 logger.info("[ROS2] rclpy initialized")
-            self._node = rclpy.create_node('ucs_dds_gateway')
-            logger.info("[ROS2] Node 'ucs_dds_gateway' created (visible via `ros2 node list`)")
+            node_name = f'ucs_dds_gateway_{self.instance_id}'
+            self._node = rclpy.create_node(node_name)
+            logger.info("[ROS2] Node '%s' created (instance %d/%d)",
+                        node_name, self.instance_id, self.total_instances)
             return True
         except Exception as e:
             logger.error("[ROS2] Failed to create node: %s", e)
             return False
+
+    def _owns_drone(self, uav_id: str) -> bool:
+        """Check if this instance owns a drone (for multi-instance partitioning).
+
+        Partitioning strategy: extract numeric ID from uav_id (e.g. px4_5 -> 5)
+        and assign to instance via modulo: drone_num % total_instances == instance_id.
+
+        In single-instance mode (total_instances=1), all drones are owned.
+        """
+        if self.total_instances <= 1:
+            return True
+        drone_num = self._extract_system_id(uav_id)
+        owner = drone_num % self.total_instances
+        return owner == self.instance_id
 
     def check_backend_health(self) -> bool:
         """Verify backend is reachable.
@@ -223,11 +255,15 @@ class DDSGateway:
         """
         Discover PX4 drones by scanning the ROS2 topic list.
         Extracts prefix (px4_1, px4_2) from topics like /px4_1/fmu/out/vehicle_attitude.
+
+        In multi-instance mode, only returns drones owned by this instance
+        (determined by _owns_drone partitioning).
         """
         if not self._rclpy_available or self._node is None:
             return set()
 
         discovered = set()
+        all_discovered = set()
         matched_topics = []
 
         try:
@@ -242,22 +278,28 @@ class DDSGateway:
                         topic_suffix = parts[3]
                         matched_topics.append(topic_name)
                         if topic_suffix in ALL_KNOWN_SUFFIXES:
-                            discovered.add(drone_prefix)
+                            all_discovered.add(drone_prefix)
+                            # Multi-instance filter: only own drones
+                            if self._owns_drone(drone_prefix):
+                                discovered.add(drone_prefix)
 
             logger.info(
-                "[Discovery] Scanned %d topics, %d matched /fmu/out/",
-                len(all_topics), len(matched_topics)
+                "[Discovery] Scanned %d topics, %d matched /fmu/out/, "
+                "%d total drones, %d owned by instance %d/%d",
+                len(all_topics), len(matched_topics),
+                len(all_discovered), len(discovered),
+                self.instance_id, self.total_instances
             )
-
-            if matched_topics:
-                logger.info("[Discovery] Matched topics:")
-                for t in sorted(matched_topics):
-                    logger.info("  - %s", t)
 
             if discovered:
                 logger.info(
-                    "[Discovery] Found %d drone(s): %s",
-                    len(discovered), sorted(discovered)
+                    "[Discovery] Owned drone(s): %s",
+                    sorted(discovered)
+                )
+            elif all_discovered:
+                logger.info(
+                    "[Discovery] Found %d drone(s) on network but none owned by instance %d: %s",
+                    len(all_discovered), self.instance_id, sorted(all_discovered)
                 )
             else:
                 logger.warning(
@@ -395,10 +437,40 @@ class DDSGateway:
             s = self.drone_states.get(uav_id)
             if not s:
                 return
-            s.lat = msg.lat
-            s.lon = msg.lon
-            s.alt = msg.alt
-            s.last_update = time.time()
+
+            new_lat = msg.lat
+            new_lon = msg.lon
+            new_alt = msg.alt
+
+            # --- Position validity check ---
+            # Reject (0,0) or near-zero coords when we already have a valid
+            # position far from the equator/prime-meridian intersection.
+            # This prevents DDS callback ordering issues from overwriting
+            # good position data with uninitialized EKF values.
+            if abs(new_lat) < 0.1 and abs(new_lon) < 0.1:
+                # If we already have a valid position far from (0,0), reject
+                if s.position_valid and (abs(s.lat) > 1.0 or abs(s.lon) > 1.0):
+                    self._stats['position_rejected'] = \
+                        self._stats.get('position_rejected', 0) + 1
+                    if self._stats['position_rejected'] % 100 == 1:
+                        logger.warning(
+                            "[Position] Rejected (%.6f,%.6f) for %s "
+                            "(current valid: %.6f,%.6f) - likely uninitialized EKF",
+                            new_lat, new_lon, uav_id, s.lat, s.lon)
+                    return
+                # If this is the first position and it's (0,0), also skip
+                if not s.position_valid:
+                    self._stats['position_rejected'] = \
+                        self._stats.get('position_rejected', 0) + 1
+                    return
+
+            s.lat = new_lat
+            s.lon = new_lon
+            s.alt = new_alt
+            s.position_valid = True
+            now = time.time()
+            s.last_update = now
+            s.last_global_position_time = now
             s.msg_count += 1
             self._stats[f'{uav_id}/global_position'] += 1
             self._stats['total_messages'] += 1
@@ -605,16 +677,21 @@ class DDSGateway:
             return
         try:
             from kafka import KafkaConsumer as _KafkaConsumer
+            # Multi-instance: each instance uses a unique consumer group so
+            # ALL instances receive ALL commands (each filters by ownership).
+            # Using a shared group would split messages, but drones can only
+            # be commanded by the instance that subscribed to them.
+            group_id = f'dds-gateway-cmd-{self.instance_id}'
             consumer = _KafkaConsumer(
                 'commands.down',
                 bootstrap_servers=self._kafka_bootstrap,
-                group_id='dds-gateway-command-consumer',
+                group_id=group_id,
                 value_deserializer=lambda v: json.loads(v.decode('utf-8')),
                 auto_offset_reset='latest',
                 enable_auto_commit=True,
                 consumer_timeout_ms=1000,  # poll returns after 1s if no messages
             )
-            logger.info("[KafkaCmd] Consumer initialized for commands.down")
+            logger.info("[KafkaCmd] Consumer initialized for commands.down (group=%s)", group_id)
         except Exception as e:
             logger.warning("[KafkaCmd] Failed to create consumer: %s", e)
             return
@@ -667,6 +744,10 @@ class DDSGateway:
                                             continue
                                     except Exception:
                                         pass  # If timestamp parsing fails, proceed anyway
+
+                                # Multi-instance: skip commands for drones not owned by us
+                                if not self._owns_drone(uav_id):
+                                    continue
 
                                 logger.info("[KafkaCmd] Received: %s -> %s epoch=%d params=%s",
                                             command_type, uav_id, msg_epoch, params)
@@ -961,11 +1042,13 @@ class DDSGateway:
         with self._lock:
             for uid, s in self.drone_states.items():
                 age = now - s.last_update if s.last_update > 0 else -1
+                gps_age = now - s.last_global_position_time if s.last_global_position_time > 0 else -1
                 logger.info(
                     "[Stats]   %-10s msgs=%-6d lat=%.6f lon=%.6f alt=%.1f "
-                    "hdg=%.1f armed=%-5s mode=%-12s age=%.1fs",
+                    "hdg=%.1f armed=%-5s mode=%-12s age=%.1fs gps_age=%.1fs valid=%s",
                     uid, s.msg_count, s.lat, s.lon, s.alt,
-                    s.heading, s.armed, s.flight_mode, age
+                    s.heading, s.armed, s.flight_mode, age,
+                    gps_age, s.position_valid
                 )
 
         topic_stats = {k: v for k, v in self._stats.items() if '/' in k}
@@ -979,8 +1062,47 @@ class DDSGateway:
     # Main Loop
     # ============================================================
 
+    def _start_spin_thread(self):
+        """Start a dedicated thread for ROS2 spinning.
+
+        ROOT CAUSE FIX for Issue 1 (position data reverting to 0,0):
+        ─────────────────────────────────────────────────────────────
+        The old design called rclpy.spin_once() in the main loop, processing
+        only ONE DDS callback per iteration.  With 30 drones × 5+ topics ×
+        10-50 Hz ≈ thousands of messages per second, only ~20 were processed
+        per second.  BEST_EFFORT QoS (depth=10) drops messages when the buffer
+        overflows.  If VehicleGlobalPosition callbacks were dropped while other
+        topic callbacks (attitude, local_position) kept arriving, last_update
+        stayed fresh but lat/lon remained at 0.0 defaults.
+
+        The fix: a dedicated thread calls rclpy.spin() which continuously
+        processes ALL pending callbacks as fast as they arrive, completely
+        decoupling DDS callback processing from the telemetry forwarding loop.
+        """
+        import rclpy
+
+        def _spin():
+            logger.info("[SpinThread] Dedicated ROS2 spin thread started")
+            try:
+                while self.running and rclpy.ok():
+                    rclpy.spin_once(self._node, timeout_sec=0.01)
+            except Exception as e:
+                logger.error("[SpinThread] Error: %s", e)
+            logger.info("[SpinThread] Spin thread stopped")
+
+        t = threading.Thread(target=_spin, daemon=True, name='ros2-spin')
+        t.start()
+        self._spin_thread = t
+        logger.info("[SpinThread] ROS2 spin thread launched")
+
     def run(self):
-        """Main loop: discover drones, process DDS messages, send to backend."""
+        """Main loop: discover drones, forward telemetry to Kafka/backend.
+
+        Architecture (after Issue 1 fix):
+          - Dedicated spin thread handles ALL DDS callbacks continuously
+          - Main loop ONLY handles discovery + telemetry forwarding at 10Hz
+          - No spin_once in main loop → no callback starvation
+        """
         self.running = True
         logger.info("=" * 60)
         logger.info("[Startup] DDS Routing Gateway (Gateway 1)")
@@ -994,6 +1116,11 @@ class DDSGateway:
             "[Startup] ROS_DOMAIN_ID: %s",
             os.environ.get('ROS_DOMAIN_ID', 'default(0)')
         )
+        if self.total_instances > 1:
+            logger.info(
+                "[Startup] Multi-instance mode: instance %d / %d",
+                self.instance_id, self.total_instances
+            )
         logger.info("=" * 60)
 
         if not self._rclpy_available:
@@ -1003,8 +1130,14 @@ class DDSGateway:
             logger.error("[Startup] Failed to init ROS2 node. Exiting.")
             return
 
+        # Start dedicated ROS2 spin thread (Issue 1 fix)
+        self._start_spin_thread()
+
         # Start command HTTP server for receiving commands from backend (fallback)
+        # Multi-instance: each instance uses a different port
         cmd_port = int(os.environ.get('DDS_COMMAND_PORT', '5050'))
+        if self.total_instances > 1:
+            cmd_port = cmd_port + self.instance_id
         self.start_command_server(port=cmd_port)
 
         # Start Kafka command consumer (primary command path)
@@ -1029,12 +1162,12 @@ class DDSGateway:
         _last_sent: Dict[str, float] = {}
         SEND_INTERVAL = 0.1  # 10Hz per drone
 
+        # Discovery interval: every 5s (50 cycles at 0.1s)
+        DISCOVERY_INTERVAL = 50
+
         while self.running and rclpy.ok():
             try:
-                # Spin ROS2 — process all pending DDS callbacks (non-blocking)
-                rclpy.spin_once(self._node, timeout_sec=0.05)
-
-                if cycle % 50 == 0:  # Discovery every ~5s (50 * 0.1s)
+                if cycle % DISCOVERY_INTERVAL == 0:
                     logger.info("[Discovery] Scanning topics (cycle %d)...", cycle)
                     new_drones = self.discover_drones_from_topics()
                     for uid in new_drones:
@@ -1044,7 +1177,8 @@ class DDSGateway:
                             self.subscribe_to_drone(uid)
                             # Increment epoch for new/reconnected drone
                             epoch = self._get_or_increment_epoch(uid, is_new=True)
-                            self.drone_states[uid].epoch = epoch
+                            with self._lock:
+                                self.drone_states[uid].epoch = epoch
                             # Publish online event to Kafka
                             self.send_event_to_kafka('DRONE_ONLINE', uid, 'INFO',
                                                      f'Drone {uid} connected (epoch={epoch})')
@@ -1057,7 +1191,12 @@ class DDSGateway:
                 # Real-time per-drone forwarding at 10Hz (no batch accumulation)
                 if self.drone_states:
                     now = time.time()
-                    for uid, state in list(self.drone_states.items()):
+                    with self._lock:
+                        snapshot = list(self.drone_states.items())
+                    for uid, state in snapshot:
+                        # Skip drones without valid position data (Issue 1 fix)
+                        if not state.position_valid:
+                            continue
                         if now - state.last_update > 5:
                             continue  # Skip stale drones
                         last = _last_sent.get(uid, 0)
@@ -1073,7 +1212,8 @@ class DDSGateway:
 
                 self.log_statistics()
                 cycle += 1
-                # Tight loop — no sleep; spin_once timeout_sec=0.05 provides pacing
+                # Sleep to maintain ~10Hz forwarding rate
+                time.sleep(0.05)
 
             except KeyboardInterrupt:
                 break
@@ -1843,9 +1983,15 @@ class DDSGateway:
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/json')
                     self.end_headers()
+                    with gateway._lock:
+                        valid_drones = [uid for uid, s in gateway.drone_states.items()
+                                        if s.position_valid]
                     self.wfile.write(json.dumps({
                         'status': 'ok',
+                        'instanceId': gateway.instance_id,
+                        'totalInstances': gateway.total_instances,
                         'drones': list(gateway.drone_states.keys()),
+                        'validPositionDrones': valid_drones,
                         'subscriptions': len(gateway._subscriptions),
                     }).encode())
                 else:
@@ -1892,15 +2038,41 @@ def main():
         action='store_true',
         help='Enable verbose/debug logging'
     )
+    # --- Multi-instance arguments ---
+    parser.add_argument(
+        '--instance-id',
+        type=int,
+        default=int(os.environ.get('DDS_INSTANCE_ID', '0')),
+        help='Instance ID for multi-instance mode (0-based, default: 0)'
+    )
+    parser.add_argument(
+        '--total-instances',
+        type=int,
+        default=int(os.environ.get('DDS_TOTAL_INSTANCES', '1')),
+        help='Total number of gateway instances (default: 1 = single instance)'
+    )
     args = parser.parse_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    # Validate multi-instance config
+    if args.instance_id < 0:
+        parser.error("--instance-id must be >= 0")
+    if args.total_instances < 1:
+        parser.error("--total-instances must be >= 1")
+    if args.instance_id >= args.total_instances:
+        parser.error(
+            f"--instance-id ({args.instance_id}) must be < "
+            f"--total-instances ({args.total_instances})"
+        )
+
     gateway = DDSGateway(
         backend_url=args.backend_url,
         api_key=args.api_key,
-        poll_interval=args.interval
+        poll_interval=args.interval,
+        instance_id=args.instance_id,
+        total_instances=args.total_instances
     )
 
     def signal_handler(sig, frame):
@@ -1915,7 +2087,12 @@ def main():
         if gateway._rclpy_available:
             gateway._init_ros2_node()
             for d in args.drones:
-                gateway.subscribe_to_drone(d)
+                # In multi-instance mode, only subscribe to owned drones
+                if gateway._owns_drone(d):
+                    gateway.subscribe_to_drone(d)
+                else:
+                    logger.info("[Config] Skipping %s (owned by instance %d)",
+                                d, gateway._extract_system_id(d) % gateway.total_instances)
 
     gateway.run()
 
