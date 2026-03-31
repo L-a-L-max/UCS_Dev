@@ -1280,13 +1280,13 @@ export default function CommanderView({ token, username, partitions = [], onLogo
           logTotalPages={logTotalPages}
           logFilter={logFilter}
           logLoading={logLoading}
-          onCommand={(cmd, uavIds) => {
+          onCommand={(cmd, uavIds, params) => {
             if (uavIds && uavIds.length > 0) {
               import('@/services/api').then(api => {
                 if (uavIds.length === 1) {
-                  api.sendControlCommand(token, { uavId: uavIds[0], command: cmd });
+                  api.sendControlCommand(token, { uavId: uavIds[0], command: cmd, params: params || '' });
                 } else {
-                  api.sendBatchControlCommand(token, { uavIds, command: cmd });
+                  api.sendBatchControlCommand(token, { uavIds, command: cmd, params: params || '' });
                 }
                 fetchLogs(logPage, logFilter);
               });

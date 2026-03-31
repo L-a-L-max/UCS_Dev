@@ -2,15 +2,16 @@
  * Holographic Drone Control Panel - Phase 6
  * Bottom center: left/right button layout with multi-select display
  * Left: takeoff, land, hover | Right: set home, return, goto
- * Center: multi-select info display
+ * Center: multi-select info display + takeoff height setting
  */
+import { useState } from 'react';
 import type { MapDrone } from '../MapPanel';
 
 interface HoloDroneControlPanelProps {
   drones: MapDrone[];
   selectedDroneId?: string | null;
   selectedDroneIds?: Set<string>;
-  onCommand?: (command: string, uavIds?: string[]) => void;
+  onCommand?: (command: string, uavIds?: string[], params?: string) => void;
 }
 
 export function HoloDroneControlPanel({
@@ -26,9 +27,18 @@ export function HoloDroneControlPanel({
   const hasSelection = selectedDrones.length > 0;
   const pool = hasSelection ? selectedDrones : drones;
 
+  // Takeoff altitude state (user-configurable, default 5m)
+  const [takeoffAlt, setTakeoffAlt] = useState('5');
+  const [showAltInput, setShowAltInput] = useState(false);
+
   const handleCmd = (cmd: string) => {
     const ids = selectedDrones.map(d => d.uavId);
-    onCommand?.(cmd, ids.length > 0 ? ids : undefined);
+    if (cmd === 'TAKEOFF') {
+      const alt = parseFloat(takeoffAlt) || 5;
+      onCommand?.(cmd, ids.length > 0 ? ids : undefined, JSON.stringify({ altitude: alt }));
+    } else {
+      onCommand?.(cmd, ids.length > 0 ? ids : undefined);
+    }
   };
 
   const flyingCount = pool.filter(d => d.armed).length;
@@ -41,7 +51,46 @@ export function HoloDroneControlPanel({
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', height: '100%' }}>
       {/* Left: Basic Controls */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-        <ControlBtn label="起飞" icon="takeoff" onClick={() => handleCmd('TAKEOFF')} disabled={!hasDrones} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <ControlBtn label="起飞" icon="takeoff" onClick={() => handleCmd('TAKEOFF')} disabled={!hasDrones} />
+          <button
+            onClick={() => setShowAltInput(!showAltInput)}
+            title="设置起飞高度"
+            style={{
+              width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: showAltInput ? '#52a8ff' : 'rgba(20, 40, 80, 0.8)',
+              border: '1px solid #52a8ff', borderRadius: '4px',
+              color: showAltInput ? '#050a1e' : '#52a8ff', fontSize: '12px', fontWeight: 700,
+              cursor: 'pointer', transition: 'all 0.2s', padding: 0,
+            }}
+          >
+            H
+          </button>
+        </div>
+        {showAltInput && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '4px',
+            background: 'rgba(10, 20, 50, 0.9)', border: '1px solid #52a8ff',
+            borderRadius: '4px', padding: '4px 6px',
+          }}>
+            <label style={{ fontSize: '10px', color: '#a0cfff', whiteSpace: 'nowrap' }}>高度</label>
+            <input
+              type="number"
+              min="1"
+              max="500"
+              step="1"
+              value={takeoffAlt}
+              onChange={e => setTakeoffAlt(e.target.value)}
+              style={{
+                width: '48px', height: '22px', background: 'rgba(0,0,0,0.4)',
+                border: '1px solid #3b82f6', borderRadius: '3px',
+                color: '#fff', fontSize: '11px', textAlign: 'center',
+                outline: 'none', padding: '0 2px',
+              }}
+            />
+            <span style={{ fontSize: '10px', color: '#a0cfff' }}>m</span>
+          </div>
+        )}
         <ControlBtn label="降落" icon="land" onClick={() => handleCmd('LAND')} disabled={!hasDrones} />
         <ControlBtn label="悬停" icon="hover" onClick={() => handleCmd('HOVER')} disabled={!hasDrones} />
       </div>

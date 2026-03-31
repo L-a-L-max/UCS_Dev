@@ -50,7 +50,7 @@ export interface HoloDashboardProps {
   onDroneToggleSelect?: (uavId: string) => void;
   onMapClick?: (lat: number, lon: number) => void;
   onMapClickCommand?: (command: string, lat: number, lng: number) => void;
-  onCommand?: (command: string, uavIds?: string[]) => void;
+  onCommand?: (command: string, uavIds?: string[], params?: string) => void;
   onTransferPermission?: (uavIds: string[], toUserId?: number, toTeamId?: number, mode?: 'user' | 'team') => void;
   onFetchLogs?: (page: number, filter: string) => void;
   onTeamExpand?: (teamId: string) => void;
@@ -90,7 +90,7 @@ export function HoloDashboard({
   // Right column: top panel (radar) ~28% height, bottom panel (weather) = BOTTOM_H, middle = rest
   const RADAR_H = '28%';
 
-  const handleCommand = useCallback((cmd: string, uavIds?: string[]) => { onCommand?.(cmd, uavIds); }, [onCommand]);
+  const handleCommand = useCallback((cmd: string, uavIds?: string[], params?: string) => { onCommand?.(cmd, uavIds, params); }, [onCommand]);
 
   // Issue 7: Dialog state lifted to top-level so dialogs render outside HoloPanel's backdropFilter
   const [showTransferDialog, setShowTransferDialog] = useState(false);
