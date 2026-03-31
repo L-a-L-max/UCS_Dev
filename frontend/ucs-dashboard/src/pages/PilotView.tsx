@@ -636,6 +636,13 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                       );
                     })}
                   </div>
+                  {/* Multi-drone takeoff height control */}
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <span className="text-[10px] text-slate-400 whitespace-nowrap flex items-center gap-0.5"><ArrowUp className="w-2.5 h-2.5 text-blue-400" />{'\u8d77\u98de\u9ad8\u5ea6'}</span>
+                    <Input type="number" min="1" max="500" step="1" value={takeoffAlt} onChange={e => setTakeoffAlt(e.target.value)}
+                      className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder="5" />
+                    <span className="text-[10px] text-slate-400">{'\u7c73'}</span>
+                  </div>
                 </div>
                 {/* Multi-select GOTO with coordinates */}
                 <div className="mt-3 border-t border-slate-700 pt-2">
