@@ -78,6 +78,12 @@ mvn spring-boot:run
 python dds_gateway.py --backend-url http://localhost:8080
 ```
 
+**预知无人机数量时（推荐，启动更快）**：
+```bash
+# 预先订阅20架无人机的所有话题，无需等待话题发现
+python dds_gateway.py --drone-count 20
+```
+
 **手动指定无人机**：
 ```bash
 python dds_gateway.py --drones px4_1 px4_2 px4_3 px4_4
@@ -144,6 +150,7 @@ ExecStart=/usr/bin/python3 /path/to/dds_gateway.py
 | `--verbose` | - | false | 详细日志 |
 | `--instance-id` | `DDS_INSTANCE_ID` | `0` | 实例ID (0-based) |
 | `--total-instances` | `DDS_TOTAL_INSTANCES` | `1` | 总实例数 (1=单实例) |
+| `--drone-count` | `DDS_DRONE_COUNT` | `0` | 预期无人机总数 (>0时主动订阅px4_1..N) |
 
 ### 5. 多实例分区规则
 
@@ -205,7 +212,27 @@ GET /api/v1/dds-gateway/health  (后端)
 → {"status": "ok", "timestamp": "...", "service": "ucs-dds-gateway-api"}
 ```
 
+## 话题订阅机制
+
+网关采用 **动态发现 + 主动订阅** 的双重策略，不硬编码任何话题名：
+
+1. **动态发现**：每5秒扫描ROS2话题列表，自动发现 `/px4_*/fmu/out/*` 格式的话题
+2. **主动订阅**：即使话题尚未在ROS2中注册，也会预先创建订阅（ROS2/DDS会在发布者出现时自动连接）
+3. **订阅重试**：每个发现周期检查已有无人机的订阅完整性（6个话题），自动补订缺失的话题
+4. **`--drone-count` 预订阅**：设置后立即为 px4_1..N 创建全部订阅，无需等待话题发现
+
+这确保了：
+- 无人机在网关之后启动也能被发现
+- 无人机数量变化时自动适应
+- 多实例模式下每个实例只订阅自己负责的无人机
+
 ## 故障排查
+
+### 前端只显示部分无人机 / 全部离线
+- 使用 `--drone-count N` 参数确保所有无人机被预先订阅
+- 检查日志中 `[Discovery] Tracking X drones (Y with valid position)` — Y=0 表示GPS未初始化
+- 检查日志中 `[Subscribe] Drone px4_X: ... topics subscribed` — 确认6/6订阅完成
+- 确认网关实例配置正确：单实例不需要 `--total-instances`，多实例需要覆盖所有分区
 
 ### 无人机位置数据显示为(0,0)
 - 检查日志中 `[Position] Rejected` 警告 — 表示网关正在过滤无效坐标
