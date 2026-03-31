@@ -96,12 +96,6 @@ class DroneState:
     home_alt: float = 0.0
     # Epoch (generation ID) - incremented on each reconnection
     epoch: int = 0
-    # Position validity: True only after first valid VehicleGlobalPosition received
-    # Prevents sending default (0,0) coords before real GPS data arrives
-    position_valid: bool = False
-    # Timestamp of last VehicleGlobalPosition message (separate from last_update
-    # which is set by ANY topic callback)
-    last_global_position_time: float = 0.0
 
 
 def _latlon_to_ned(lat: float, lon: float, alt: float,
@@ -131,21 +125,19 @@ class DDSGateway:
         self.backend_url = backend_url.rstrip('/')
         self.api_key = api_key
         self.poll_interval = poll_interval
+
+        # Multi-instance partitioning
+        self.instance_id = instance_id
+        self.total_instances = total_instances
+
         self.drone_states: Dict[str, DroneState] = {}
         self.running = False
         self._rclpy_available = False
         self._node = None
         self._subscriptions = {}
-        # Per-drone subscription tracking: uav_id -> set of subscribed base_suffixes
-        # Used to detect incomplete subscriptions and retry missing topics
-        self._drone_subscribed_topics: Dict[str, Set[str]] = {}
         self._lock = threading.Lock()
         self._stats = defaultdict(int)
         self._last_stats_time = time.time()
-
-        # Multi-instance partitioning
-        self.instance_id = instance_id
-        self.total_instances = total_instances
 
         # Epoch map: uav_id -> epoch (generation ID)
         self._epoch_map: Dict[str, int] = {}
@@ -258,15 +250,11 @@ class DDSGateway:
         """
         Discover PX4 drones by scanning the ROS2 topic list.
         Extracts prefix (px4_1, px4_2) from topics like /px4_1/fmu/out/vehicle_attitude.
-
-        In multi-instance mode, only returns drones owned by this instance
-        (determined by _owns_drone partitioning).
         """
         if not self._rclpy_available or self._node is None:
             return set()
 
         discovered = set()
-        all_discovered = set()
         matched_topics = []
 
         try:
@@ -281,28 +269,22 @@ class DDSGateway:
                         topic_suffix = parts[3]
                         matched_topics.append(topic_name)
                         if topic_suffix in ALL_KNOWN_SUFFIXES:
-                            all_discovered.add(drone_prefix)
-                            # Multi-instance filter: only own drones
-                            if self._owns_drone(drone_prefix):
-                                discovered.add(drone_prefix)
+                            discovered.add(drone_prefix)
 
             logger.info(
-                "[Discovery] Scanned %d topics, %d matched /fmu/out/, "
-                "%d total drones, %d owned by instance %d/%d",
-                len(all_topics), len(matched_topics),
-                len(all_discovered), len(discovered),
-                self.instance_id, self.total_instances
+                "[Discovery] Scanned %d topics, %d matched /fmu/out/",
+                len(all_topics), len(matched_topics)
             )
+
+            if matched_topics:
+                logger.info("[Discovery] Matched topics:")
+                for t in sorted(matched_topics):
+                    logger.info("  - %s", t)
 
             if discovered:
                 logger.info(
-                    "[Discovery] Owned drone(s): %s",
-                    sorted(discovered)
-                )
-            elif all_discovered:
-                logger.info(
-                    "[Discovery] Found %d drone(s) on network but none owned by instance %d: %s",
-                    len(all_discovered), self.instance_id, sorted(all_discovered)
+                    "[Discovery] Found %d drone(s): %s",
+                    len(discovered), sorted(discovered)
                 )
             else:
                 logger.warning(
@@ -334,22 +316,10 @@ class DDSGateway:
 
     def _subscribe_with_px4_msgs(self, uav_id: str):
         """Subscribe using typed px4_msgs message types.
-
+        
         PX4 publishes with BEST_EFFORT reliability. We must match this QoS
         profile, otherwise DDS will reject the connection with:
         'incompatible QoS - Last incompatible policy: RELIABILITY'
-
-        Dynamic subscription strategy:
-        ─────────────────────────────
-        1. First try topics that exist in the ROS2 topic list (fastest).
-        2. If a topic is not yet advertised but the msg type is available,
-           subscribe proactively anyway — ROS2/DDS will auto-connect when
-           the PX4 publisher appears later.
-        3. Track which base_suffixes are subscribed per drone so we can
-           skip already-subscribed topics on retry cycles.
-
-        This ensures drones that start AFTER the gateway are still picked up
-        without waiting for the next full discovery + subscribe cycle.
         """
         import px4_msgs.msg as px4
 
@@ -361,6 +331,7 @@ class DDSGateway:
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
+        logger.info("[Subscribe] Using PX4-compatible QoS: BEST_EFFORT reliability, VOLATILE durability")
 
         subscriptions_created = 0
         topic_handlers = {}
@@ -396,18 +367,9 @@ class DDSGateway:
                 lambda msg, uid=uav_id: self._on_vehicle_command_ack(uid, msg)
             )
 
-        # Initialize per-drone tracking if not exists
-        if uav_id not in self._drone_subscribed_topics:
-            self._drone_subscribed_topics[uav_id] = set()
-
-        already_subscribed = self._drone_subscribed_topics[uav_id]
         available_topics = dict(self._node.get_topic_names_and_types())
 
         for base_suffix, (msg_type, callback) in topic_handlers.items():
-            # Skip if this base_suffix is already subscribed for this drone
-            if base_suffix in already_subscribed:
-                continue
-
             variants = TOPIC_SUFFIX_VARIANTS.get(base_suffix, [base_suffix])
             subscribed = False
 
@@ -416,54 +378,40 @@ class DDSGateway:
                 sub_key = f"{uav_id}/{variant}"
 
                 if sub_key in self._subscriptions:
-                    # Already subscribed via a previous call
-                    already_subscribed.add(base_suffix)
                     subscribed = True
                     break
 
-                # Subscribe proactively: even if topic is not yet advertised,
-                # ROS2/DDS will auto-connect when the publisher appears.
-                # Prefer topics that already exist for immediate data flow.
-                topic_exists = topic_name in available_topics
-                try:
-                    sub = self._node.create_subscription(
-                        msg_type, topic_name, callback, px4_qos
-                    )
-                    self._subscriptions[sub_key] = sub
-                    already_subscribed.add(base_suffix)
-                    subscriptions_created += 1
-                    if topic_exists:
+                if topic_name in available_topics:
+                    try:
+                        sub = self._node.create_subscription(
+                            msg_type, topic_name, callback, px4_qos
+                        )
+                        self._subscriptions[sub_key] = sub
+                        subscriptions_created += 1
                         logger.info(
-                            "[Subscribe] OK: %s -> %s (type: %s, topic active)",
+                            "[Subscribe] OK: %s -> %s (type: %s)",
                             uav_id, topic_name, msg_type.__name__
                         )
-                    else:
-                        logger.info(
-                            "[Subscribe] OK: %s -> %s (type: %s, proactive - waiting for publisher)",
-                            uav_id, topic_name, msg_type.__name__
+                        subscribed = True
+                        break
+                    except Exception as e:
+                        logger.error(
+                            "[Subscribe] FAILED: %s -> %s: %s",
+                            uav_id, topic_name, e
                         )
-                    subscribed = True
-                    break
-                except Exception as e:
-                    logger.error(
-                        "[Subscribe] FAILED: %s -> %s: %s",
-                        uav_id, topic_name, e
-                    )
+                else:
+                    logger.debug("[Subscribe] Topic not available: %s", topic_name)
 
             if not subscribed:
-                logger.debug(
-                    "[Subscribe] Could not subscribe %s/%s (tried: %s)",
+                logger.warning(
+                    "[Subscribe] No topic for %s/%s (tried: %s)",
                     uav_id, base_suffix, variants
                 )
 
-        expected_count = len(topic_handlers)
-        actual_count = len(already_subscribed)
-        if subscriptions_created > 0:
-            logger.info(
-                "[Subscribe] Drone %s: %d new, %d/%d topics subscribed, %d total subs",
-                uav_id, subscriptions_created, actual_count, expected_count,
-                len(self._subscriptions)
-            )
+        logger.info(
+            "[Subscribe] Drone %s: %d new, %d total subscriptions",
+            uav_id, subscriptions_created, len(self._subscriptions)
+        )
 
     # ============================================================
     # Message Callbacks
@@ -474,40 +422,10 @@ class DDSGateway:
             s = self.drone_states.get(uav_id)
             if not s:
                 return
-
-            new_lat = msg.lat
-            new_lon = msg.lon
-            new_alt = msg.alt
-
-            # --- Position validity check ---
-            # Reject (0,0) or near-zero coords when we already have a valid
-            # position far from the equator/prime-meridian intersection.
-            # This prevents DDS callback ordering issues from overwriting
-            # good position data with uninitialized EKF values.
-            if abs(new_lat) < 0.1 and abs(new_lon) < 0.1:
-                # If we already have a valid position far from (0,0), reject
-                if s.position_valid and (abs(s.lat) > 1.0 or abs(s.lon) > 1.0):
-                    self._stats['position_rejected'] = \
-                        self._stats.get('position_rejected', 0) + 1
-                    if self._stats['position_rejected'] % 100 == 1:
-                        logger.warning(
-                            "[Position] Rejected (%.6f,%.6f) for %s "
-                            "(current valid: %.6f,%.6f) - likely uninitialized EKF",
-                            new_lat, new_lon, uav_id, s.lat, s.lon)
-                    return
-                # If this is the first position and it's (0,0), also skip
-                if not s.position_valid:
-                    self._stats['position_rejected'] = \
-                        self._stats.get('position_rejected', 0) + 1
-                    return
-
-            s.lat = new_lat
-            s.lon = new_lon
-            s.alt = new_alt
-            s.position_valid = True
-            now = time.time()
-            s.last_update = now
-            s.last_global_position_time = now
+            s.lat = msg.lat
+            s.lon = msg.lon
+            s.alt = msg.alt
+            s.last_update = time.time()
             s.msg_count += 1
             self._stats[f'{uav_id}/global_position'] += 1
             self._stats['total_messages'] += 1
@@ -714,21 +632,16 @@ class DDSGateway:
             return
         try:
             from kafka import KafkaConsumer as _KafkaConsumer
-            # Multi-instance: each instance uses a unique consumer group so
-            # ALL instances receive ALL commands (each filters by ownership).
-            # Using a shared group would split messages, but drones can only
-            # be commanded by the instance that subscribed to them.
-            group_id = f'dds-gateway-cmd-{self.instance_id}'
             consumer = _KafkaConsumer(
                 'commands.down',
                 bootstrap_servers=self._kafka_bootstrap,
-                group_id=group_id,
+                group_id=f'dds-gateway-command-consumer-{self.instance_id}',
                 value_deserializer=lambda v: json.loads(v.decode('utf-8')),
                 auto_offset_reset='latest',
                 enable_auto_commit=True,
                 consumer_timeout_ms=1000,  # poll returns after 1s if no messages
             )
-            logger.info("[KafkaCmd] Consumer initialized for commands.down (group=%s)", group_id)
+            logger.info("[KafkaCmd] Consumer initialized for commands.down")
         except Exception as e:
             logger.warning("[KafkaCmd] Failed to create consumer: %s", e)
             return
@@ -749,6 +662,10 @@ class DDSGateway:
                                     params = json.loads(params_raw) if params_raw else {}
                                 else:
                                     params = params_raw
+
+                                # --- Multi-instance: skip commands for drones not owned by this instance ---
+                                if not self._owns_drone(uav_id):
+                                    continue
 
                                 # --- Epoch validation: discard stale commands ---
                                 msg_epoch = data.get('epoch', 0)
@@ -781,10 +698,6 @@ class DDSGateway:
                                             continue
                                     except Exception:
                                         pass  # If timestamp parsing fails, proceed anyway
-
-                                # Multi-instance: skip commands for drones not owned by us
-                                if not self._owns_drone(uav_id):
-                                    continue
 
                                 logger.info("[KafkaCmd] Received: %s -> %s epoch=%d params=%s",
                                             command_type, uav_id, msg_epoch, params)
@@ -978,7 +891,6 @@ class DDSGateway:
                     "flightMode": state.flight_mode,
                     "batteryPercent": state.battery_percent,
                     "epoch": state.epoch,
-                    "positionValid": state.position_valid,
                 })
 
         return {
@@ -987,11 +899,7 @@ class DDSGateway:
         }
 
     def build_telemetry_payload_single(self, uav_id: str) -> Optional[dict]:
-        """Build telemetry payload for a single drone (real-time per-drone send).
-
-        Always includes all available data. The 'positionValid' flag tells
-        downstream consumers whether lat/lon/alt are trustworthy.
-        """
+        """Build telemetry payload for a single drone (real-time per-drone send)."""
         from datetime import datetime, timezone
 
         with self._lock:
@@ -1016,7 +924,6 @@ class DDSGateway:
                 "flightMode": state.flight_mode,
                 "batteryPercent": state.battery_percent,
                 "epoch": state.epoch,
-                "positionValid": state.position_valid,
             }
 
         return {
@@ -1085,13 +992,11 @@ class DDSGateway:
         with self._lock:
             for uid, s in self.drone_states.items():
                 age = now - s.last_update if s.last_update > 0 else -1
-                gps_age = now - s.last_global_position_time if s.last_global_position_time > 0 else -1
                 logger.info(
                     "[Stats]   %-10s msgs=%-6d lat=%.6f lon=%.6f alt=%.1f "
-                    "hdg=%.1f armed=%-5s mode=%-12s age=%.1fs gps_age=%.1fs valid=%s",
+                    "hdg=%.1f armed=%-5s mode=%-12s age=%.1fs",
                     uid, s.msg_count, s.lat, s.lon, s.alt,
-                    s.heading, s.armed, s.flight_mode, age,
-                    gps_age, s.position_valid
+                    s.heading, s.armed, s.flight_mode, age
                 )
 
         topic_stats = {k: v for k, v in self._stats.items() if '/' in k}
@@ -1105,50 +1010,12 @@ class DDSGateway:
     # Main Loop
     # ============================================================
 
-    def _start_spin_thread(self):
-        """Start a dedicated thread for ROS2 spinning.
-
-        ROOT CAUSE FIX for Issue 1 (position data reverting to 0,0):
-        ─────────────────────────────────────────────────────────────
-        The old design called rclpy.spin_once() in the main loop, processing
-        only ONE DDS callback per iteration.  With 30 drones × 5+ topics ×
-        10-50 Hz ≈ thousands of messages per second, only ~20 were processed
-        per second.  BEST_EFFORT QoS (depth=10) drops messages when the buffer
-        overflows.  If VehicleGlobalPosition callbacks were dropped while other
-        topic callbacks (attitude, local_position) kept arriving, last_update
-        stayed fresh but lat/lon remained at 0.0 defaults.
-
-        The fix: a dedicated thread calls rclpy.spin() which continuously
-        processes ALL pending callbacks as fast as they arrive, completely
-        decoupling DDS callback processing from the telemetry forwarding loop.
-        """
-        import rclpy
-
-        def _spin():
-            logger.info("[SpinThread] Dedicated ROS2 spin thread started")
-            try:
-                while self.running and rclpy.ok():
-                    rclpy.spin_once(self._node, timeout_sec=0.01)
-            except Exception as e:
-                logger.error("[SpinThread] Error: %s", e)
-            logger.info("[SpinThread] Spin thread stopped")
-
-        t = threading.Thread(target=_spin, daemon=True, name='ros2-spin')
-        t.start()
-        self._spin_thread = t
-        logger.info("[SpinThread] ROS2 spin thread launched")
-
     def run(self):
-        """Main loop: discover drones, forward telemetry to Kafka/backend.
-
-        Architecture (after Issue 1 fix):
-          - Dedicated spin thread handles ALL DDS callbacks continuously
-          - Main loop ONLY handles discovery + telemetry forwarding at 10Hz
-          - No spin_once in main loop → no callback starvation
-        """
+        """Main loop: discover drones, process DDS messages, send to backend."""
         self.running = True
         logger.info("=" * 60)
-        logger.info("[Startup] DDS Routing Gateway (Gateway 1)")
+        logger.info("[Startup] DDS Routing Gateway (Instance %d/%d)",
+                    self.instance_id, self.total_instances)
         logger.info("[Startup] Backend: %s", self.backend_url)
         logger.info("[Startup] Interval: %.1fs", self.poll_interval)
         logger.info(
@@ -1159,11 +1026,6 @@ class DDSGateway:
             "[Startup] ROS_DOMAIN_ID: %s",
             os.environ.get('ROS_DOMAIN_ID', 'default(0)')
         )
-        if self.total_instances > 1:
-            logger.info(
-                "[Startup] Multi-instance mode: instance %d / %d",
-                self.instance_id, self.total_instances
-            )
         logger.info("=" * 60)
 
         if not self._rclpy_available:
@@ -1173,40 +1035,10 @@ class DDSGateway:
             logger.error("[Startup] Failed to init ROS2 node. Exiting.")
             return
 
-        # Start dedicated ROS2 spin thread (Issue 1 fix)
-        self._start_spin_thread()
-
-        # Proactive subscription: if --drone-count is set, subscribe to expected
-        # drone IDs (px4_1..px4_N) immediately without waiting for topic discovery.
-        # This ensures all drones are subscribed even if they haven't started yet.
-        expected_count = getattr(self, '_expected_drone_count', 0)
-        if expected_count > 0:
-            logger.info(
-                "[Proactive] Subscribing to %d expected drones (px4_1..px4_%d), "
-                "instance %d/%d...",
-                expected_count, expected_count,
-                self.instance_id, self.total_instances
-            )
-            proactive_count = 0
-            for i in range(1, expected_count + 1):
-                uid = f"px4_{i}"
-                if self._owns_drone(uid):
-                    self.subscribe_to_drone(uid)
-                    epoch = self._get_or_increment_epoch(uid, is_new=True)
-                    with self._lock:
-                        if uid in self.drone_states:
-                            self.drone_states[uid].epoch = epoch
-                    proactive_count += 1
-            logger.info(
-                "[Proactive] Subscribed to %d/%d drones (owned by this instance)",
-                proactive_count, expected_count
-            )
-
         # Start command HTTP server for receiving commands from backend (fallback)
-        # Multi-instance: each instance uses a different port
-        cmd_port = int(os.environ.get('DDS_COMMAND_PORT', '5050'))
-        if self.total_instances > 1:
-            cmd_port = cmd_port + self.instance_id
+        # Each instance uses a unique port: 5050 + instance_id
+        base_port = int(os.environ.get('DDS_COMMAND_PORT', '5050'))
+        cmd_port = base_port + self.instance_id
         self.start_command_server(port=cmd_port)
 
         # Start Kafka command consumer (primary command path)
@@ -1231,72 +1063,40 @@ class DDSGateway:
         _last_sent: Dict[str, float] = {}
         SEND_INTERVAL = 0.1  # 10Hz per drone
 
-        # Discovery interval: every 5s (50 cycles at 0.1s)
-        DISCOVERY_INTERVAL = 50
-
         while self.running and rclpy.ok():
             try:
-                if cycle % DISCOVERY_INTERVAL == 0:
+                # Spin ROS2 — process all pending DDS callbacks (non-blocking)
+                rclpy.spin_once(self._node, timeout_sec=0.05)
+
+                if cycle % 50 == 0:  # Discovery every ~5s (50 * 0.1s)
                     logger.info("[Discovery] Scanning topics (cycle %d)...", cycle)
                     new_drones = self.discover_drones_from_topics()
-
-                    # Phase 1: Register and subscribe NEW drones
                     for uid in new_drones:
+                        # Multi-instance: only process drones owned by this instance
+                        if not self._owns_drone(uid):
+                            continue
                         is_new = uid not in self.drone_states
                         if is_new:
                             logger.info("[Discovery] NEW drone: %s", uid)
                             self.subscribe_to_drone(uid)
                             # Increment epoch for new/reconnected drone
                             epoch = self._get_or_increment_epoch(uid, is_new=True)
-                            with self._lock:
-                                self.drone_states[uid].epoch = epoch
+                            self.drone_states[uid].epoch = epoch
                             # Publish online event to Kafka
                             self.send_event_to_kafka('DRONE_ONLINE', uid, 'INFO',
                                                      f'Drone {uid} connected (epoch={epoch})')
-
-                    # Phase 2: Retry incomplete subscriptions for EXISTING drones
-                    # This handles drones whose topics weren't all available on
-                    # the first subscription attempt (e.g. PX4 hadn't started yet).
-                    for uid in list(self.drone_states.keys()):
-                        subs = self._drone_subscribed_topics.get(uid, set())
-                        # 6 expected: global_pos, local_pos, attitude, status, battery, cmd_ack
-                        if len(subs) < 6:
-                            logger.info(
-                                "[Discovery] Drone %s has %d/6 subscriptions, retrying...",
-                                uid, len(subs)
-                            )
-                            self.subscribe_to_drone(uid)
-
                     if not new_drones and cycle == 0:
                         logger.warning(
                             "[Discovery] No drones found. "
                             "Check PX4 simulator and ROS_DOMAIN_ID."
                         )
 
-                    # Log summary of all tracked drones
-                    if self.drone_states:
-                        total = len(self.drone_states)
-                        valid = sum(1 for s in self.drone_states.values() if s.position_valid)
-                        logger.info(
-                            "[Discovery] Tracking %d drones (%d with valid position), "
-                            "%d total subscriptions",
-                            total, valid, len(self._subscriptions)
-                        )
-
                 # Real-time per-drone forwarding at 10Hz (no batch accumulation)
-                # Forward ALL drones that have received any data, not just those
-                # with valid GPS. This ensures the frontend shows drones as "online"
-                # even before GPS initialization completes.
                 if self.drone_states:
                     now = time.time()
-                    with self._lock:
-                        snapshot = list(self.drone_states.items())
-                    for uid, state in snapshot:
-                        # Skip drones that have never received ANY callback
-                        if state.last_update <= 0 and not state.position_valid:
-                            continue
-                        if state.last_update > 0 and now - state.last_update > 5:
-                            continue  # Skip stale drones (no data for 5s)
+                    for uid, state in list(self.drone_states.items()):
+                        if now - state.last_update > 5:
+                            continue  # Skip stale drones
                         last = _last_sent.get(uid, 0)
                         if now - last < SEND_INTERVAL:
                             continue  # Throttle: 10Hz per drone
@@ -1310,8 +1110,7 @@ class DDSGateway:
 
                 self.log_statistics()
                 cycle += 1
-                # Sleep to maintain ~10Hz forwarding rate
-                time.sleep(0.05)
+                # Tight loop — no sleep; spin_once timeout_sec=0.05 provides pacing
 
             except KeyboardInterrupt:
                 break
@@ -2081,15 +1880,9 @@ class DDSGateway:
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/json')
                     self.end_headers()
-                    with gateway._lock:
-                        valid_drones = [uid for uid, s in gateway.drone_states.items()
-                                        if s.position_valid]
                     self.wfile.write(json.dumps({
                         'status': 'ok',
-                        'instanceId': gateway.instance_id,
-                        'totalInstances': gateway.total_instances,
                         'drones': list(gateway.drone_states.keys()),
-                        'validPositionDrones': valid_drones,
                         'subscriptions': len(gateway._subscriptions),
                     }).encode())
                 else:
@@ -2132,47 +1925,26 @@ def main():
         help='Manually specify drone IDs (e.g., px4_1 px4_2)'
     )
     parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='Enable verbose/debug logging'
-    )
-    # --- Multi-instance arguments ---
-    parser.add_argument(
         '--instance-id',
         type=int,
         default=int(os.environ.get('DDS_INSTANCE_ID', '0')),
-        help='Instance ID for multi-instance mode (0-based, default: 0)'
+        help='Instance ID for multi-instance partitioning (default: 0)'
     )
     parser.add_argument(
         '--total-instances',
         type=int,
         default=int(os.environ.get('DDS_TOTAL_INSTANCES', '1')),
-        help='Total number of gateway instances (default: 1 = single instance)'
+        help='Total number of gateway instances (default: 1, single-instance mode)'
     )
     parser.add_argument(
-        '--drone-count',
-        type=int,
-        default=int(os.environ.get('DDS_DRONE_COUNT', '0')),
-        help='Expected total number of drones. When set, the gateway proactively '
-             'subscribes to px4_1..px4_N (filtered by instance partitioning) '
-             'without waiting for topic discovery. Set to 0 to rely solely on '
-             'dynamic topic discovery (default: 0)'
+        '--verbose', '-v',
+        action='store_true',
+        help='Enable verbose/debug logging'
     )
     args = parser.parse_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-
-    # Validate multi-instance config
-    if args.instance_id < 0:
-        parser.error("--instance-id must be >= 0")
-    if args.total_instances < 1:
-        parser.error("--total-instances must be >= 1")
-    if args.instance_id >= args.total_instances:
-        parser.error(
-            f"--instance-id ({args.instance_id}) must be < "
-            f"--total-instances ({args.total_instances})"
-        )
 
     gateway = DDSGateway(
         backend_url=args.backend_url,
@@ -2181,9 +1953,9 @@ def main():
         instance_id=args.instance_id,
         total_instances=args.total_instances
     )
-
-    # Store drone_count for proactive subscription in run()
-    gateway._expected_drone_count = args.drone_count
+    if args.total_instances > 1:
+        logger.info("[Config] Multi-instance mode: instance %d of %d",
+                    args.instance_id, args.total_instances)
 
     def signal_handler(sig, frame):
         logger.info("[Signal] %s received, stopping...", sig)
@@ -2197,12 +1969,7 @@ def main():
         if gateway._rclpy_available:
             gateway._init_ros2_node()
             for d in args.drones:
-                # In multi-instance mode, only subscribe to owned drones
-                if gateway._owns_drone(d):
-                    gateway.subscribe_to_drone(d)
-                else:
-                    logger.info("[Config] Skipping %s (owned by instance %d)",
-                                d, gateway._extract_system_id(d) % gateway.total_instances)
+                gateway.subscribe_to_drone(d)
 
     gateway.run()
 
