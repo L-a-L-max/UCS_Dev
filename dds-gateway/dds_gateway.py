@@ -429,14 +429,26 @@ class DDSGateway:
             s = self.drone_states.get(uav_id)
             if not s:
                 return
-            s.lat = msg.lat
-            s.lon = msg.lon
-            s.alt = msg.alt
+            lat, lon, alt = msg.lat, msg.lon, msg.alt
+            # Coordinate rollback protection: if we already have valid coords
+            # (e.g. near Beijing), reject suspicious (0,0) values that indicate
+            # GPS reset or uninitialized data
+            if s.position_valid and abs(lat) < 1.0 and abs(lon) < 1.0:
+                logger.debug("[GPS] %s rejected (0,0) rollback: lat=%.6f lon=%.6f",
+                             uav_id, lat, lon)
+                s.last_update = time.time()
+                s.msg_count += 1
+                self._stats[f'{uav_id}/global_position'] += 1
+                self._stats['total_messages'] += 1
+                return
+            s.lat = lat
+            s.lon = lon
+            s.alt = alt
             # Mark position as valid after first real GPS data
             if not s.position_valid:
                 s.position_valid = True
                 logger.info("[GPS] %s position valid: lat=%.6f lon=%.6f alt=%.1f",
-                            uav_id, msg.lat, msg.lon, msg.alt)
+                            uav_id, lat, lon, alt)
             s.last_update = time.time()
             s.msg_count += 1
             self._stats[f'{uav_id}/global_position'] += 1
@@ -1022,8 +1034,38 @@ class DDSGateway:
     # Main Loop
     # ============================================================
 
+    def _start_spin_thread(self):
+        """Start a dedicated ROS2 spin thread for processing all DDS callbacks.
+
+        This ensures ALL DDS messages (global_position, vehicle_status, etc.)
+        are processed continuously and in parallel with the main forwarding loop.
+        Without this, spin_once() in the main loop can only process ~20 msgs/sec,
+        causing callback starvation (especially _on_global_position).
+        """
+        import rclpy
+
+        def _spin_loop():
+            logger.info("[SpinThread] ROS2 spin thread started")
+            while self.running and rclpy.ok():
+                try:
+                    rclpy.spin_once(self._node, timeout_sec=0.01)
+                except Exception as e:
+                    if self.running:
+                        logger.error("[SpinThread] Error: %s", e)
+                        time.sleep(0.01)
+            logger.info("[SpinThread] ROS2 spin thread stopped")
+
+        t = threading.Thread(target=_spin_loop, daemon=True, name='ros2-spin')
+        t.start()
+        logger.info("[SpinThread] Dedicated ROS2 spin thread launched")
+
     def run(self):
-        """Main loop: discover drones, process DDS messages, send to backend."""
+        """Main loop: discover drones, forward telemetry to backend.
+
+        DDS callback processing is handled by a dedicated spin thread
+        (_start_spin_thread) so the main loop only handles discovery and
+        forwarding without blocking on DDS message processing.
+        """
         self.running = True
         logger.info("=" * 60)
         logger.info("[Startup] DDS Routing Gateway (Instance %d/%d)",
@@ -1046,6 +1088,9 @@ class DDSGateway:
         if not self._init_ros2_node():
             logger.error("[Startup] Failed to init ROS2 node. Exiting.")
             return
+
+        # Start dedicated ROS2 spin thread for continuous DDS callback processing
+        self._start_spin_thread()
 
         # Start command HTTP server for receiving commands from backend (fallback)
         # Each instance uses a unique port: 5050 + instance_id
@@ -1074,13 +1119,16 @@ class DDSGateway:
         # Track per-drone last-sent timestamps for 10Hz throttle
         _last_sent: Dict[str, float] = {}
         SEND_INTERVAL = 0.1  # 10Hz per drone
+        DISCOVERY_INTERVAL = 5.0  # seconds between topic scans
+        _last_discovery = 0.0
 
         while self.running and rclpy.ok():
             try:
-                # Spin ROS2 — process all pending DDS callbacks (non-blocking)
-                rclpy.spin_once(self._node, timeout_sec=0.05)
+                now = time.time()
 
-                if cycle % 50 == 0:  # Discovery every ~5s (50 * 0.1s)
+                # Discovery every ~5s (time-based, not cycle-based)
+                if now - _last_discovery >= DISCOVERY_INTERVAL:
+                    _last_discovery = now
                     logger.info("[Discovery] Scanning topics (cycle %d)...", cycle)
                     new_drones = self.discover_drones_from_topics()
                     for uid in new_drones:
@@ -1104,27 +1152,29 @@ class DDSGateway:
                         )
 
                 # Real-time per-drone forwarding at 10Hz (no batch accumulation)
-                if self.drone_states:
-                    now = time.time()
-                    for uid, state in list(self.drone_states.items()):
-                        if now - state.last_update > 5:
-                            continue  # Skip stale drones
-                        if not state.position_valid:
-                            continue  # Skip drones without valid GPS position
-                        last = _last_sent.get(uid, 0)
-                        if now - last < SEND_INTERVAL:
-                            continue  # Throttle: 10Hz per drone
-                        _last_sent[uid] = now
-                        # Build single-drone payload and send immediately
-                        single_payload = self.build_telemetry_payload_single(uid)
-                        if single_payload:
-                            kafka_ok = self.send_to_kafka(single_payload)
-                            if not kafka_ok:
-                                self.send_to_backend(single_payload)
+                # Lock protects against concurrent modifications from spin thread callbacks
+                with self._lock:
+                    drone_snapshot = list(self.drone_states.items())
+                for uid, state in drone_snapshot:
+                    if now - state.last_update > 5:
+                        continue  # Skip stale drones
+                    if not state.position_valid:
+                        continue  # Skip drones without valid GPS position
+                    last = _last_sent.get(uid, 0)
+                    if now - last < SEND_INTERVAL:
+                        continue  # Throttle: 10Hz per drone
+                    _last_sent[uid] = now
+                    # Build single-drone payload and send immediately
+                    single_payload = self.build_telemetry_payload_single(uid)
+                    if single_payload:
+                        kafka_ok = self.send_to_kafka(single_payload)
+                        if not kafka_ok:
+                            self.send_to_backend(single_payload)
 
                 self.log_statistics()
                 cycle += 1
-                # Tight loop — no sleep; spin_once timeout_sec=0.05 provides pacing
+                # Sleep briefly to avoid busy-waiting; spin thread handles DDS
+                time.sleep(0.05)
 
             except KeyboardInterrupt:
                 break
