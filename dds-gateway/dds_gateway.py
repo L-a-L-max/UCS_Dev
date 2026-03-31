@@ -96,6 +96,9 @@ class DroneState:
     home_alt: float = 0.0
     # Epoch (generation ID) - incremented on each reconnection
     epoch: int = 0
+    # Position validity: True only after first valid VehicleGlobalPosition received
+    # Prevents forwarding default (0,0) coords before real GPS data arrives
+    position_valid: bool = False
 
 
 def _latlon_to_ned(lat: float, lon: float, alt: float,
@@ -204,15 +207,19 @@ class DDSGateway:
     def _owns_drone(self, uav_id: str) -> bool:
         """Check if this instance owns a drone (for multi-instance partitioning).
 
-        Partitioning strategy: extract numeric ID from uav_id (e.g. px4_5 -> 5)
-        and assign to instance via modulo: drone_num % total_instances == instance_id.
+        Partitioning strategy: hash the uav_id string and assign to instance
+        via modulo: hash(uav_id) % total_instances == instance_id.
+        This works with any naming convention, not just px4_N.
 
         In single-instance mode (total_instances=1), all drones are owned.
         """
         if self.total_instances <= 1:
             return True
-        drone_num = self._extract_system_id(uav_id)
-        owner = drone_num % self.total_instances
+        # Use deterministic hash (hashlib) to ensure consistent partitioning
+        # across all instances (Python's built-in hash() is randomized per process)
+        import hashlib
+        h = int(hashlib.md5(uav_id.encode('utf-8')).hexdigest(), 16)
+        owner = h % self.total_instances
         return owner == self.instance_id
 
     def check_backend_health(self) -> bool:
@@ -425,6 +432,11 @@ class DDSGateway:
             s.lat = msg.lat
             s.lon = msg.lon
             s.alt = msg.alt
+            # Mark position as valid after first real GPS data
+            if not s.position_valid:
+                s.position_valid = True
+                logger.info("[GPS] %s position valid: lat=%.6f lon=%.6f alt=%.1f",
+                            uav_id, msg.lat, msg.lon, msg.alt)
             s.last_update = time.time()
             s.msg_count += 1
             self._stats[f'{uav_id}/global_position'] += 1
@@ -1097,6 +1109,8 @@ class DDSGateway:
                     for uid, state in list(self.drone_states.items()):
                         if now - state.last_update > 5:
                             continue  # Skip stale drones
+                        if not state.position_valid:
+                            continue  # Skip drones without valid GPS position
                         last = _last_sent.get(uid, 0)
                         if now - last < SEND_INTERVAL:
                             continue  # Throttle: 10Hz per drone
