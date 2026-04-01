@@ -22,6 +22,7 @@ Environment Variables:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import math
@@ -31,6 +32,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
@@ -138,9 +140,16 @@ class DDSGateway:
         self._rclpy_available = False
         self._node = None
         self._subscriptions = {}
-        self._lock = threading.Lock()
+        # Fine-grained per-drone locks to eliminate cross-drone lock contention.
+        # The global _lock is only used for iterating drone_states (snapshot).
+        # Individual drone state updates use _drone_locks[uav_id].
+        self._lock = threading.Lock()  # global: protects drone_states dict structure
+        self._drone_locks: Dict[str, threading.Lock] = defaultdict(threading.Lock)  # per-drone
         self._stats = defaultdict(int)
+        self._stats_lock = threading.Lock()  # protects _stats counters
         self._last_stats_time = time.time()
+        # Thread pool for parallel command dispatch (batch multi-drone commands)
+        self._command_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix='cmd-dispatch')
 
         # Epoch map: uav_id -> epoch (generation ID)
         self._epoch_map: Dict[str, int] = {}
@@ -215,9 +224,6 @@ class DDSGateway:
         """
         if self.total_instances <= 1:
             return True
-        # Use deterministic hash (hashlib) to ensure consistent partitioning
-        # across all instances (Python's built-in hash() is randomized per process)
-        import hashlib
         h = int(hashlib.md5(uav_id.encode('utf-8')).hexdigest(), 16)
         owner = h % self.total_instances
         return owner == self.instance_id
@@ -425,37 +431,66 @@ class DDSGateway:
     # ============================================================
 
     def _on_global_position(self, uav_id, msg):
-        with self._lock:
+        lock = self._drone_locks[uav_id]
+        with lock:
             s = self.drone_states.get(uav_id)
             if not s:
                 return
             lat, lon, alt = msg.lat, msg.lon, msg.alt
-            # Coordinate rollback protection: if we already have valid coords
-            # (e.g. near Beijing), reject suspicious (0,0) values that indicate
-            # GPS reset or uninitialized data
+            now = time.time()
+
+            # Protection 1: (0,0) coordinate rollback rejection
             if s.position_valid and abs(lat) < 1.0 and abs(lon) < 1.0:
                 logger.debug("[GPS] %s rejected (0,0) rollback: lat=%.6f lon=%.6f",
                              uav_id, lat, lon)
-                s.last_update = time.time()
+                s.last_update = now
                 s.msg_count += 1
-                self._stats[f'{uav_id}/global_position'] += 1
-                self._stats['total_messages'] += 1
+                with self._stats_lock:
+                    self._stats[f'{uav_id}/global_position'] += 1
+                    self._stats['total_messages'] += 1
                 return
+
+            # Protection 2: GPS jump detection (velocity-based)
+            # Reject position updates that exceed physical movement limits
+            if s.position_valid and s.ground_speed is not None:
+                dt = now - s.last_update
+                if 0 < dt < 5:  # Only within reasonable time window
+                    dlat_m = (lat - s.lat) * 111320  # approx meters
+                    dlon_m = (lon - s.lon) * 111320 * math.cos(math.radians(s.lat))
+                    distance = math.sqrt(dlat_m ** 2 + dlon_m ** 2)
+                    max_possible = (s.ground_speed + 10) * dt  # allow acceleration margin
+                    if distance > max(max_possible, 100):  # at least 100m tolerance
+                        logger.warning(
+                            "[GPS] %s rejected jump: %.0fm in %.1fs (speed=%.1fm/s)",
+                            uav_id, distance, dt, s.ground_speed)
+                        with self._stats_lock:
+                            self._stats[f'{uav_id}/gps_jump_rejected'] += 1
+                        return
+
+            # Protection 3: Altitude anomaly detection (>500m jump)
+            if s.position_valid and abs(alt - s.alt) > 500:
+                logger.warning("[GPS] %s rejected altitude jump: %.1f -> %.1f",
+                               uav_id, s.alt, alt)
+                with self._stats_lock:
+                    self._stats[f'{uav_id}/alt_jump_rejected'] += 1
+                return
+
             s.lat = lat
             s.lon = lon
             s.alt = alt
-            # Mark position as valid after first real GPS data
             if not s.position_valid:
                 s.position_valid = True
                 logger.info("[GPS] %s position valid: lat=%.6f lon=%.6f alt=%.1f",
                             uav_id, lat, lon, alt)
-            s.last_update = time.time()
+            s.last_update = now
             s.msg_count += 1
+        with self._stats_lock:
             self._stats[f'{uav_id}/global_position'] += 1
             self._stats['total_messages'] += 1
 
     def _on_local_position(self, uav_id, msg):
-        with self._lock:
+        lock = self._drone_locks[uav_id]
+        with lock:
             s = self.drone_states.get(uav_id)
             if not s:
                 return
@@ -469,11 +504,13 @@ class DDSGateway:
             s.vertical_speed = -msg.vz
             s.last_update = time.time()
             s.msg_count += 1
+        with self._stats_lock:
             self._stats[f'{uav_id}/local_position'] += 1
             self._stats['total_messages'] += 1
 
     def _on_attitude(self, uav_id, msg):
-        with self._lock:
+        lock = self._drone_locks[uav_id]
+        with lock:
             s = self.drone_states.get(uav_id)
             if not s:
                 return
@@ -483,11 +520,13 @@ class DDSGateway:
             s.heading = math.degrees(math.atan2(siny_cosp, cosy_cosp)) % 360
             s.last_update = time.time()
             s.msg_count += 1
+        with self._stats_lock:
             self._stats[f'{uav_id}/attitude'] += 1
             self._stats['total_messages'] += 1
 
     def _on_vehicle_status(self, uav_id, msg):
-        with self._lock:
+        lock = self._drone_locks[uav_id]
+        with lock:
             s = self.drone_states.get(uav_id)
             if not s:
                 return
@@ -495,17 +534,20 @@ class DDSGateway:
             s.flight_mode = self._nav_state_to_mode(getattr(msg, 'nav_state', 0))
             s.last_update = time.time()
             s.msg_count += 1
+        with self._stats_lock:
             self._stats[f'{uav_id}/vehicle_status'] += 1
             self._stats['total_messages'] += 1
 
     def _on_battery_status(self, uav_id, msg):
-        with self._lock:
+        lock = self._drone_locks[uav_id]
+        with lock:
             s = self.drone_states.get(uav_id)
             if not s:
                 return
             s.battery_percent = getattr(msg, 'remaining', -1.0) * 100
             s.last_update = time.time()
             s.msg_count += 1
+        with self._stats_lock:
             self._stats[f'{uav_id}/battery_status'] += 1
             self._stats['total_messages'] += 1
 
@@ -530,8 +572,9 @@ class DDSGateway:
         command = getattr(msg, 'command', 0)
         result = getattr(msg, 'result', -1)
         logger.info("[CommandAck] %s: command=%d result=%d", uav_id, command, result)
-        self._stats[f'{uav_id}/command_ack'] += 1
-        self._stats['total_messages'] += 1
+        with self._stats_lock:
+            self._stats[f'{uav_id}/command_ack'] += 1
+            self._stats['total_messages'] += 1
 
         # Deduplicate acks to prevent rejection loops (2s window)
         ack_key = f"{uav_id}:{command}:{result}"
@@ -699,8 +742,9 @@ class DDSGateway:
                                         "[KafkaCmd] Stale command discarded: %s -> %s "
                                         "msgEpoch=%d < currentEpoch=%d",
                                         command_type, uav_id, msg_epoch, current_epoch)
-                                    self._stats['kafka_commands_stale'] = \
-                                        self._stats.get('kafka_commands_stale', 0) + 1
+                                    with self._stats_lock:
+                                        self._stats['kafka_commands_stale'] = \
+                                            self._stats.get('kafka_commands_stale', 0) + 1
                                     continue
 
                                 # --- Timestamp validation: discard commands older than 60s ---
@@ -717,8 +761,9 @@ class DDSGateway:
                                                 "[KafkaCmd] Expired command discarded: "
                                                 "%s -> %s age=%.1fs",
                                                 command_type, uav_id, age_s)
-                                            self._stats['kafka_commands_expired'] = \
-                                                self._stats.get('kafka_commands_expired', 0) + 1
+                                            with self._stats_lock:
+                                                self._stats['kafka_commands_expired'] = \
+                                                    self._stats.get('kafka_commands_expired', 0) + 1
                                             continue
                                     except Exception:
                                         pass  # If timestamp parsing fails, proceed anyway
@@ -728,8 +773,9 @@ class DDSGateway:
                                 result = self.handle_command(uav_id, command_type, params)
                                 logger.info("[KafkaCmd] Result: %s -> %s: %s",
                                             command_type, uav_id, result)
-                                self._stats['kafka_commands_consumed'] = \
-                                    self._stats.get('kafka_commands_consumed', 0) + 1
+                                with self._stats_lock:
+                                    self._stats['kafka_commands_consumed'] = \
+                                        self._stats.get('kafka_commands_consumed', 0) + 1
 
                                 # Send ACK to commands.ack topic
                                 self._send_command_ack(
@@ -865,11 +911,13 @@ class DDSGateway:
                 # Key = uav_id -> same partition -> ordered
                 # No flush — async send for lowest latency
                 self._kafka_producer.send('telemetry.raw', key=uav_id, value=msg)
-            self._stats['kafka_success'] += 1
+            with self._stats_lock:
+                self._stats['kafka_success'] += 1
             return True
         except Exception as e:
             logger.error("[Kafka] Send failed: %s", e)
-            self._stats['kafka_errors'] += 1
+            with self._stats_lock:
+                self._stats['kafka_errors'] += 1
             return False
 
     def send_event_to_kafka(self, event_type: str, uav_id: str, level: str, detail: str):
@@ -895,8 +943,15 @@ class DDSGateway:
         from datetime import datetime, timezone
 
         drones = []
+        # Snapshot drone IDs under global lock, then read each under per-drone lock
         with self._lock:
-            for uav_id, state in self.drone_states.items():
+            uav_ids = list(self.drone_states.keys())
+        for uav_id in uav_ids:
+            lock = self._drone_locks[uav_id]
+            with lock:
+                state = self.drone_states.get(uav_id)
+                if not state:
+                    continue
                 drones.append({
                     "uavId": state.uav_id,
                     "lat": state.lat,
@@ -926,7 +981,8 @@ class DDSGateway:
         """Build telemetry payload for a single drone (real-time per-drone send)."""
         from datetime import datetime, timezone
 
-        with self._lock:
+        lock = self._drone_locks[uav_id]
+        with lock:
             state = self.drone_states.get(uav_id)
             if not state:
                 return None
@@ -975,22 +1031,26 @@ class DDSGateway:
                     "[Forward] Sent %d drone(s) -> routed to %d partition(s): %s",
                     processed, len(partitions), list(partitions)
                 )
-                self._stats['backend_success'] += 1
+                with self._stats_lock:
+                    self._stats['backend_success'] += 1
                 return True
             else:
                 logger.error(
                     "[Forward] Backend HTTP %d: %s",
                     resp.status_code, resp.text[:200]
                 )
-                self._stats['backend_errors'] += 1
+                with self._stats_lock:
+                    self._stats['backend_errors'] += 1
                 return False
         except requests.exceptions.ConnectionError:
             logger.error("[Forward] Connection lost to %s", self.backend_url)
-            self._stats['backend_errors'] += 1
+            with self._stats_lock:
+                self._stats['backend_errors'] += 1
             return False
         except Exception as e:
             logger.error("[Forward] Send failed: %s", e)
-            self._stats['backend_errors'] += 1
+            with self._stats_lock:
+                self._stats['backend_errors'] += 1
             return False
 
     def log_statistics(self):
@@ -1000,7 +1060,9 @@ class DDSGateway:
             return
         elapsed = now - self._last_stats_time
         self._last_stats_time = now
-        total = self._stats.get('total_messages', 0)
+        with self._stats_lock:
+            total = self._stats.get('total_messages', 0)
+            stats_snapshot = dict(self._stats)
 
         logger.info("=" * 60)
         logger.info(
@@ -1008,13 +1070,21 @@ class DDSGateway:
             elapsed, total, len(self.drone_states), len(self._subscriptions)
         )
         logger.info(
-            "[Stats] Backend: success=%d errors=%d",
-            self._stats.get('backend_success', 0),
-            self._stats.get('backend_errors', 0)
+            "[Stats] Backend: success=%d errors=%d | GPS-jump-rejected=%d",
+            stats_snapshot.get('backend_success', 0),
+            stats_snapshot.get('backend_errors', 0),
+            sum(v for k, v in stats_snapshot.items() if 'gps_jump_rejected' in k)
         )
 
+        # Snapshot drone states under per-drone locks
         with self._lock:
-            for uid, s in self.drone_states.items():
+            uav_ids = list(self.drone_states.keys())
+        for uid in uav_ids:
+            lock = self._drone_locks[uid]
+            with lock:
+                s = self.drone_states.get(uid)
+                if not s:
+                    continue
                 age = now - s.last_update if s.last_update > 0 else -1
                 logger.info(
                     "[Stats]   %-10s msgs=%-6d lat=%.6f lon=%.6f alt=%.1f "
@@ -1023,7 +1093,7 @@ class DDSGateway:
                     s.heading, s.armed, s.flight_mode, age
                 )
 
-        topic_stats = {k: v for k, v in self._stats.items() if '/' in k}
+        topic_stats = {k: v for k, v in stats_snapshot.items() if '/' in k}
         if topic_stats:
             logger.info("[Stats] Per-topic:")
             for t, c in sorted(topic_stats.items()):
@@ -1158,25 +1228,55 @@ class DDSGateway:
                             "Check PX4 simulator and ROS_DOMAIN_ID."
                         )
 
-                # Real-time per-drone forwarding at 10Hz (no batch accumulation)
-                # Lock protects against concurrent modifications from spin thread callbacks
+                # Batch-aggregated telemetry forwarding at 10Hz per drone.
+                # Collects all ready drones in one pass, then sends a single
+                # batched Kafka message to reduce network overhead.
                 with self._lock:
-                    drone_snapshot = list(self.drone_states.items())
-                for uid, state in drone_snapshot:
-                    if now - state.last_update > 5:
-                        continue  # Skip stale drones
-                    if not state.position_valid:
-                        continue  # Skip drones without valid GPS position
-                    last = _last_sent.get(uid, 0)
-                    if now - last < SEND_INTERVAL:
-                        continue  # Throttle: 10Hz per drone
-                    _last_sent[uid] = now
-                    # Build single-drone payload and send immediately
-                    single_payload = self.build_telemetry_payload_single(uid)
-                    if single_payload:
-                        kafka_ok = self.send_to_kafka(single_payload)
-                        if not kafka_ok:
-                            self.send_to_backend(single_payload)
+                    uav_ids_snapshot = list(self.drone_states.keys())
+                batch_drones = []
+                for uid in uav_ids_snapshot:
+                    lock = self._drone_locks[uid]
+                    with lock:
+                        state = self.drone_states.get(uid)
+                        if not state:
+                            continue
+                        if now - state.last_update > 5:
+                            continue  # Skip stale drones
+                        if not state.position_valid:
+                            continue  # Skip drones without valid GPS position
+                        last = _last_sent.get(uid, 0)
+                        if now - last < SEND_INTERVAL:
+                            continue  # Throttle: 10Hz per drone
+                        _last_sent[uid] = now
+                        batch_drones.append({
+                            "uavId": state.uav_id,
+                            "lat": state.lat,
+                            "lon": state.lon,
+                            "alt": state.alt,
+                            "heading": state.heading,
+                            "groundSpeed": state.ground_speed,
+                            "verticalSpeed": state.vertical_speed,
+                            "vx": state.vx,
+                            "vy": state.vy,
+                            "vz": state.vz,
+                            "nedX": state.ned_x,
+                            "nedY": state.ned_y,
+                            "nedZ": state.ned_z,
+                            "armed": state.armed,
+                            "flightMode": state.flight_mode,
+                            "batteryPercent": state.battery_percent,
+                            "epoch": state.epoch,
+                        })
+                # Batch send: one Kafka/HTTP call for all ready drones
+                if batch_drones:
+                    from datetime import datetime, timezone
+                    batch_payload = {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "drones": batch_drones
+                    }
+                    kafka_ok = self.send_to_kafka(batch_payload)
+                    if not kafka_ok:
+                        self.send_to_backend(batch_payload)
 
                 self.log_statistics()
                 cycle += 1
@@ -1772,7 +1872,8 @@ class DDSGateway:
                     # lock setpoint to current position to ensure stable hover
                     # (prevents descent after reaching target)
                     if not (math.isnan(x) or math.isnan(y)):
-                        with self._lock:
+                        hb_lock = self._drone_locks[uav_id]
+                        with hb_lock:
                             state = self.drone_states.get(uav_id)
                         if state:
                             dx = state.ned_x - x
@@ -1857,7 +1958,8 @@ class DDSGateway:
             
             while self._orbit_active.get(uav_id, False) and self.running:
                 try:
-                    with self._lock:
+                    orbit_lock = self._drone_locks[uav_id]
+                    with orbit_lock:
                         state = self.drone_states.get(uav_id)
                     
                     if not state:
