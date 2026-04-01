@@ -370,10 +370,17 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     if (commandType === 'TAKEOFF') {
       return JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
     } else if (commandType === 'GOTO') {
+      // When triggered from map click (coordOverrides present), preserve drone's
+      // current altitude instead of using the panel's gotoAlt value.
+      // Only the detail panel's explicit altitude input should change altitude.
+      const isMapClick = !!coordOverrides;
+      const droneCurrentAlt = isMapClick
+        ? (mapDrones.find(d => d.uavId === uavId)?.altitude || 50)
+        : undefined;
       return JSON.stringify({
         lat: coordOverrides?.lat ?? (parseFloat(gotoLat) || 0),
         lon: coordOverrides?.lon ?? (parseFloat(gotoLon) || 0),
-        alt: parseFloat(gotoAlt) || 50,
+        alt: isMapClick ? droneCurrentAlt : (parseFloat(gotoAlt) || 50),
         address: gotoAddress || undefined,
         ...(isBatch ? { formation: true, droneArea: 6.25 } : {}),
       });

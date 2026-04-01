@@ -124,7 +124,7 @@ export default function AMap3DPanel({
             ? selectedDroneIdsRef.current.has(id)
             : id === selectedDroneIdRef.current;
           if (isSelected) {
-            const scale = blinkStateRef.current ? 0.35 : 0.25;
+            const scale = blinkStateRef.current ? 0.3 : 0.2;
             model.scale.set(scale, scale, scale);
             model.traverse((child) => {
               if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshPhongMaterial) {
@@ -326,8 +326,8 @@ export default function AMap3DPanel({
       group.add(rotor);
     });
 
-    // Issue 2: Reduced model size (was 0.5, now 0.3)
-    group.scale.set(0.3, 0.3, 0.3);
+    // Model scale: 1/4 of original size (0.25x)
+    group.scale.set(0.25, 0.25, 0.25);
 
     return group;
   }, []);
@@ -560,6 +560,13 @@ export default function AMap3DPanel({
       const color = getDroneColor(drone, isSelected);
       const altitude = (drone.altitude ?? 0) * ALTITUDE_SCALE;
 
+      // Ensure coordinate system is centered on map's current center
+      // (fixes real-time rendering when drones are far from initial center)
+      const mapCenter = mapRef.current?.getCenter();
+      if (mapCenter) {
+        customCoordsRef.current.setCenter([mapCenter.lng, mapCenter.lat]);
+      }
+
       // Convert lng/lat/alt to scene coordinates
       const data = customCoordsRef.current.lngLatsToCoords([
         [drone.lng, drone.lat, altitude],
@@ -588,7 +595,7 @@ export default function AMap3DPanel({
 
         // Update scale - normal size (blink animation handles selected scale separately)
         if (!isSelected) {
-          existing.scale.set(0.3, 0.3, 0.3);
+          existing.scale.set(0.25, 0.25, 0.25);
         }
       } else {
         // Create new model

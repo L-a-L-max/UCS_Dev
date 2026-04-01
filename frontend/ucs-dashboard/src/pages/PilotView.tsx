@@ -292,83 +292,120 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drones, telemetryVersion]);
 
-  // Unified command handler
+  // Build command params (shared between single and batch dispatch)
+  const buildCommandParams = (commandType: string, targetUav: string, coordOverrides?: { lat: number; lon: number }, isBatch = false): string => {
+    if (commandType === 'TAKEOFF') {
+      return JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
+    } else if (commandType === 'GOTO') {
+      // When triggered from map click (coordOverrides present), preserve drone's
+      // current altitude instead of using the panel's gotoAlt value.
+      // Only the detail panel's explicit altitude input should change altitude.
+      const isMapClick = !!coordOverrides;
+      const droneCurrentAlt = isMapClick
+        ? (mapDrones.find(d => d.uavId === targetUav)?.altitude || 50)
+        : undefined;
+      return JSON.stringify({
+        lat: coordOverrides?.lat ?? (parseFloat(gotoLat) || 0),
+        lon: coordOverrides?.lon ?? (parseFloat(gotoLon) || 0),
+        alt: isMapClick ? droneCurrentAlt : (parseFloat(gotoAlt) || 50),
+        address: gotoAddress || undefined,
+        ...(isBatch ? { formation: true, droneArea: 6.25 } : {}),
+      });
+    } else if (commandType === 'RTL') {
+      if (singleRtlMode === 'rally' && singleSelectedRallyId) {
+        const rp = rallyPoints.find(r => r.id === singleSelectedRallyId);
+        if (rp) return JSON.stringify({ lat: rp.latitude, lon: rp.longitude, ...(isBatch ? { formation: true, droneArea: 6.25 } : {}) });
+      }
+      return '{}';
+    } else if (commandType === 'ORBIT') {
+      const droneAlt = mapDrones.find(d => d.uavId === targetUav)?.altitude || 0;
+      return JSON.stringify({
+        lat: coordOverrides?.lat ?? (parseFloat(orbitLat) || 0),
+        lon: coordOverrides?.lon ?? (parseFloat(orbitLon) || 0),
+        radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
+        alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
+        ...(isBatch ? { formation: true, droneArea: 6.25 } : {}),
+      });
+    } else if (commandType === 'MARK_HOME') {
+      const droneInfo = mapDrones.find(d => d.uavId === targetUav);
+      if (droneInfo && droneInfo.lat && droneInfo.lng) {
+        return JSON.stringify({ lat: droneInfo.lat, lon: droneInfo.lng, alt: droneInfo.altitude || 0 });
+      }
+    }
+    return '{}';
+  };
+
+  // Unified command handler with multi-drone support
+  // In multi-select mode, dispatches to ALL selected drones (not just the clicked one)
   // coordOverrides: fresh lat/lon from map click (bypasses stale React state)
   const handleCommand = async (commandType: string, uavId?: string, coordOverrides?: { lat: number; lon: number }) => {
     const targetUav = uavId || selectedDrone;
     if (!targetUav) return;
-    // Command protection (Issue 5): check drone online/armed status
+
+    // Determine target drones: multi-select mode -> all selected; single mode -> just the clicked one
+    const targetUavIds = (multiSelectMode && selectedDrones.size >= 2)
+      ? Array.from(selectedDrones)
+      : [targetUav];
+
+    // Command protection: check first drone for basic validation
     const droneStatus = mapDrones.find(d => d.uavId === targetUav);
     if (droneStatus) {
       if (!droneStatus.onlineStatus) {
-        setQuickFeedback({ uavId: targetUav, message: '无人机离线，无法执行命令', success: false });
+        setQuickFeedback({ uavId: targetUav, message: '\u65e0\u4eba\u673a\u79bb\u7ebf\uff0c\u65e0\u6cd5\u6267\u884c\u547d\u4ee4', success: false });
         setTimeout(() => setQuickFeedback(null), 3000);
         return;
       }
       if (!droneStatus.armed && !['ARM', 'TAKEOFF', 'MARK_HOME'].includes(commandType)) {
-        setQuickFeedback({ uavId: targetUav, message: '无人机未解锁，请先ARM', success: false });
+        setQuickFeedback({ uavId: targetUav, message: '\u65e0\u4eba\u673a\u672a\u89e3\u9501\uff0c\u8bf7\u5148ARM', success: false });
         setTimeout(() => setQuickFeedback(null), 3000);
         return;
       }
     }
     setSendingCommand(commandType);
 
-    let params = '{}';
-    if (commandType === 'TAKEOFF') {
-      params = JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
-    } else if (commandType === 'GOTO') {
-      params = JSON.stringify({
-        lat: coordOverrides?.lat ?? (parseFloat(gotoLat) || 0),
-        lon: coordOverrides?.lon ?? (parseFloat(gotoLon) || 0),
-        alt: parseFloat(gotoAlt) || 50,
-        address: gotoAddress || undefined,
-      });
-    } else if (commandType === 'RTL') {
-      // RTL uses rally point coordinates if in rally mode
-      if (singleRtlMode === 'rally' && singleSelectedRallyId) {
-        const rp = rallyPoints.find(r => r.id === singleSelectedRallyId);
-        if (rp) {
-          params = JSON.stringify({ lat: rp.latitude, lon: rp.longitude });
-        }
-      }
-      // Home mode: no extra params, drone returns to its Home point
-    } else if (commandType === 'ORBIT') {
-      // Include current drone altitude to prevent altitude loss during orbit
-      const droneAlt = mapDrones.find(d => d.uavId === targetUav)?.altitude || 0;
-      params = JSON.stringify({
-        lat: coordOverrides?.lat ?? (parseFloat(orbitLat) || 0),
-        lon: coordOverrides?.lon ?? (parseFloat(orbitLon) || 0),
-        radius: Math.max(2.5, Math.min(20, parseFloat(orbitRadius) || 5)),
-        alt: droneAlt > 0 ? droneAlt : (parseFloat(gotoAlt) || 50),
-      });
-    } else if (commandType === 'MARK_HOME') {
-      const droneInfo = mapDrones.find(d => d.uavId === targetUav);
-      if (droneInfo && droneInfo.lat && droneInfo.lng) {
-        params = JSON.stringify({
-          lat: droneInfo.lat,
-          lon: droneInfo.lng,
-          alt: droneInfo.altitude || 0,
-        });
-      }
-    }
-
     try {
-      const res = await sendControlCommand(token, {
-        uavId: targetUav,
-        commandType,
-        params,
-        confirmed: true,
-      });
-      if (res.code === 0 && res.data) {
-        setQuickFeedback({ uavId: targetUav, message: `${commandType} \u6307\u4ee4\u5df2\u53d1\u9001`, success: true });
-        if (commandType === 'MARK_HOME' || commandType === 'TAKEOFF') {
-          const droneInfo = mapDrones.find(d => d.uavId === targetUav);
-          if (droneInfo && droneInfo.lat && droneInfo.lng) {
-            setHomePosition({ lat: droneInfo.lat, lon: droneInfo.lng, alt: droneInfo.altitude || 0 });
+      if (targetUavIds.length > 1) {
+        // Multi-drone batch command (reference: LeaderView handleQuickCommand)
+        const params = buildCommandParams(commandType, targetUav, coordOverrides, true);
+        const res = await sendBatchControlCommand(token, {
+          uavIds: targetUavIds,
+          commandType,
+          params,
+          confirmed: true,
+        });
+        if (res.code === 0) {
+          setQuickFeedback({ uavId: `${targetUavIds.length}\u67b6`, message: `${commandType} \u6307\u4ee4\u5df2\u53d1\u9001`, success: true });
+          if (commandType === 'TAKEOFF') {
+            const buf = telemetryBufferRef.current;
+            targetUavIds.forEach(id => {
+              const existing = buf.get(id);
+              if (existing) { existing.armed = true; existing.flightStatus = 'FLYING'; }
+            });
+            setTelemetryVersion(v => v + 1);
           }
+        } else {
+          setQuickFeedback({ uavId: `${targetUavIds.length}\u67b6`, message: res.msg || '\u6307\u4ee4\u53d1\u9001\u5931\u8d25', success: false });
         }
       } else {
-        setQuickFeedback({ uavId: targetUav, message: res.msg || '\u6307\u4ee4\u53d1\u9001\u5931\u8d25', success: false });
+        // Single drone command
+        const params = buildCommandParams(commandType, targetUav, coordOverrides);
+        const res = await sendControlCommand(token, {
+          uavId: targetUav,
+          commandType,
+          params,
+          confirmed: true,
+        });
+        if (res.code === 0 && res.data) {
+          setQuickFeedback({ uavId: targetUav, message: `${commandType} \u6307\u4ee4\u5df2\u53d1\u9001`, success: true });
+          if (commandType === 'MARK_HOME' || commandType === 'TAKEOFF') {
+            const droneInfo = mapDrones.find(d => d.uavId === targetUav);
+            if (droneInfo && droneInfo.lat && droneInfo.lng) {
+              setHomePosition({ lat: droneInfo.lat, lon: droneInfo.lng, alt: droneInfo.altitude || 0 });
+            }
+          }
+        } else {
+          setQuickFeedback({ uavId: targetUav, message: res.msg || '\u6307\u4ee4\u53d1\u9001\u5931\u8d25', success: false });
+        }
       }
     } catch {
       setQuickFeedback({ uavId: targetUav, message: '\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u540e\u7aef\u670d\u52a1', success: false });

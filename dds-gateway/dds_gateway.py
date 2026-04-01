@@ -1755,6 +1755,7 @@ class DDSGateway:
 
         def _heartbeat_loop():
             logger.info("[Heartbeat] Started for %s at %.1f Hz", uav_id, 1.0 / interval)
+            _arrival_logged = False
             while self._heartbeat_active.get(uav_id, False) and self.running:
                 try:
                     self.publish_offboard_control_mode(uav_id, position=True)
@@ -1766,6 +1767,36 @@ class DDSGateway:
                         yaw = current_sp.get('yaw', float('nan'))
                     else:
                         x, y, z, yaw = float('nan'), float('nan'), current_sp, float('nan')
+
+                    # Arrival detection: when drone is close to GOTO target,
+                    # lock setpoint to current position to ensure stable hover
+                    # (prevents descent after reaching target)
+                    if not (math.isnan(x) or math.isnan(y)):
+                        with self._lock:
+                            state = self.drone_states.get(uav_id)
+                        if state:
+                            dx = state.ned_x - x
+                            dy = state.ned_y - y
+                            dz = state.ned_z - z if not math.isnan(z) else 0
+                            dist_h = math.sqrt(dx ** 2 + dy ** 2)
+                            dist_3d = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+                            if dist_3d < 1.5:  # Within 1.5m of target
+                                if not _arrival_logged:
+                                    logger.info(
+                                        "[Heartbeat] %s arrived at target (dist=%.2fm), "
+                                        "switching to hover hold at NED [%.1f,%.1f,%.1f]",
+                                        uav_id, dist_3d, state.ned_x, state.ned_y, state.ned_z)
+                                    _arrival_logged = True
+                                # Lock to current position for stable hover
+                                x = state.ned_x
+                                y = state.ned_y
+                                z = state.ned_z
+                                # Update the stored setpoint so subsequent loops
+                                # keep holding this exact position
+                                current_sp['x'] = x
+                                current_sp['y'] = y
+                                current_sp['z'] = z
+
                     self.publish_trajectory_setpoint(uav_id, x, y, z, yaw=yaw, log=False)
                 except Exception as e:
                     logger.error("[Heartbeat] Error for %s: %s", uav_id, e)
