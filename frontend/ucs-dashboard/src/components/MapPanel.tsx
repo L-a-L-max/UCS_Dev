@@ -967,6 +967,10 @@ export default function MapPanel({
               onMapClick={onMapClick}
               onMapClickCommand={onMapClickCommand}
               hasDroneSelected={hasDroneSelected}
+              locateDroneId={locateDroneId}
+              locateDroneCounter={locateDroneCounter}
+              followDroneId={followDroneId}
+              onFollowExit={onFollowExit}
               className="absolute inset-0"
             />
           </Suspense>

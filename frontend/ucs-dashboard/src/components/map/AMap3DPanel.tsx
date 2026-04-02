@@ -36,6 +36,13 @@ interface AMap3DPanelProps {
   onMapClickCommand?: (command: string, lat: number, lng: number) => void;
   /** Whether a drone is currently selected (controls map click menu visibility) */
   hasDroneSelected?: boolean;
+  /** Locate drone: fly to this drone once (triggered by locateDroneCounter change) */
+  locateDroneId?: string | null;
+  locateDroneCounter?: number;
+  /** Follow mode: continuously track this drone */
+  followDroneId?: string | null;
+  /** Exit follow mode callback */
+  onFollowExit?: () => void;
   className?: string;
   /** Center coordinates [lng, lat] */
   center?: [number, number];
@@ -59,9 +66,8 @@ function getDroneStatusText(drone: MapDrone): string {
   return '在线';
 }
 
-// Scale altitude for visual representation (meters to scene units)
-// AMap customCoords uses a specific scale factor
-const ALTITUDE_SCALE = 1.0;
+// Altitude exaggeration factor for visual clarity at typical zoom levels
+const ALTITUDE_EXAGGERATION = 1.0;
 
 export default function AMap3DPanel({
   drones,
@@ -71,6 +77,10 @@ export default function AMap3DPanel({
   onMapClick,
   onMapClickCommand,
   hasDroneSelected = false,
+  locateDroneId,
+  locateDroneCounter = 0,
+  followDroneId,
+  onFollowExit,
   className = '',
   center = [105, 30],
   zoom = 4,
@@ -97,6 +107,9 @@ export default function AMap3DPanel({
   // Track which drone's info popup is currently shown (for position follow)
   const popupDroneIdRef = useRef<string | null>(null);
 
+  // Altitude scale: scene units per meter (computed dynamically from coordinate system)
+  const altitudeScaleRef = useRef(1.0);
+
   // Selection blink animation ref
   const blinkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const blinkStateRef = useRef(true);
@@ -107,12 +120,14 @@ export default function AMap3DPanel({
   const onMapClickRef = useRef(onMapClick);
   const onMapClickCommandRef = useRef(onMapClickCommand);
   const hasDroneSelectedRef = useRef(hasDroneSelected);
+  const onFollowExitRef = useRef(onFollowExit);
   useEffect(() => { selectedDroneIdRef.current = selectedDroneId; }, [selectedDroneId]);
   useEffect(() => { selectedDroneIdsRef.current = selectedDroneIds; }, [selectedDroneIds]);
   useEffect(() => { onDroneClickRef.current = onDroneClick; }, [onDroneClick]);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
   useEffect(() => { onMapClickCommandRef.current = onMapClickCommand; }, [onMapClickCommand]);
   useEffect(() => { hasDroneSelectedRef.current = hasDroneSelected; }, [hasDroneSelected]);
+  useEffect(() => { onFollowExitRef.current = onFollowExit; }, [onFollowExit]);
 
   // Issue 2: Selection blink animation - toggle visibility every 500ms for selected drones
   useEffect(() => {
@@ -217,8 +232,8 @@ export default function AMap3DPanel({
     };
   }, [closePopup]);
 
-  // Issue 3: Show map click menu with lat/lng/alt and control buttons
-  const showMapClickMenu = useCallback((lat: number, lng: number, screenX: number, screenY: number) => {
+  // Issue 3: Show map click menu with lat/lng/height and control buttons
+  const showMapClickMenu = useCallback((lat: number, lng: number, screenX: number, screenY: number, heightAboveGround: number = 0) => {
     const overlay = popupOverlayRef.current;
     if (!overlay) return;
     closePopup();
@@ -230,6 +245,10 @@ export default function AMap3DPanel({
       { label: '标记Home', cmd: 'MARK_HOME', color: '#22c55e' },
     ];
 
+    const heightDisplay = heightAboveGround > 0
+      ? `${heightAboveGround.toFixed(1)}m`
+      : '0m (地面)';
+
     overlay.innerHTML = `<div style="
       background:rgba(10,15,31,0.95); backdrop-filter:blur(8px);
       border:1px solid rgba(82,168,255,0.5); border-radius:8px;
@@ -240,7 +259,7 @@ export default function AMap3DPanel({
       <div style="margin-bottom:8px;font-size:11px;color:#a0cfff;">
         <div>纬度: ${lat.toFixed(6)}</div>
         <div>经度: ${lng.toFixed(6)}</div>
-        <div>海拔: 地面</div>
+        <div>高度: ${heightDisplay}</div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
         ${buttons.map(b => `<button data-cmd="${b.cmd}" style="
@@ -403,7 +422,7 @@ export default function AMap3DPanel({
         map.addControl(new AMap.Scale());
       });
 
-      // Issue 3: Map click handler - show popup with lat/lng/alt and control buttons
+      // Issue 3: Map click handler - show popup with lat/lng/height and control buttons
       map.on('click', (e: any) => {
         const lat = e.lnglat.getLat();
         const lng = e.lnglat.getLng();
@@ -412,9 +431,30 @@ export default function AMap3DPanel({
           const pixel = e.pixel;
           const containerRect = containerRef.current?.getBoundingClientRect();
           if (pixel && containerRect) {
-            showMapClickMenu(lat, lng, pixel.x + containerRect.left, pixel.y + containerRect.top);
+            // Estimate click height above ground using camera pitch and pixel offset
+            let estimatedHeight = 0;
+            const mapPitch = map.getPitch();
+            if (mapPitch > 5) {
+              const groundPixel = map.lngLatToContainer(
+                new AMap.LngLat(lng, lat)
+              );
+              if (groundPixel) {
+                const pixelDiff = groundPixel.y - pixel.y;
+                if (pixelDiff > 2) {
+                  const mapZoom = map.getZoom();
+                  const metersPerPixel = 156543.03 * Math.cos(lat * Math.PI / 180) / Math.pow(2, mapZoom);
+                  estimatedHeight = Math.max(0, pixelDiff * metersPerPixel / Math.sin(mapPitch * Math.PI / 180));
+                }
+              }
+            }
+            showMapClickMenu(lat, lng, pixel.x + containerRect.left, pixel.y + containerRect.top, estimatedHeight);
           }
         }
+      });
+
+      // Exit follow mode when user drags the map
+      map.on('dragstart', () => {
+        onFollowExitRef.current?.();
       });
 
       // Initialize Three.js GL custom layer for 3D drones
@@ -526,6 +566,42 @@ export default function AMap3DPanel({
   }, []);
 
   // Update 3D drone models when drones change
+  // Compute altitude scale: scene units per meter, based on horizontal coordinate distance
+  const computeAltitudeScale = useCallback(() => {
+    if (!customCoordsRef.current || !mapRef.current) return;
+    const mc = mapRef.current.getCenter();
+    const lng = mc.lng;
+    const lat = mc.lat;
+
+    // First try: check if lngLatsToCoords handles altitude natively
+    const p0 = customCoordsRef.current.lngLatsToCoords([[lng, lat, 0]]);
+    const p1 = customCoordsRef.current.lngLatsToCoords([[lng, lat, 1000]]);
+    if (p0?.[0] && p1?.[0]) {
+      const dx = (p1[0][0] ?? 0) - (p0[0][0] ?? 0);
+      const dy = (p1[0][1] ?? 0) - (p0[0][1] ?? 0);
+      const dz = (p1[0][2] ?? 0) - (p0[0][2] ?? 0);
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist > 0.001) {
+        altitudeScaleRef.current = dist / 1000;
+        return;
+      }
+    }
+
+    // Fallback: compute from horizontal distance between two nearby points
+    // 0.001 degrees longitude ≈ 111.32 * cos(lat) meters
+    const p2 = customCoordsRef.current.lngLatsToCoords([[lng, lat]]);
+    const p3 = customCoordsRef.current.lngLatsToCoords([[lng + 0.001, lat]]);
+    if (p2?.[0] && p3?.[0]) {
+      const hdx = (p3[0][0] ?? 0) - (p2[0][0] ?? 0);
+      const hdy = (p3[0][1] ?? 0) - (p2[0][1] ?? 0);
+      const horizontalDist = Math.sqrt(hdx * hdx + hdy * hdy);
+      const metersPerDeg = 111320 * Math.cos(lat * Math.PI / 180);
+      if (metersPerDeg > 0) {
+        altitudeScaleRef.current = horizontalDist / (0.001 * metersPerDeg);
+      }
+    }
+  }, []);
+
   const updateDroneModels = useCallback(() => {
     if (!sceneRef.current || !customCoordsRef.current) return;
 
@@ -536,7 +612,6 @@ export default function AMap3DPanel({
     droneModelsRef.current.forEach((model, id) => {
       if (!currentIds.has(id)) {
         scene.remove(model);
-        // Dispose geometry and materials
         model.traverse((child) => {
           if (child instanceof THREE.Mesh) {
             child.geometry.dispose();
@@ -557,6 +632,16 @@ export default function AMap3DPanel({
       }
     });
 
+    // Recompute altitude scale if needed
+    computeAltitudeScale();
+    const altScale = altitudeScaleRef.current * ALTITUDE_EXAGGERATION;
+
+    // Ensure coordinate system is centered on map's current center
+    const mapCenter = mapRef.current?.getCenter();
+    if (mapCenter) {
+      customCoordsRef.current.setCenter([mapCenter.lng, mapCenter.lat]);
+    }
+
     // Add or update drone models
     drones.forEach(drone => {
       if (drone.lat == null || drone.lng == null) return;
@@ -565,32 +650,23 @@ export default function AMap3DPanel({
         ? selectedDroneIds.has(drone.uavId)
         : drone.uavId === selectedDroneId;
       const color = getDroneColor(drone, isSelected);
-      const altitude = (drone.altitude ?? 0) * ALTITUDE_SCALE;
+      const droneAlt = (drone.altitude ?? 0) * altScale;
 
-      // Ensure coordinate system is centered on map's current center
-      // (fixes real-time rendering when drones are far from initial center)
-      const mapCenter = mapRef.current?.getCenter();
-      if (mapCenter) {
-        customCoordsRef.current.setCenter([mapCenter.lng, mapCenter.lat]);
-      }
-
-      // Convert lng/lat/alt to scene coordinates
+      // Convert lng/lat to scene coordinates (altitude handled manually via z-axis)
       const data = customCoordsRef.current.lngLatsToCoords([
-        [drone.lng, drone.lat, altitude],
+        [drone.lng, drone.lat],
       ]);
 
       const existing = droneModelsRef.current.get(drone.uavId);
       if (existing) {
-        // Update position
         if (data && data[0]) {
-          existing.position.set(data[0][0], data[0][1], data[0][2] || 0);
+          // x, y = horizontal position; z = altitude above ground in scene units
+          existing.position.set(data[0][0], data[0][1], droneAlt);
         }
 
-        // Update rotation (heading)
         const heading = drone.heading ?? 0;
         existing.rotation.y = -heading * (Math.PI / 180);
 
-        // Update color
         existing.traverse((child) => {
           if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshPhongMaterial) {
             if (child.material.emissiveIntensity > 0) {
@@ -600,15 +676,13 @@ export default function AMap3DPanel({
           }
         });
 
-        // Update scale - normal size (blink animation handles selected scale separately)
         if (!isSelected) {
           existing.scale.set(0.25, 0.25, 0.25);
         }
       } else {
-        // Create new model
         const model = createDroneModel(color);
         if (data && data[0]) {
-          model.position.set(data[0][0], data[0][1], data[0][2] || 0);
+          model.position.set(data[0][0], data[0][1], droneAlt);
         }
         const heading = drone.heading ?? 0;
         model.rotation.y = -heading * (Math.PI / 180);
@@ -637,7 +711,7 @@ export default function AMap3DPanel({
 
     // Trigger map re-render to show changes
     mapRef.current?.render();
-  }, [drones, selectedDroneId, selectedDroneIds, createDroneModel]);
+  }, [drones, selectedDroneId, selectedDroneIds, createDroneModel, computeAltitudeScale]);
 
   // Update HTML label markers for drones on AMap
   const updateLabelMarker = useCallback((drone: MapDrone, isSelected: boolean) => {
@@ -705,7 +779,7 @@ export default function AMap3DPanel({
     }
   }, [drones, selectedDroneId, selectedDroneIds, mapReady, updateDroneModels]);
 
-  // Issue 1: Enhanced focus/zoom on drones with smooth animation
+  // Focus/zoom on all drones with smooth animation
   const focusOnDrones = useCallback(() => {
     if (!mapRef.current || drones.length === 0) return;
     const valid = drones.filter(d => d.lat != null && d.lng != null);
@@ -715,8 +789,9 @@ export default function AMap3DPanel({
 
     if (valid.length === 1) {
       const d = valid[0];
-      const targetZoom = Math.max(mapRef.current.getZoom(), 14);
+      const targetZoom = Math.max(mapRef.current.getZoom(), 16);
       mapRef.current.setZoomAndCenter(targetZoom, [d.lng, d.lat], false, 800);
+      mapRef.current.setPitch(55, false, 400);
     } else {
       const AMap = AMapRef.current;
       if (AMap) {
@@ -727,9 +802,30 @@ export default function AMap3DPanel({
           [Math.max(...lngs), Math.max(...lats)],
         );
         mapRef.current.setBounds(bounds, false, [60, 60, 60, 60]);
+        mapRef.current.setPitch(45, false, 400);
       }
     }
   }, [drones, closePopup]);
+
+  // Locate drone: fly to a specific drone when locateDroneCounter changes
+  useEffect(() => {
+    if (!locateDroneId || !mapRef.current || locateDroneCounter === 0) return;
+    const drone = drones.find(d => d.uavId === locateDroneId);
+    if (!drone || drone.lat == null || drone.lng == null) return;
+
+    const targetZoom = Math.max(mapRef.current.getZoom(), 16);
+    mapRef.current.setZoomAndCenter(targetZoom, [drone.lng, drone.lat], false, 800);
+    mapRef.current.setPitch(55, false, 400);
+  }, [locateDroneCounter, locateDroneId, drones]);
+
+  // Follow mode: continuously track a specific drone's position
+  useEffect(() => {
+    if (!followDroneId || !mapRef.current) return;
+    const drone = drones.find(d => d.uavId === followDroneId);
+    if (!drone || drone.lat == null || drone.lng == null) return;
+
+    mapRef.current.setCenter([drone.lng, drone.lat], false, 300);
+  }, [followDroneId, drones]);
 
   return (
     <div className={`relative w-full h-full ${className}`}>
