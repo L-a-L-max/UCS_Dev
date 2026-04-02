@@ -1071,7 +1071,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
             hasDroneSelected={!!selectedDrone || selectedDrones.size > 0}
             onMapClick={(lat, lon) => setMapClickCoords({ lat, lon })}
             onMapClickCommand={(command, lat, lon) => {
-              const targetUavId = selectedDrone || (selectedDrones.size === 1 ? Array.from(selectedDrones)[0] : null);
+              const targetUavId = selectedDrone || (selectedDrones.size >= 1 ? Array.from(selectedDrones)[0] : null);
               if (!targetUavId) return;
               // Pass fresh coordinates directly to avoid React setState race condition
               const coords = { lat, lon };

@@ -94,6 +94,8 @@ export default function AMap3DPanel({
   // Popup overlay refs
   const popupOverlayRef = useRef<HTMLDivElement>(null);
   const popupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track which drone's info popup is currently shown (for position follow)
+  const popupDroneIdRef = useRef<string | null>(null);
 
   // Selection blink animation ref
   const blinkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -154,6 +156,7 @@ export default function AMap3DPanel({
       clearTimeout(popupTimerRef.current);
       popupTimerRef.current = null;
     }
+    popupDroneIdRef.current = null;
   }, []);
 
   // Issue 4: Show drone info popup when clicking on drone
@@ -202,6 +205,7 @@ export default function AMap3DPanel({
       overlay.style.top = `${Math.max(0, top)}px`;
     }
     overlay.style.display = 'block';
+    popupDroneIdRef.current = drone.uavId;
 
     // Auto-close after 5 seconds
     popupTimerRef.current = setTimeout(closePopup, 5000);
@@ -475,7 +479,10 @@ export default function AMap3DPanel({
           if (!rendererRef.current || !sceneRef.current || !cameraRef.current || !customCoordsRef.current) return;
 
           rendererRef.current.resetState();
-          customCoordsRef.current.setCenter(center);
+          // Use map's actual center instead of static prop center
+          // so that model positions (computed in updateDroneModels) align with camera
+          const mc = mapRef.current?.getCenter();
+          customCoordsRef.current.setCenter(mc ? [mc.lng, mc.lat] : center);
 
           const cameraParams = customCoordsRef.current.getCameraParams();
           const camera = cameraRef.current;
@@ -612,6 +619,20 @@ export default function AMap3DPanel({
 
       // Update label markers (HTML overlay via AMap Marker)
       updateLabelMarker(drone, isSelected);
+
+      // Update info popup position if it belongs to this drone
+      if (popupDroneIdRef.current === drone.uavId && mapRef.current) {
+        const pixel = mapRef.current.lngLatToContainer(
+          new AMapRef.current.LngLat(drone.lng, drone.lat)
+        );
+        if (pixel) {
+          const overlay = popupOverlayRef.current;
+          if (overlay && overlay.style.display !== 'none') {
+            overlay.style.left = `${pixel.x + 10}px`;
+            overlay.style.top = `${Math.max(0, pixel.y - 10)}px`;
+          }
+        }
+      }
     });
 
     // Trigger map re-render to show changes

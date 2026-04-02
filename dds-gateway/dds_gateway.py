@@ -167,7 +167,6 @@ class DDSGateway:
             'Content-Type': 'application/json',
         })
         # Thread pool for ack forwarding (avoids per-ack thread creation overhead)
-        from concurrent.futures import ThreadPoolExecutor
         self._ack_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='ack-fwd')
         # Ack deduplication cache
         self._recent_acks: Dict[str, float] = {}

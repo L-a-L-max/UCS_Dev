@@ -965,6 +965,8 @@ export default function MapPanel({
               selectedDroneIds={selectedDroneIds}
               onDroneClick={onDroneClick}
               onMapClick={onMapClick}
+              onMapClickCommand={onMapClickCommand}
+              hasDroneSelected={hasDroneSelected}
               className="absolute inset-0"
             />
           </Suspense>
