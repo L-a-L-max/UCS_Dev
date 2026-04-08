@@ -36,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
+import redis
 import requests
 
 # rclpy QoS imports - needed for PX4-compatible subscription profiles
@@ -96,6 +97,10 @@ class DroneState:
     home_lat: float = 0.0
     home_lon: float = 0.0
     home_alt: float = 0.0
+    # Reference altitude from VehicleLocalPosition (home AMSL altitude)
+    # Used to compute relative altitude: alt - ref_alt = height above home
+    ref_alt: float = 0.0
+    ref_alt_valid: bool = False
     # Epoch (generation ID) - incremented on each reconnection
     epoch: int = 0
     # Position validity: True only after first valid VehicleGlobalPosition received
@@ -152,7 +157,27 @@ class DDSGateway:
         self._command_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix='cmd-dispatch')
 
         # Epoch map: uav_id -> epoch (generation ID)
-        self._epoch_map: Dict[str, int] = {}
+        # Stored in Redis for persistence across gateway restarts.
+        # This prevents stale commands from being executed after restart.
+        self._epoch_map: Dict[str, int] = {}  # local cache, synced with Redis
+        self._redis_epoch_prefix = 'dds:epoch:'
+        self._redis = None
+        try:
+            redis_host = os.environ.get('REDIS_HOST', 'localhost')
+            redis_port = int(os.environ.get('REDIS_PORT', 6379))
+            redis_db = int(os.environ.get('REDIS_DB', 0))
+            redis_password = os.environ.get('REDIS_PASSWORD', None)
+            self._redis = redis.Redis(
+                host=redis_host, port=redis_port, db=redis_db,
+                password=redis_password, decode_responses=True,
+                socket_connect_timeout=3, socket_timeout=2,
+            )
+            self._redis.ping()
+            logger.info("[Redis] Connected to %s:%d db=%d for epoch persistence",
+                        redis_host, redis_port, redis_db)
+        except Exception as e:
+            logger.warning("[Redis] Connection failed (%s), epoch will use memory-only (NOT persistent)", e)
+            self._redis = None
 
         # Kafka producer (optional, for dual-write mode)
         self._kafka_producer = None
@@ -501,6 +526,15 @@ class DDSGateway:
             s.vz = msg.vz
             s.ground_speed = math.sqrt(msg.vx ** 2 + msg.vy ** 2)
             s.vertical_speed = -msg.vz
+            # Extract reference (home) altitude from VehicleLocalPosition.
+            # PX4's VehicleLocalPosition has ref_alt (home AMSL altitude).
+            # This allows computing relative altitude = AMSL alt - ref_alt.
+            ref_alt = getattr(msg, 'ref_alt', None)
+            if ref_alt is not None and ref_alt > 0:
+                if not s.ref_alt_valid:
+                    logger.info("[LocalPos] %s ref_alt=%.1f (home AMSL)", uav_id, ref_alt)
+                s.ref_alt = ref_alt
+                s.ref_alt_valid = True
             s.last_update = time.time()
             s.msg_count += 1
         with self._stats_lock:
@@ -825,13 +859,40 @@ class DDSGateway:
             logger.error("[KafkaCmd] ACK send failed: %s", e)
 
     def _get_or_increment_epoch(self, uav_id: str, is_new: bool = False) -> int:
-        """Get current epoch for a drone, incrementing on reconnection."""
+        """Get current epoch for a drone, incrementing on reconnection.
+
+        Epoch is persisted in Redis so that gateway restarts do NOT reset epochs.
+        Without persistence, a restarted gateway would use epoch=1 while the drone
+        still has old commands queued with epoch=N, causing stale command execution.
+        """
+        redis_key = f"{self._redis_epoch_prefix}{uav_id}"
+
+        # Try to load from Redis if not in local cache
+        if uav_id not in self._epoch_map and self._redis:
+            try:
+                stored = self._redis.get(redis_key)
+                if stored is not None:
+                    self._epoch_map[uav_id] = int(stored)
+                    logger.info("[Epoch] Loaded drone %s epoch=%d from Redis",
+                                uav_id, self._epoch_map[uav_id])
+            except Exception as e:
+                logger.warning("[Epoch] Redis GET failed for %s: %s", uav_id, e)
+
         if uav_id not in self._epoch_map:
             self._epoch_map[uav_id] = 1
             logger.info("[Epoch] New drone %s, epoch=1", uav_id)
         elif is_new:
             self._epoch_map[uav_id] += 1
-            logger.info("[Epoch] Drone %s reconnected, epoch=%d", uav_id, self._epoch_map[uav_id])
+            logger.info("[Epoch] Drone %s reconnected, epoch=%d",
+                        uav_id, self._epoch_map[uav_id])
+
+        # Persist to Redis
+        if self._redis:
+            try:
+                self._redis.set(redis_key, self._epoch_map[uav_id])
+            except Exception as e:
+                logger.warning("[Epoch] Redis SET failed for %s: %s", uav_id, e)
+
         return self._epoch_map[uav_id]
 
     def _start_epoch_maintenance(self):
@@ -841,7 +902,7 @@ class DDSGateway:
           - Normalize: epoch > 10000 → reset to 1
           - Evict: drones not seen for > 24 hours → remove from map
 
-        This prevents epoch values from growing unbounded over long runtimes.
+        Changes are propagated to Redis for persistence.
         """
         EPOCH_SOFT_LIMIT = 10000
         MAX_IDLE_SECONDS = 24 * 3600  # 24 hours
@@ -861,9 +922,16 @@ class DDSGateway:
                     state = self.drone_states.get(uav_id)
                     idle_s = (now - state.last_update) if (state and state.last_update > 0) else float('inf')
 
+                    redis_key = f"{self._redis_epoch_prefix}{uav_id}"
+
                     # Evict stale drones
                     if idle_s > MAX_IDLE_SECONDS:
                         self._epoch_map.pop(uav_id, None)
+                        if self._redis:
+                            try:
+                                self._redis.delete(redis_key)
+                            except Exception:
+                                pass
                         evicted += 1
                         continue
 
@@ -871,6 +939,11 @@ class DDSGateway:
                     epoch = self._epoch_map.get(uav_id, 0)
                     if epoch > EPOCH_SOFT_LIMIT:
                         self._epoch_map[uav_id] = 1
+                        if self._redis:
+                            try:
+                                self._redis.set(redis_key, 1)
+                            except Exception:
+                                pass
                         normalized += 1
                         logger.info("[EpochMaint] Normalized drone %s epoch: %d -> 1", uav_id, epoch)
 
@@ -951,11 +1024,19 @@ class DDSGateway:
                 state = self.drone_states.get(uav_id)
                 if not state:
                     continue
+                # Compute relative altitude (height above home).
+                # If ref_alt is available from VehicleLocalPosition, use it.
+                # Otherwise fall back to -ned_z (NED frame: z negative = up).
+                if state.ref_alt_valid and state.alt > 0:
+                    relative_alt = state.alt - state.ref_alt
+                else:
+                    relative_alt = -state.ned_z
                 drones.append({
                     "uavId": state.uav_id,
                     "lat": state.lat,
                     "lon": state.lon,
-                    "alt": state.alt,
+                    "alt": relative_alt,
+                    "altAmsl": state.alt,
                     "heading": state.heading,
                     "groundSpeed": state.ground_speed,
                     "verticalSpeed": state.vertical_speed,
@@ -985,11 +1066,17 @@ class DDSGateway:
             state = self.drone_states.get(uav_id)
             if not state:
                 return None
+            # Compute relative altitude (same as batch payload)
+            if state.ref_alt_valid and state.alt > 0:
+                relative_alt = state.alt - state.ref_alt
+            else:
+                relative_alt = -state.ned_z
             drone_data = {
                 "uavId": state.uav_id,
                 "lat": state.lat,
                 "lon": state.lon,
-                "alt": state.alt,
+                "alt": relative_alt,
+                "altAmsl": state.alt,
                 "heading": state.heading,
                 "groundSpeed": state.ground_speed,
                 "verticalSpeed": state.vertical_speed,

@@ -294,62 +294,81 @@ export default function AMap3DPanel({
     popupTimerRef.current = setTimeout(closePopup, 8000);
   }, [closePopup]);
 
-  // Create a simple 3D drone model (cone body + rotor arms)
+  // Create a 3D drone model visible from all viewing angles.
+  // Uses a spherical body + cross arms + rotor discs to ensure visibility
+  // regardless of camera pitch/rotation.
   const createDroneModel = useCallback((color: number): THREE.Group => {
     const group = new THREE.Group();
 
-    // Body - cone pointing upward
-    const bodyGeom = new THREE.ConeGeometry(6, 16, 6);
+    // Body - sphere (visible from all angles, unlike cone which becomes a line)
+    const bodyGeom = new THREE.SphereGeometry(5, 12, 8);
     const bodyMat = new THREE.MeshPhongMaterial({
       color,
       emissive: color,
-      emissiveIntensity: 0.3,
+      emissiveIntensity: 0.4,
       transparent: true,
       opacity: 0.9,
     });
     const body = new THREE.Mesh(bodyGeom, bodyMat);
-    body.rotation.x = Math.PI;
-    body.position.y = 8;
+    body.position.set(0, 0, 5);
     group.add(body);
 
-    // Rotor arms - 4 thin cylinders in X pattern
-    const armGeom = new THREE.CylinderGeometry(0.8, 0.8, 18, 6);
+    // Direction indicator - small cone pointing forward (heading direction)
+    const dirGeom = new THREE.ConeGeometry(2, 6, 6);
+    const dirMat = new THREE.MeshPhongMaterial({
+      color: 0xffffff,
+      emissive: 0xffffff,
+      emissiveIntensity: 0.3,
+    });
+    const dirCone = new THREE.Mesh(dirGeom, dirMat);
+    dirCone.rotation.x = -Math.PI / 2;
+    dirCone.position.set(0, 8, 5);
+    group.add(dirCone);
+
+    // Rotor arms - 4 thin boxes in X pattern (visible from all angles)
+    const armGeom = new THREE.BoxGeometry(18, 1.5, 1.5);
     const armMat = new THREE.MeshPhongMaterial({ color: 0xcccccc });
-    
+
     const arm1 = new THREE.Mesh(armGeom, armMat);
-    arm1.rotation.z = Math.PI / 2;
-    arm1.position.y = 14;
+    arm1.position.set(0, 0, 8);
     group.add(arm1);
 
     const arm2 = new THREE.Mesh(armGeom, armMat);
     arm2.rotation.z = Math.PI / 2;
-    arm2.rotation.y = Math.PI / 2;
-    arm2.position.y = 14;
+    arm2.position.set(0, 0, 8);
     group.add(arm2);
 
-    // Rotors - 4 small discs at arm tips
-    const rotorGeom = new THREE.CircleGeometry(4, 12);
+    // Rotors - 4 torus rings at arm tips (visible from all angles)
+    const rotorGeom = new THREE.TorusGeometry(3, 0.5, 8, 16);
     const rotorMat = new THREE.MeshPhongMaterial({
       color: 0x88ccff,
+      emissive: 0x88ccff,
+      emissiveIntensity: 0.2,
       transparent: true,
-      opacity: 0.4,
-      side: THREE.DoubleSide,
+      opacity: 0.6,
     });
 
-    const rotorPositions = [
-      [9, 15, 0],
-      [-9, 15, 0],
-      [0, 15, 9],
-      [0, 15, -9],
+    const rotorPositions: [number, number, number][] = [
+      [9, 0, 8],
+      [-9, 0, 8],
+      [0, 9, 8],
+      [0, -9, 8],
     ];
     rotorPositions.forEach(([x, y, z]) => {
       const rotor = new THREE.Mesh(rotorGeom, rotorMat);
-      rotor.rotation.x = -Math.PI / 2;
       rotor.position.set(x, y, z);
       group.add(rotor);
     });
 
-    // Model scale: 1/4 of original size (0.25x)
+    // Vertical post below body (ensures visibility from above)
+    const postGeom = new THREE.CylinderGeometry(0.5, 0.5, 8, 6);
+    const postMat = new THREE.MeshPhongMaterial({ color });
+    const post = new THREE.Mesh(postGeom, postMat);
+    post.rotation.x = Math.PI / 2;
+    post.position.set(0, 0, 1);
+    group.add(post);
+
+    // Model scale
     group.scale.set(0.25, 0.25, 0.25);
 
     return group;
@@ -422,7 +441,11 @@ export default function AMap3DPanel({
         map.addControl(new AMap.Scale());
       });
 
-      // Issue 3: Map click handler - show popup with lat/lng/height and control buttons
+      // Map click handler - show popup with lat/lng/height and control buttons
+      // Height estimation: AMap 3D renders buildings with height data. We estimate
+      // click height by comparing the clicked pixel Y against the ground-projected
+      // pixel Y for the same lng/lat. The vertical pixel difference indicates
+      // the visual height of the clicked point above ground.
       map.on('click', (e: any) => {
         const lat = e.lnglat.getLat();
         const lng = e.lnglat.getLng();
@@ -431,28 +454,39 @@ export default function AMap3DPanel({
           const pixel = e.pixel;
           const containerRect = containerRef.current?.getBoundingClientRect();
           if (pixel && containerRect) {
-            // Estimate click height above ground using camera pitch and pixel offset
+            // Estimate height above ground by comparing click pixel vs ground pixel
             let estimatedHeight = 0;
-            const mapPitch = map.getPitch();
-            if (mapPitch > 5) {
-              const groundPixel = map.lngLatToContainer(
-                new AMap.LngLat(lng, lat)
-              );
-              if (groundPixel) {
-                const pixelDiff = groundPixel.y - pixel.y;
-                if (pixelDiff > 2) {
-                  const mapZoom = map.getZoom();
-                  const metersPerPixel = 156543.03 * Math.cos(lat * Math.PI / 180) / Math.pow(2, mapZoom);
-                  estimatedHeight = Math.max(0, pixelDiff * metersPerPixel / Math.sin(mapPitch * Math.PI / 180));
+            try {
+              const mapPitch = map.getPitch();
+              if (mapPitch > 3) {
+                // lngLatToContainer projects lng/lat to screen coords at ground level.
+                // If the user clicked above ground (e.g. on a building), the click
+                // pixel.y will be ABOVE (lower value) the ground pixel.y.
+                const groundPixel = map.lngLatToContainer(
+                  new AMap.LngLat(lng, lat)
+                );
+                if (groundPixel) {
+                  const pixelDiff = groundPixel.y - pixel.y;
+                  if (pixelDiff > 3) {
+                    // Convert pixel offset to meters using zoom-dependent scale
+                    // At zoom Z, ~156543 * cos(lat) / 2^Z meters per pixel at equator
+                    const mapZoom = map.getZoom();
+                    const metersPerPixel = 156543.03 * Math.cos(lat * Math.PI / 180) / Math.pow(2, mapZoom);
+                    const pitchRad = mapPitch * Math.PI / 180;
+                    // The pixel offset is foreshortened by the pitch angle
+                    estimatedHeight = Math.max(0, pixelDiff * metersPerPixel / Math.sin(pitchRad));
+                    // Clamp to reasonable building height range
+                    estimatedHeight = Math.min(estimatedHeight, 800);
+                  }
                 }
               }
-            }
+            } catch { /* ignore height estimation errors */ }
             showMapClickMenu(lat, lng, pixel.x + containerRect.left, pixel.y + containerRect.top, estimatedHeight);
           }
         }
       });
 
-      // Exit follow mode when user drags the map
+      // Exit follow mode only when user actively drags/pans the map
       map.on('dragstart', () => {
         onFollowExitRef.current?.();
       });
@@ -779,31 +813,47 @@ export default function AMap3DPanel({
     }
   }, [drones, selectedDroneId, selectedDroneIds, mapReady, updateDroneModels]);
 
-  // Focus/zoom on all drones with smooth animation
+  // Focus/zoom on all drones with smooth animation.
+  // Uses a two-step approach: first set center, then adjust zoom + pitch.
+  // AMap 3D's setZoomAndCenter with immediate=false provides animation.
   const focusOnDrones = useCallback(() => {
     if (!mapRef.current || drones.length === 0) return;
     const valid = drones.filter(d => d.lat != null && d.lng != null);
     if (valid.length === 0) return;
 
     closePopup();
+    const map = mapRef.current;
 
     if (valid.length === 1) {
       const d = valid[0];
-      const targetZoom = Math.max(mapRef.current.getZoom(), 16);
-      mapRef.current.setZoomAndCenter(targetZoom, [d.lng, d.lat], false, 800);
-      mapRef.current.setPitch(55, false, 400);
+      // Animate: zoom in to drone, lower pitch to see from above
+      map.setCenter([d.lng, d.lat], false, 600);
+      setTimeout(() => {
+        map.setZoom(16, false, 600);
+        map.setPitch(50, false, 600);
+      }, 100);
     } else {
-      const AMap = AMapRef.current;
-      if (AMap) {
-        const lngs = valid.map(d => d.lng);
-        const lats = valid.map(d => d.lat);
-        const bounds = new AMap.Bounds(
-          [Math.min(...lngs), Math.min(...lats)],
-          [Math.max(...lngs), Math.max(...lats)],
-        );
-        mapRef.current.setBounds(bounds, false, [60, 60, 60, 60]);
-        mapRef.current.setPitch(45, false, 400);
+      // Compute center of all drones
+      const avgLng = valid.reduce((s, d) => s + d.lng, 0) / valid.length;
+      const avgLat = valid.reduce((s, d) => s + d.lat, 0) / valid.length;
+
+      // Compute appropriate zoom level based on spread
+      const lngs = valid.map(d => d.lng);
+      const lats = valid.map(d => d.lat);
+      const lngSpan = Math.max(...lngs) - Math.min(...lngs);
+      const latSpan = Math.max(...lats) - Math.min(...lats);
+      const maxSpan = Math.max(lngSpan, latSpan);
+      // Approximate zoom level from geographic span
+      let targetZoom = 16;
+      if (maxSpan > 0.0001) {
+        targetZoom = Math.min(18, Math.max(4, Math.floor(Math.log2(360 / maxSpan)) - 1));
       }
+
+      map.setCenter([avgLng, avgLat], false, 600);
+      setTimeout(() => {
+        map.setZoom(targetZoom, false, 600);
+        map.setPitch(45, false, 600);
+      }, 100);
     }
   }, [drones, closePopup]);
 
@@ -813,18 +863,25 @@ export default function AMap3DPanel({
     const drone = drones.find(d => d.uavId === locateDroneId);
     if (!drone || drone.lat == null || drone.lng == null) return;
 
-    const targetZoom = Math.max(mapRef.current.getZoom(), 16);
-    mapRef.current.setZoomAndCenter(targetZoom, [drone.lng, drone.lat], false, 800);
-    mapRef.current.setPitch(55, false, 400);
+    const map = mapRef.current;
+    map.setCenter([drone.lng, drone.lat], false, 600);
+    setTimeout(() => {
+      map.setZoom(Math.max(map.getZoom(), 16), false, 600);
+      map.setPitch(50, false, 400);
+    }, 100);
   }, [locateDroneCounter, locateDroneId, drones]);
 
-  // Follow mode: continuously track a specific drone's position
+  // Follow mode: continuously track a specific drone's position.
+  // Only moves center - does NOT lock pitch/zoom/rotation so user can
+  // freely adjust viewing angle while following.
   useEffect(() => {
     if (!followDroneId || !mapRef.current) return;
     const drone = drones.find(d => d.uavId === followDroneId);
     if (!drone || drone.lat == null || drone.lng == null) return;
 
-    mapRef.current.setCenter([drone.lng, drone.lat], false, 300);
+    // panBy or setCenter with short animation - keeps map responsive
+    // Using immediate=true avoids animation queue buildup that can lock the map
+    mapRef.current.setCenter([drone.lng, drone.lat], true);
   }, [followDroneId, drones]);
 
   return (
