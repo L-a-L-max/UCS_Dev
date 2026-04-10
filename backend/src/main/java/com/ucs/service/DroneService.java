@@ -3,7 +3,10 @@ package com.ucs.service;
 import com.ucs.dto.DroneStatusDTO;
 import com.ucs.dto.HeatmapPointDTO;
 import com.ucs.entity.*;
+import com.ucs.kafka.CommandKafkaProducer;
 import com.ucs.repository.*;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -11,8 +14,10 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 public class DroneService {
     
@@ -23,6 +28,10 @@ public class DroneService {
     private final UserRepository userRepository;
     private final CommandLogRepository commandLogRepository;
     private final EventLogRepository eventLogRepository;
+
+    /** Kafka 指令生产者（可选，Kafka 未启用时为 null） */
+    @Autowired(required = false)
+    private CommandKafkaProducer commandKafkaProducer;
     
     public DroneService(DroneRepository droneRepository,
                         DroneStatusRepository droneStatusRepository,
@@ -71,12 +80,16 @@ public class DroneService {
         
         Map<Long, String> ownerMap = getOwnerMap(droneIds);
         
+        // Build control owner name map: droneId -> actual controller's realName
+        Map<Long, String> controlOwnerMap = getControlOwnerMap(droneIds);
+        
         return drones.stream().map(drone -> {
             DroneStatusDTO dto = new DroneStatusDTO();
-            dto.setUavId("UAV_" + String.format("%03d", drone.getId()));
+            dto.setUavId(drone.getUavId() != null ? drone.getUavId() : "UNKNOWN_" + drone.getId());
             dto.setDroneSn(drone.getDroneSn());
             dto.setModel(drone.getModel());
             dto.setOwner(ownerMap.get(drone.getId()));
+            dto.setControlOwnerName(controlOwnerMap.get(drone.getId()));
             
             DroneStatus status = statusMap.get(drone.getId());
             if (status != null) {
@@ -105,6 +118,25 @@ public class DroneService {
                                         .map(User::getRealName)
                                         .orElse("Unknown"))
                                 .orElse("Unassigned")
+                ));
+    }
+
+    /**
+     * Build a map of droneId -> actual control owner's realName.
+     * Uses DroneOwnership (active record) to find who currently controls each drone.
+     */
+    private Map<Long, String> getControlOwnerMap(List<Long> droneIds) {
+        return droneIds.stream()
+                .collect(Collectors.toMap(
+                        id -> id,
+                        id -> droneOwnershipRepository.findActiveByDroneId(id)
+                                .map(ownership -> {
+                                    Long userId = ownership.getUserId();
+                                    return userRepository.findById(userId)
+                                            .map(u -> u.getRealName() != null ? u.getRealName() : u.getUsername())
+                                            .orElse("未知用户");
+                                })
+                                .orElse("未分配")
                 ));
     }
     
@@ -138,7 +170,12 @@ public class DroneService {
         
         return statuses.stream()
                 .filter(status -> matchesFilter(status, filterType))
-                .map(status -> "UAV_" + String.format("%03d", status.getDroneId()))
+                .map(status -> {
+                    // Use actual uavId from drone entity instead of generated name
+                    return droneRepository.findById(status.getDroneId())
+                            .map(d -> d.getUavId() != null ? d.getUavId() : "UNKNOWN_" + d.getId())
+                            .orElse("UNKNOWN_" + status.getDroneId());
+                })
                 .collect(Collectors.toList());
     }
     
@@ -156,13 +193,35 @@ public class DroneService {
         Drone drone = droneRepository.findById(droneId)
                 .orElseThrow(() -> new RuntimeException("Drone not found"));
         
-        CommandLog log = new CommandLog();
-        log.setDroneId(droneId);
-        log.setUserId(userId);
-        log.setCommandType(commandType);
-        log.setPayload(payload);
-        log.setStatus("ACCEPTED");
-        commandLogRepository.save(log);
+        CommandLog cmdLog = new CommandLog();
+        cmdLog.setDroneId(droneId);
+        cmdLog.setUserId(userId);
+        cmdLog.setCommandType(commandType);
+        cmdLog.setPayload(payload);
+        cmdLog.setStatus("PENDING");
+        commandLogRepository.save(cmdLog);
+        
+        // [Phase 1] Publish command to Kafka commands.down topic
+        String uavId = drone.getUavId() != null ? drone.getUavId() : "UNKNOWN_" + droneId;
+        if (commandKafkaProducer != null) {
+            try {
+                commandKafkaProducer.sendCommand(uavId, commandType, payload, userId, cmdLog.getId());
+                cmdLog.setStatus("SENT");
+                commandLogRepository.save(cmdLog);
+                log.info("[DroneService] Command {} -> {} sent via Kafka (cmdLogId={})",
+                        commandType, uavId, cmdLog.getId());
+            } catch (Exception e) {
+                cmdLog.setStatus("KAFKA_SEND_FAILED");
+                commandLogRepository.save(cmdLog);
+                log.warn("[DroneService] Kafka send failed for {} -> {}: {}",
+                        commandType, uavId, e.getMessage());
+            }
+        } else {
+            cmdLog.setStatus("ACCEPTED");
+            commandLogRepository.save(cmdLog);
+            log.info("[DroneService] Kafka not available, command {} -> {} logged only",
+                    commandType, uavId);
+        }
         
         EventLog event = new EventLog();
         event.setEventType("COMMAND_SENT");
@@ -172,7 +231,7 @@ public class DroneService {
         event.setMessage("Command " + commandType + " sent to drone " + drone.getDroneSn());
         eventLogRepository.save(event);
         
-        return "CMD_" + log.getId();
+        return "CMD_" + cmdLog.getId();
     }
     
     @Transactional
@@ -207,6 +266,12 @@ public class DroneService {
     }
     
     public Long parseDroneId(String uavId) {
+        // First try to find by uavId (DDS identifier like "px4_1")
+        Optional<Drone> droneOpt = droneRepository.findByUavId(uavId);
+        if (droneOpt.isPresent()) {
+            return droneOpt.get().getId();
+        }
+        // Legacy fallback: "UAV_001" format
         if (uavId.startsWith("UAV_")) {
             return Long.parseLong(uavId.substring(4));
         }

@@ -1,7 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -11,7 +10,6 @@ import {
   ClipboardList, 
   Cloud, 
   AlertTriangle,
-  Battery,
   Activity,
   RefreshCw,
   LogIn,
@@ -31,362 +29,31 @@ import {
   ChevronUp,
   Navigation
 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import './App.css';
-import { useTelemetryWebSocket, TelemetryBatch } from './hooks/useTelemetryWebSocket';
+import { useTelemetryWebSocket, TelemetryBatch, type PartitionTelemetryMessage } from './hooks/useTelemetryWebSocket';
+import PilotView from './pages/PilotView';
+import CommanderView from './pages/CommanderView';
+import LeaderView from './pages/LeaderView';
+import { ParticleBackground } from './components/ui/ParticleBackground';
+import { ScanlineOverlay } from './components/ui/ScanlineOverlay';
+import { GlassPanel } from './components/ui/GlassPanel';
+import { NeonButton } from './components/ui/NeonButton';
+import { NeonBadge } from './components/ui/NeonBadge';
+import { ConnectionStatus } from './components/ui/ConnectionStatus';
+import { DroneStatusPie } from './components/charts/DroneStatusPie';
+import { BatteryGauge } from './components/charts/BatteryGauge';
+import { useWebSocketResilience } from './hooks/useWebSocketResilience';
+import { useEpochAwareness } from './hooks/useEpochAwareness';
+import { zhCN } from './constants/zhCN';
+import { CHINA_REGIONS } from './constants/regions';
+import { TEAM_COLORS, TILE_SOURCES, REFRESH_INTERVALS, API_BASE, POPUP_DEFAULT_TIMEOUT, POPUP_WATCHDOG_INTERVAL, type TileSourceKey } from './constants/appConfig';
+import type { DroneStatus, TaskSummary, TeamInfo, TeamMember, Weather, Event, HeatmapLayerType, FlightStatusType, ChartType, RegionData } from './types/observer';
 
-// Popup auto-close timing constants (watchdog mechanism)
-const POPUP_DEFAULT_TIMEOUT = 6000; // 6 seconds default
-const POPUP_WATCHDOG_INTERVAL = 3000; // Check every 3 seconds (half of default)
+// Types and constants imported from shared modules
+// See: constants/zhCN.ts, constants/appConfig.ts, constants/regions.ts, types/observer.ts
 
-
-// Team colors for member markers
-const TEAM_COLORS = [
-  '#3b82f6', // blue
-  '#22c55e', // green
-  '#f59e0b', // amber
-  '#ef4444', // red
-  '#8b5cf6', // purple
-  '#06b6d4', // cyan
-];
-
-const getApiBase = () => {
-  if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
-  }
-  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-    return `${window.location.protocol}//${window.location.hostname}:8080`;
-  }
-  return 'http://localhost:8080';
-};
-
-const API_BASE = getApiBase();
-
-// Chinese localization dictionary
-const zhCN = {
-  // Login page
-  platformTitle: '无人机综合业务平台',
-  username: '用户名',
-  password: '密码',
-  login: '登录',
-  loginHint: '观察员账号: observer / 123456',
-  loginFailed: '登录失败',
-  connectionFailed: '连接失败',
-  observerOnly: '仅观察员角色可访问大屏',
-  accessDenied: '访问被拒绝：需要观察员角色',
-  
-  // Header
-  dashboardTitle: '无人机综合业务平台',
-  refresh: '刷新',
-  logout: '退出',
-  
-  // Task card
-  tasks: '任务态势',
-  total: '总计',
-  active: '执行中',
-  done: '已完成',
-  error: '异常',
-  pending: '待执行',
-  
-  // Weather card
-  weather: '天气信息',
-  location: '位置',
-  defaultLocation: '(默认)',
-  temperature: '温度',
-  humidity: '湿度',
-  wind: '风速',
-  risk: '飞行风险',
-  riskLow: '低',
-  riskMedium: '中',
-  riskHigh: '高',
-  
-  // Teams card
-  teams: '任务小队',
-  leader: '队长',
-  
-  // Stats card
-  stats: '实时统计',
-  flying: '飞行中',
-  totalUavs: '无人机总数',
-  lowBattery: '低电量',
-  errors: '异常状态',
-  
-  // Map controls
-  heatmapMode: '热力图',
-  heatmapDrone: '无人机',
-  heatmapTask: '任务',
-  heatmapMember: '成员',
-  myLocation: '我的位置',
-  focusUavs: '聚焦无人机',
-  showWeather: '天气信息',
-  
-  // Map legend
-  flightStatusFilter: '飞行状态',
-  flyingStatus: '飞行中',
-  idleStatus: '待机',
-  clickForDetails: '点击标记查看详情',
-  
-  // UAV list
-  uavList: '无人机列表',
-  
-  // Events
-  events: '事件日志',
-  noEvents: '暂无事件',
-  
-  // Footer
-  footerInfo: 'UCS 平台 v1.2',
-  locationInfo: '当前位置',
-  
-  // Drone popup
-  model: '型号',
-  battery: '电量',
-  altitude: '高度',
-  status: '状态',
-  operator: '操作员',
-  task: '当前任务',
-  team: '所属小队',
-  position: '位置',
-  noTask: '无任务',
-  
-  // Map error
-  mapLoadFailed: '地图加载失败',
-  mapErrorHint: '请检查网络连接或尝试切换地图源',
-  webglNotSupported: '您的浏览器不支持 WebGL，无法显示地图',
-  tileLoadFailed: '地图瓦片加载失败',
-  networkError: '网络连接异常',
-  tryRefresh: '请尝试刷新页面',
-  apiKeyNotConfigured: '高德地图 API 密钥未配置',
-  apiKeyConfigHint: '请设置环境变量后重启后端服务',
-  backendNotReachable: '无法连接后端服务',
-  checkBackendHint: '请确保后端服务已启动 (端口 8080)',
-  
-  // Tile source selector
-  tileSource: '地图源',
-  tileSourceGaode: '高德地图',
-  tileSourceOSM: 'OpenStreetMap',
-  tileSourceCarto: 'CartoDB',
-  
-  // Chart types
-  chartList: '列表',
-  chartPie: '饼图',
-  chartBar: '柱状图',
-  
-  // Sidebar
-  collapseSidebar: '收起侧边栏',
-  expandSidebar: '展开侧边栏',
-  
-  // Team members
-  teamMembers: '队员',
-  memberName: '姓名',
-  memberRole: '角色',
-  locating: '定位中...',
-  
-  // Team visibility filter
-  teamMemberFilter: '小队成员显示',
-  
-  // Chart view types
-  listView: '列表',
-  pieChart: '饼图',
-  barChart: '柱状图',
-  
-  // Location error
-  locationFailed: '无法获取您的位置',
-  locationDenied: '定位权限被拒绝，请在浏览器设置中允许定位',
-  locationUnsupported: '您的浏览器不支持定位功能',
-  retryLocation: '重新获取',
-};
-
-// Map tile source configurations
-type TileSourceKey = 'gaode' | 'osm' | 'carto';
-
-interface TileSourceConfig {
-  name: string;
-  tiles: string[];
-  attribution: string;
-}
-
-// Gaode (高德) Map - uses backend proxy to handle API key and security key
-const TILE_SOURCES: Record<TileSourceKey, TileSourceConfig> = {
-  gaode: {
-    name: '高德地图',
-    tiles: [
-      // Use backend proxy for Gaode tiles (handles API key + security key)
-      `${API_BASE}/api/v1/map/tiles/{z}/{x}/{y}.png?style=7`
-    ],
-    attribution: '&copy; <a href="https://www.amap.com/">高德地图</a>'
-  },
-  osm: {
-    name: 'OpenStreetMap',
-    tiles: [
-      'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
-    ],
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-  },
-  carto: {
-    name: 'CartoDB',
-    tiles: [
-      'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
-      'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
-      'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png'
-    ],
-    attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-  }
-};
-
-// Heatmap layer types for multi-select
-type HeatmapLayerType = 'drone' | 'task' | 'member';
-type FlightStatusType = 'flying' | 'idle';
-type ChartType = 'list' | 'pie' | 'bar';
-
-// Data refresh intervals (in milliseconds)
-const REFRESH_INTERVALS = {
-  drone: 2000,      // 2 seconds - highest frequency for real-time UAV data
-  weather: 30000,   // 30 seconds - weather changes slowly
-  team: 10000,      // 10 seconds - team/member data
-  task: 5000,       // 5 seconds - task status
-  event: 5000,      // 5 seconds - event logs
-};
-
-// China administrative regions data with center coordinates and zoom levels
-interface RegionData {
-  name: string;
-  center: [number, number]; // [lng, lat]
-  zoom: number;
-  children?: Record<string, RegionData>;
-}
-
-const CHINA_REGIONS: Record<string, RegionData> = {
-  '中国': {
-    name: '中国',
-    center: [105, 35],
-    zoom: 3,
-    children: {
-      '北京市': { name: '北京市', center: [116.4074, 39.9042], zoom: 8 },
-      '上海市': { name: '上海市', center: [121.4737, 31.2304], zoom: 8 },
-      '天津市': { name: '天津市', center: [117.1901, 39.1256], zoom: 8 },
-      '重庆市': { name: '重庆市', center: [106.5516, 29.5630], zoom: 6 },
-      '河北省': { name: '河北省', center: [114.5149, 38.0428], zoom: 5, children: {
-        '石家庄市': { name: '石家庄市', center: [114.5149, 38.0428], zoom: 8 },
-        '唐山市': { name: '唐山市', center: [118.1802, 39.6306], zoom: 8 },
-        '保定市': { name: '保定市', center: [115.4646, 38.8737], zoom: 8 },
-      }},
-      '山西省': { name: '山西省', center: [112.5489, 37.8706], zoom: 5, children: {
-        '太原市': { name: '太原市', center: [112.5489, 37.8706], zoom: 8 },
-        '大同市': { name: '大同市', center: [113.2951, 40.0903], zoom: 8 },
-      }},
-      '内蒙古': { name: '内蒙古自治区', center: [111.7656, 40.8175], zoom: 4 },
-      '辽宁省': { name: '辽宁省', center: [123.4291, 41.7968], zoom: 5, children: {
-        '沈阳市': { name: '沈阳市', center: [123.4291, 41.7968], zoom: 8 },
-        '大连市': { name: '大连市', center: [121.6147, 38.9140], zoom: 8 },
-      }},
-      '吉林省': { name: '吉林省', center: [125.3245, 43.8868], zoom: 5 },
-      '黑龙江省': { name: '黑龙江省', center: [126.6424, 45.7570], zoom: 4 },
-      '江苏省': { name: '江苏省', center: [118.7969, 32.0603], zoom: 5, children: {
-        '南京市': { name: '南京市', center: [118.7969, 32.0603], zoom: 8 },
-        '苏州市': { name: '苏州市', center: [120.6195, 31.2990], zoom: 8 },
-        '无锡市': { name: '无锡市', center: [120.3119, 31.4912], zoom: 8 },
-      }},
-      '浙江省': { name: '浙江省', center: [120.1536, 30.2875], zoom: 5, children: {
-        '杭州市': { name: '杭州市', center: [120.1536, 30.2875], zoom: 8 },
-        '宁波市': { name: '宁波市', center: [121.5440, 29.8683], zoom: 8 },
-        '温州市': { name: '温州市', center: [120.6994, 28.0003], zoom: 8 },
-      }},
-      '安徽省': { name: '安徽省', center: [117.2830, 31.8612], zoom: 5 },
-      '福建省': { name: '福建省', center: [119.2965, 26.0789], zoom: 5 },
-      '江西省': { name: '江西省', center: [115.8922, 28.6765], zoom: 5 },
-      '山东省': { name: '山东省', center: [117.0009, 36.6758], zoom: 5, children: {
-        '济南市': { name: '济南市', center: [117.0009, 36.6758], zoom: 8 },
-        '青岛市': { name: '青岛市', center: [120.3826, 36.0671], zoom: 8 },
-      }},
-      '河南省': { name: '河南省', center: [113.6254, 34.7466], zoom: 5 },
-      '湖北省': { name: '湖北省', center: [114.3055, 30.5928], zoom: 5, children: {
-        '武汉市': { name: '武汉市', center: [114.3055, 30.5928], zoom: 8 },
-      }},
-      '湖南省': { name: '湖南省', center: [112.9823, 28.1941], zoom: 5 },
-      '广东省': { name: '广东省', center: [113.2644, 23.1291], zoom: 5, children: {
-        '广州市': { name: '广州市', center: [113.2644, 23.1291], zoom: 8 },
-        '深圳市': { name: '深圳市', center: [114.0579, 22.5431], zoom: 8 },
-        '东莞市': { name: '东莞市', center: [113.7518, 23.0207], zoom: 8 },
-      }},
-      '广西': { name: '广西壮族自治区', center: [108.3200, 22.8240], zoom: 5 },
-      '海南省': { name: '海南省', center: [110.3312, 20.0310], zoom: 6 },
-      '四川省': { name: '四川省', center: [104.0657, 30.6595], zoom: 5, children: {
-        '成都市': { name: '成都市', center: [104.0657, 30.6595], zoom: 8 },
-      }},
-      '贵州省': { name: '贵州省', center: [106.7135, 26.5783], zoom: 5 },
-      '云南省': { name: '云南省', center: [102.7123, 25.0406], zoom: 5 },
-      '西藏': { name: '西藏自治区', center: [91.1322, 29.6604], zoom: 4 },
-      '陕西省': { name: '陕西省', center: [108.9540, 34.2658], zoom: 5, children: {
-        '西安市': { name: '西安市', center: [108.9540, 34.2658], zoom: 8 },
-      }},
-      '甘肃省': { name: '甘肃省', center: [103.8236, 36.0594], zoom: 5 },
-      '青海省': { name: '青海省', center: [101.7782, 36.6171], zoom: 5 },
-      '宁夏': { name: '宁夏回族自治区', center: [106.2782, 38.4664], zoom: 5 },
-      '新疆': { name: '新疆维吾尔自治区', center: [87.6177, 43.7928], zoom: 4 },
-      '香港': { name: '香港特别行政区', center: [114.1694, 22.3193], zoom: 9 },
-      '澳门': { name: '澳门特别行政区', center: [113.5439, 22.1987], zoom: 11 },
-      '台湾省': { name: '台湾省', center: [121.5654, 25.0330], zoom: 6 },
-    }
-  }
-};
-
-interface DroneStatus {
-  uavId: string;
-  droneSn: string;
-  lat: number;
-  lng: number;
-  altitude: number;
-  battery: number;
-  hardwareStatus: string;
-  flightStatus: string;
-  taskStatus: string;
-  color: string;
-  model: string;
-  owner: string;
-  currentTask?: string;
-  teamName?: string;
-}
-
-interface TaskSummary {
-  total: number;
-  executing: number;
-  completed: number;
-  abnormal: number;
-  pending: number;
-}
-
-interface TeamInfo {
-  teamId: string;
-  teamName: string;
-  leader: string;
-  memberCount: number;
-}
-
-interface TeamMember {
-  userId: string;
-  username: string;
-  realName: string;
-  role: string;
-  teamId: string;
-  lat?: number;
-  lng?: number;
-}
-
-interface Weather {
-  temperature: number;
-  humidity: number;
-  windSpeed: number;
-  windDirection: number;
-  riskLevel: string;
-  location: string;
-}
-
-interface Event {
-  eventType: string;
-  uavId: string;
-  level: string;
-  time: string;
-  message: string;
-}
+// Types imported from @/types/observer
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -394,7 +61,8 @@ function App() {
   const [password, setPassword] = useState('');
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
-  const [_userRoles, setUserRoles] = useState<string[]>([]);
+  const [userRoles, setUserRoles] = useState<string[]>([]);
+  const [userPartitions, setUserPartitions] = useState<string[]>([]);
   
   const [drones, setDrones] = useState<DroneStatus[]>([]);
   const [taskSummary, setTaskSummary] = useState<TaskSummary | null>(null);
@@ -495,15 +163,15 @@ function App() {
       const data = await response.json();
       if (data.code === 0) {
         const roles = data.data.roles || [];
-        if (!roles.includes('OBSERVER') && !roles.includes('observer')) {
-          setError(zhCN.observerOnly);
-          return;
-        }
+        const partitions = data.data.partitions || [];
         setToken(data.data.token);
         setUserRoles(roles);
+        setUserPartitions(partitions);
         setIsLoggedIn(true);
         localStorage.setItem('token', data.data.token);
         localStorage.setItem('roles', JSON.stringify(roles));
+        localStorage.setItem('username', username);
+        localStorage.setItem('partitions', JSON.stringify(partitions));
       } else {
         setError(data.msg || zhCN.loginFailed);
       }
@@ -700,11 +368,106 @@ function App() {
     });
   }, [useLiveTelemetry]);
 
-  // WebSocket hook for real-time telemetry
+  // Phase 5: WebSocket resilience - exponential backoff + epoch awareness
+  const wsResilience = useWebSocketResilience({
+    maxRetries: 10,
+    initialDelay: 1000,
+    maxDelay: 30000,
+    onStateChange: (state) => {
+      if (state === 'connected') setWsConnected(true);
+      else if (state === 'failed') setWsConnected(false);
+    },
+  });
+  const epochAwareness = useEpochAwareness({
+    staleDuration: 10000,
+    onEpochChange: (_old, _new) => {
+      // Epoch changed - data may be stale, trigger a full data refresh
+      fetchAllData();
+    },
+  });
+
+  // WebSocket hook for real-time telemetry (only for OBSERVER role - other roles use their own view-level WS)
+  const isObserverRole = !userRoles.some(r => ['COMMANDER', 'LEADER', 'PILOT', 'OPERATOR'].includes(r.toUpperCase()));
+
+  // Handler for partition-based telemetry data (used by Observer to receive drone data)
+  const handlePartitionData = useCallback((data: PartitionTelemetryMessage) => {
+    if (!data.drones || data.drones.length === 0) return;
+    setDrones(prevDrones => {
+      const updatedDrones = [...prevDrones];
+      let hasChanges = false;
+      data.drones.forEach(uav => {
+        const existingIndex = updatedDrones.findIndex(d => d.uavId === uav.uavId);
+        if (existingIndex >= 0) {
+          const existing = updatedDrones[existingIndex];
+          if (existing.lat !== uav.lat || existing.lng !== uav.lon || existing.altitude !== uav.alt) {
+            hasChanges = true;
+            updatedDrones[existingIndex] = {
+              ...existing,
+              lat: uav.lat,
+              lng: uav.lon,
+              altitude: uav.alt,
+              heading: uav.heading,
+              onlineStatus: true,
+              armed: uav.armed ?? uav.isActive ?? false,
+              flightStatus: (uav.armed ?? uav.isActive) ? 'FLYING' : 'IDLE',
+              battery: (uav.batteryPercent != null && uav.batteryPercent >= 0) ? uav.batteryPercent : existing.battery,
+            };
+          }
+        } else {
+          hasChanges = true;
+          updatedDrones.push({
+            uavId: uav.uavId,
+            uavName: uav.uavName || uav.uavId,
+            lat: uav.lat,
+            lng: uav.lon,
+            altitude: uav.alt,
+            heading: uav.heading,
+            groundSpeed: uav.groundSpeed || 0,
+            battery: uav.batteryPercent ?? 100,
+            signalStrength: 100,
+            onlineStatus: true,
+            armed: uav.armed ?? uav.isActive ?? false,
+            hardwareStatus: 'NORMAL',
+            flightStatus: (uav.armed ?? uav.isActive) ? 'FLYING' : 'IDLE',
+            taskStatus: (uav.armed ?? uav.isActive) ? 'EXECUTING' : 'IDLE',
+            color: '#22c55e',
+            model: 'DJI Mavic 3',
+            owner: 'System',
+            teamName: 'Alpha',
+          });
+        }
+      });
+      if (hasChanges) {
+        updatedDrones.sort((a, b) => a.uavId.localeCompare(b.uavId));
+        return updatedDrones;
+      }
+      return prevDrones;
+    });
+  }, []);
+
+  // Handler for drone removal notifications
+  const handleDroneRemoved = useCallback((removedUavIds: string[]) => {
+    setDrones(prev => prev.filter(d => !removedUavIds.includes(d.uavId)));
+  }, []);
+
   const { connected: _telemetryConnected } = useTelemetryWebSocket({
-    enabled: isLoggedIn && useLiveTelemetry,
-    onTelemetryReceived: handleTelemetryReceived,
-    onConnectionChange: setWsConnected,
+    enabled: isLoggedIn && useLiveTelemetry && isObserverRole,
+    partitions: userPartitions,  // Subscribe to partition-specific topics for Observer
+    onTelemetryReceived: (batch) => {
+      handleTelemetryReceived(batch);
+      // Record successful connection for resilience tracking
+      wsResilience.recordSuccess();
+    },
+    onPartitionDataReceived: handlePartitionData,
+    onDroneRemoved: handleDroneRemoved,
+    onConnectionChange: (connected) => {
+      setWsConnected(connected);
+      if (connected) {
+        wsResilience.recordSuccess();
+      } else {
+        wsResilience.recordFailure();
+      }
+    },
   });
 
   const getCurrentLocation = (flyToLocation = true) => {
@@ -1746,12 +1509,16 @@ function App() {
   useEffect(() => {
     const savedToken = localStorage.getItem('token');
     const savedRoles = localStorage.getItem('roles');
+    const savedUsername = localStorage.getItem('username');
+    const savedPartitions = localStorage.getItem('partitions');
     if (savedToken && savedRoles) {
       const roles = JSON.parse(savedRoles);
-      if (roles.includes('OBSERVER') || roles.includes('observer')) {
-        setToken(savedToken);
-        setUserRoles(roles);
-        setIsLoggedIn(true);
+      setToken(savedToken);
+      setUserRoles(roles);
+      setIsLoggedIn(true);
+      if (savedUsername) setUsername(savedUsername);
+      if (savedPartitions) {
+        try { setUserPartitions(JSON.parse(savedPartitions)); } catch { /* ignore */ }
       }
     }
     // Pre-warm geolocation to avoid cold-start delay
@@ -1871,90 +1638,177 @@ function App() {
               };
             }, [trackingDroneId]);
 
-    if (!isLoggedIn) {
+    // Logout handler shared across all views
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('roles');
+    localStorage.removeItem('username');
+    localStorage.removeItem('partitions');
+    setUserPartitions([]);
+    setIsLoggedIn(false);
+    setToken('');
+    setUserRoles([]);
+    setUsername('');
+    setPassword('');
+  }, []);
+
+  // Determine user's primary role for routing
+  const getPrimaryRole = (): string => {
+    const rolesPriority = ['COMMANDER', 'LEADER', 'PILOT', 'OBSERVER'];
+    const normalizedRoles = userRoles.map(r => r.toUpperCase());
+    for (const role of rolesPriority) {
+      if (normalizedRoles.includes(role)) return role;
+    }
+    // Fallback: check for operator role (maps to pilot view)
+    if (normalizedRoles.includes('OPERATOR')) return 'PILOT';
+    return 'OBSERVER';
+  };
+
+  if (!isLoggedIn) {
     return (
-      <div className="min-h-screen login-bg flex items-center justify-center">
-        {/* Sci-fi background effects */}
-        <div className="login-particles"></div>
-        <div className="hud-corner hud-corner-tl"></div>
-        <div className="hud-corner hud-corner-tr"></div>
-        <div className="hud-corner hud-corner-bl"></div>
-        <div className="hud-corner hud-corner-br"></div>
-        <div className="scan-line"></div>
-        
-        <Card className="w-96 login-card bg-slate-800/90 backdrop-blur-md border-slate-600 shadow-2xl shadow-blue-500/10 relative z-10">
-          <CardHeader className="pb-2">
-            <div className="flex justify-center mb-4">
-              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-500/30">
-                <Plane className="w-8 h-8 text-white" />
-              </div>
+      <div className="min-h-screen bg-dark-primary flex items-center justify-center relative overflow-hidden">
+        {/* Particle background */}
+        <ParticleBackground particleCount={80} color="0, 240, 255" maxSpeed={0.25} connectDistance={100} />
+        <ScanlineOverlay intensity="low" />
+
+        {/* HUD corner decorations */}
+        <div className="absolute top-4 left-4 w-16 h-16 border-t-2 border-l-2 border-neon-cyan/30 rounded-tl-lg" />
+        <div className="absolute top-4 right-4 w-16 h-16 border-t-2 border-r-2 border-neon-cyan/30 rounded-tr-lg" />
+        <div className="absolute bottom-4 left-4 w-16 h-16 border-b-2 border-l-2 border-neon-cyan/30 rounded-bl-lg" />
+        <div className="absolute bottom-4 right-4 w-16 h-16 border-b-2 border-r-2 border-neon-cyan/30 rounded-br-lg" />
+
+        <motion.div
+          initial={{ opacity: 0, y: 20, scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.5, ease: 'easeOut' }}
+          className="relative z-10 w-96"
+        >
+          <GlassPanel variant="neon" glow="cyan" className="p-8" animated={false}>
+            <div className="flex justify-center mb-6">
+              <motion.div
+                animate={{ boxShadow: ['0 0 20px rgba(0,240,255,0.3)', '0 0 40px rgba(0,240,255,0.5)', '0 0 20px rgba(0,240,255,0.3)'] }}
+                transition={{ duration: 3, repeat: Infinity }}
+                className="w-16 h-16 rounded-full bg-gradient-to-br from-neon-cyan/20 to-neon-purple/20 border border-neon-cyan/40 flex items-center justify-center"
+              >
+                <Plane className="w-8 h-8 text-neon-cyan" />
+              </motion.div>
             </div>
-            <CardTitle className="text-white text-center text-xl">
-              {zhCN.platformTitle}
-            </CardTitle>
-            <p className="text-slate-400 text-xs text-center mt-1">UAV Integrated Control System</p>
-          </CardHeader>
-          <CardContent className="space-y-4 pt-2">
-            <Input placeholder={zhCN.username} value={username} onChange={(e) => setUsername(e.target.value)} className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-400" />
-            <Input type="password" placeholder={zhCN.password} value={password} onChange={(e) => setPassword(e.target.value)} className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-400" onKeyPress={(e) => e.key === 'Enter' && handleLogin()} />
-            {error && <p className="text-red-400 text-sm">{error}</p>}
-            <Button onClick={handleLogin} className="w-full bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 shadow-lg shadow-blue-500/20">
-              <LogIn className="w-4 h-4 mr-2" />{zhCN.login}
-            </Button>
-            <p className="text-slate-400 text-xs text-center">{zhCN.loginHint}</p>
-          </CardContent>
-        </Card>
+            <h1 className="text-white text-center text-xl font-bold mb-1">{zhCN.platformTitle}</h1>
+            <p className="text-slate-400 text-xs text-center mb-6 font-mono">UAV Integrated Control System</p>
+
+            <div className="space-y-4">
+              <Input
+                placeholder={zhCN.username}
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="bg-[rgba(13,21,38,0.6)] border-[rgba(0,240,255,0.15)] text-white placeholder:text-slate-500 focus:border-neon-cyan/40 focus:ring-neon-cyan/20 transition-all"
+              />
+              <Input
+                type="password"
+                placeholder={zhCN.password}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="bg-[rgba(13,21,38,0.6)] border-[rgba(0,240,255,0.15)] text-white placeholder:text-slate-500 focus:border-neon-cyan/40 focus:ring-neon-cyan/20 transition-all"
+                onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
+              />
+              <AnimatePresence>
+                {error && (
+                  <motion.p
+                    initial={{ opacity: 0, y: -5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="text-neon-red text-sm"
+                  >
+                    {error}
+                  </motion.p>
+                )}
+              </AnimatePresence>
+              <NeonButton variant="cyan" size="lg" className="w-full" onClick={handleLogin} glow>
+                <LogIn className="w-4 h-4 mr-2" />{zhCN.login}
+              </NeonButton>
+              <p className="text-slate-500 text-xs text-center">{zhCN.loginHint}</p>
+            </div>
+          </GlassPanel>
+        </motion.div>
       </div>
     );
   }
 
+  // Role-based routing: non-observer roles get their dedicated views
+  const primaryRole = getPrimaryRole();
+  if (primaryRole === 'COMMANDER') {
+    return <CommanderView token={token} username={username} partitions={userPartitions} onLogout={handleLogout} />;
+  }
+  if (primaryRole === 'PILOT') {
+    return <PilotView token={token} username={username} partitions={userPartitions} onLogout={handleLogout} />;
+  }
+  if (primaryRole === 'LEADER') {
+    return <LeaderView token={token} username={username} partitions={userPartitions} onLogout={handleLogout} />;
+  }
+
+  // OBSERVER role (default): show the existing big screen dashboard
   return (
-    <div className="h-screen bg-slate-900 text-white flex flex-col overflow-hidden">
-      <header className="flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
+    <div className="h-screen bg-dark-primary text-white flex flex-col overflow-hidden relative">
+      <ScanlineOverlay intensity="low" />
+      <header className="relative z-10 flex justify-between items-center px-4 py-2 bg-[rgba(13,21,38,0.8)] backdrop-blur-md border-b border-[rgba(0,240,255,0.1)]">
         <h1 className="text-xl font-bold flex items-center gap-2">
-          <Plane className="w-6 h-6 text-blue-400" />
-          {zhCN.dashboardTitle}
+          <Plane className="w-6 h-6 text-neon-cyan" />
+          <span className="bg-gradient-to-r from-neon-cyan to-neon-aqua bg-clip-text text-transparent">{zhCN.dashboardTitle}</span>
         </h1>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchAllData} disabled={loading} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 hover:text-white">
-            <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />{zhCN.refresh}
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('roles'); setIsLoggedIn(false); setToken(''); }} className="bg-slate-700/50 backdrop-blur-sm border-slate-500/50 text-slate-100 hover:bg-slate-600/50 hover:text-white">{zhCN.logout}</Button>
+        <div className="flex items-center gap-3">
+          <ConnectionStatus state={wsResilience.connectionState} />
+          {epochAwareness.epochInfo.isStale && (
+            <NeonBadge variant="amber" className="animate-pulse text-[10px]">数据同步中...</NeonBadge>
+          )}
+          <NeonBadge variant="cyan">{username}</NeonBadge>
+          <NeonButton variant="ghost" size="sm" onClick={fetchAllData} disabled={loading}>
+            <RefreshCw className={`w-3.5 h-3.5 mr-1 ${loading ? 'animate-spin' : ''}`} />{zhCN.refresh}
+          </NeonButton>
+          <NeonButton variant="red" size="sm" onClick={handleLogout}>{zhCN.logout}</NeonButton>
         </div>
       </header>
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative z-[2]">
         {/* Left Sidebar */}
-        <div className={`sidebar-left ${leftSidebarCollapsed ? 'w-0 overflow-hidden collapsed' : 'w-64'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center justify-between text-white">
+        <AnimatePresence initial={false}>
+        {!leftSidebarCollapsed && (
+        <motion.div
+          key="left-sidebar"
+          initial={{ width: 0, opacity: 0 }}
+          animate={{ width: 256, opacity: 1 }}
+          exit={{ width: 0, opacity: 0 }}
+          transition={{ duration: 0.3, ease: 'easeInOut' }}
+          className="sidebar-left bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-r border-[rgba(0,240,255,0.08)] overflow-y-auto p-3 space-y-3"
+        >
+          <div className="glass-panel p-0">
+            <div className="py-2 px-3">
+              <div className="text-sm flex items-center justify-between text-white font-medium">
                 <div className="flex items-center gap-2">
-                  <ClipboardList className="w-4 h-4 text-blue-400" />{zhCN.tasks}
+                  <ClipboardList className="w-4 h-4 text-neon-cyan" />{zhCN.tasks}
                 </div>
                 <div className="flex gap-1">
                   <button onClick={() => setTaskChartType('list')} className={`p-1 rounded ${taskChartType === 'list' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.listView}><List className="w-3 h-3" /></button>
                   <button onClick={() => setTaskChartType('pie')} className={`p-1 rounded ${taskChartType === 'pie' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.pieChart}><PieChart className="w-3 h-3" /></button>
                   <button onClick={() => setTaskChartType('bar')} className={`p-1 rounded ${taskChartType === 'bar' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.barChart}><BarChart3 className="w-3 h-3" /></button>
                 </div>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
+              </div>
+            </div>
+            <div className="px-3 pb-3">
               {taskSummary && taskChartType === 'list' && (
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="bg-slate-600 p-2 rounded text-center">
-                    <div className="text-lg font-bold text-blue-400">{taskSummary.total}</div>
+                  <div className="bg-[rgba(0,240,255,0.05)] border border-[rgba(0,240,255,0.1)] p-2 rounded text-center">
+                    <div className="text-lg font-bold text-neon-cyan">{taskSummary.total}</div>
                     <div className="text-xs text-slate-400">{zhCN.total}</div>
                   </div>
-                  <div className="bg-slate-600 p-2 rounded text-center">
+                  <div className="bg-[rgba(34,197,94,0.08)] border border-[rgba(34,197,94,0.15)] p-2 rounded text-center">
                     <div className="text-lg font-bold text-green-400">{taskSummary.executing}</div>
                     <div className="text-xs text-slate-400">{zhCN.active}</div>
                   </div>
-                  <div className="bg-slate-600 p-2 rounded text-center">
+                  <div className="bg-[rgba(148,163,184,0.08)] border border-[rgba(148,163,184,0.15)] p-2 rounded text-center">
                     <div className="text-lg font-bold text-slate-300">{taskSummary.completed}</div>
                     <div className="text-xs text-slate-400">{zhCN.done}</div>
                   </div>
-                  <div className="bg-slate-600 p-2 rounded text-center">
+                  <div className="bg-[rgba(239,68,68,0.08)] border border-[rgba(239,68,68,0.15)] p-2 rounded text-center">
                     <div className="text-lg font-bold text-red-400">{taskSummary.abnormal}</div>
                     <div className="text-xs text-slate-400">{zhCN.error}</div>
                   </div>
@@ -1962,41 +1816,17 @@ function App() {
               )}
               {taskSummary && taskChartType === 'pie' && (
                 <div className="flex items-center justify-center py-2">
-                  <svg viewBox="0 0 100 100" className="w-32 h-32">
-                    {(() => {
-                      const total = taskSummary.executing + taskSummary.completed + taskSummary.abnormal;
-                      if (total === 0) return <circle cx="50" cy="50" r="40" fill="#475569" />;
-                      const executingAngle = (taskSummary.executing / total) * 360;
-                      const completedAngle = (taskSummary.completed / total) * 360;
-                      const abnormalAngle = (taskSummary.abnormal / total) * 360;
-                      let currentAngle = 0;
-                      const createArc = (angle: number, color: string) => {
-                        if (angle === 0) return null;
-                        const startAngle = currentAngle;
-                        const endAngle = currentAngle + angle;
-                        currentAngle = endAngle;
-                        const startRad = (startAngle - 90) * Math.PI / 180;
-                        const endRad = (endAngle - 90) * Math.PI / 180;
-                        const x1 = 50 + 40 * Math.cos(startRad);
-                        const y1 = 50 + 40 * Math.sin(startRad);
-                        const x2 = 50 + 40 * Math.cos(endRad);
-                        const y2 = 50 + 40 * Math.sin(endRad);
-                        const largeArc = angle > 180 ? 1 : 0;
-                        return <path d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`} fill={color} />;
-                      };
-                      return (
-                        <>
-                          {createArc(executingAngle, '#22c55e')}
-                          {createArc(completedAngle, '#94a3b8')}
-                          {createArc(abnormalAngle, '#ef4444')}
-                        </>
-                      );
-                    })()}
-                  </svg>
+                  <DroneStatusPie
+                    flying={taskSummary.executing}
+                    idle={taskSummary.completed}
+                    offline={0}
+                    lowBattery={taskSummary.abnormal}
+                    className="w-32 h-32"
+                  />
                   <div className="ml-3 space-y-1 text-xs">
-                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-green-500"></div>{zhCN.active}: {taskSummary.executing}</div>
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-[#00F0FF]"></div>{zhCN.active}: {taskSummary.executing}</div>
                     <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-slate-400"></div>{zhCN.done}: {taskSummary.completed}</div>
-                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-red-500"></div>{zhCN.error}: {taskSummary.abnormal}</div>
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-[#FF3B5C]"></div>{zhCN.error}: {taskSummary.abnormal}</div>
                   </div>
                 </div>
               )}
@@ -2032,16 +1862,16 @@ function App() {
                   })()}
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <Cloud className="w-4 h-4 text-blue-400" />{zhCN.weather}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
+          <div className="glass-panel p-0">
+            <div className="py-2 px-3">
+              <div className="text-sm flex items-center gap-2 text-white font-medium">
+                <Cloud className="w-4 h-4 text-neon-cyan" />{zhCN.weather}
+              </div>
+            </div>
+            <div className="px-3 pb-3">
               {weather && (
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between"><span className="text-slate-400">{zhCN.location}</span><span>{weather.location || '北京'}</span></div>
@@ -2055,23 +1885,23 @@ function App() {
                   </div>
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center justify-between text-white">
+          <div className="glass-panel p-0">
+            <div className="py-2 px-3">
+              <div className="text-sm flex items-center justify-between text-white font-medium">
                 <div className="flex items-center gap-2">
-                  <Activity className="w-4 h-4 text-blue-400" />{zhCN.stats}
+                  <Activity className="w-4 h-4 text-neon-purple" />{zhCN.stats}
                 </div>
                 <div className="flex gap-1">
                   <button onClick={() => setStatsChartType('list')} className={`p-1 rounded ${statsChartType === 'list' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.listView}><List className="w-3 h-3" /></button>
                   <button onClick={() => setStatsChartType('pie')} className={`p-1 rounded ${statsChartType === 'pie' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.pieChart}><PieChart className="w-3 h-3" /></button>
                   <button onClick={() => setStatsChartType('bar')} className={`p-1 rounded ${statsChartType === 'bar' ? 'bg-blue-600' : 'bg-slate-600 hover:bg-slate-500'}`} title={zhCN.barChart}><BarChart3 className="w-3 h-3" /></button>
                 </div>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
+              </div>
+            </div>
+            <div className="px-3 pb-3">
               {statsChartType === 'list' && (
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between"><span className="text-slate-400">{zhCN.flying}</span><span className="font-bold text-green-400">{drones.filter(d => d.flightStatus === 'FLYING').length}</span></div>
@@ -2082,49 +1912,16 @@ function App() {
               )}
               {statsChartType === 'pie' && (
                 <div className="flex items-center justify-center py-2">
-                  <svg viewBox="0 0 100 100" className="w-32 h-32">
-                    {(() => {
-                      const flyingCount = drones.filter(d => d.flightStatus === 'FLYING').length;
-                      const idleCount = drones.filter(d => d.flightStatus !== 'FLYING').length;
-                      const total = flyingCount + idleCount;
-                      if (total === 0) return <circle cx="50" cy="50" r="40" fill="#475569" />;
-                      
-                      // Handle 100% cases - when one category is 100%, draw a full circle
-                      if (flyingCount === total) {
-                        return <circle cx="50" cy="50" r="40" fill="#22c55e" />;
-                      }
-                      if (idleCount === total) {
-                        return <circle cx="50" cy="50" r="40" fill="#6b7280" />;
-                      }
-                      
-                      const flyingAngle = (flyingCount / total) * 360;
-                      const idleAngle = (idleCount / total) * 360;
-                      let currentAngle = 0;
-                      const createArc = (angle: number, color: string, key: string) => {
-                        if (angle === 0) return null;
-                        const startAngle = currentAngle;
-                        const endAngle = currentAngle + angle;
-                        currentAngle = endAngle;
-                        const startRad = (startAngle - 90) * Math.PI / 180;
-                        const endRad = (endAngle - 90) * Math.PI / 180;
-                        const x1 = 50 + 40 * Math.cos(startRad);
-                        const y1 = 50 + 40 * Math.sin(startRad);
-                        const x2 = 50 + 40 * Math.cos(endRad);
-                        const y2 = 50 + 40 * Math.sin(endRad);
-                        const largeArc = angle > 180 ? 1 : 0;
-                        return <path key={key} d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`} fill={color} />;
-                      };
-                      return (
-                        <>
-                          {createArc(flyingAngle, '#22c55e', 'flying')}
-                          {createArc(idleAngle, '#6b7280', 'idle')}
-                        </>
-                      );
-                    })()}
-                  </svg>
+                  <DroneStatusPie
+                    flying={drones.filter(d => d.flightStatus === 'FLYING').length}
+                    idle={drones.filter(d => d.flightStatus !== 'FLYING').length}
+                    offline={0}
+                    lowBattery={drones.filter(d => d.battery < 30).length}
+                    className="w-32 h-32"
+                  />
                   <div className="ml-3 space-y-1 text-xs">
-                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-green-500"></div>{zhCN.flying}: {drones.filter(d => d.flightStatus === 'FLYING').length}</div>
-                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-gray-500"></div>{zhCN.idleStatus}: {drones.filter(d => d.flightStatus !== 'FLYING').length}</div>
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-[#00F0FF]"></div>{zhCN.flying}: {drones.filter(d => d.flightStatus === 'FLYING').length}</div>
+                    <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-slate-400"></div>{zhCN.idleStatus}: {drones.filter(d => d.flightStatus !== 'FLYING').length}</div>
                   </div>
                 </div>
               )}
@@ -2170,14 +1967,16 @@ function App() {
                   })()}
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </div>
+            </div>
+          </div>
+        </motion.div>
+        )}
+        </AnimatePresence>
 
         {/* Left Sidebar Collapse Button - On Boundary Line */}
-        <div className="w-3 flex-shrink-0 relative bg-slate-700/30 flex items-center justify-center cursor-pointer hover:bg-slate-600/50 transition-colors" onClick={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)}>
+        <div className="w-3 flex-shrink-0 relative bg-[rgba(0,240,255,0.03)] flex items-center justify-center cursor-pointer hover:bg-[rgba(0,240,255,0.08)] transition-colors" onClick={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)}>
           <button
-            className="absolute z-20 bg-slate-700/90 hover:bg-slate-600 text-white p-1 rounded-full transition-all duration-300 shadow-lg backdrop-blur-sm border border-slate-600/50"
+            className="absolute z-20 bg-[rgba(13,21,38,0.9)] hover:bg-[rgba(0,240,255,0.15)] text-neon-cyan p-1 rounded-full transition-all duration-300 shadow-lg shadow-neon-cyan/10 backdrop-blur-sm border border-[rgba(0,240,255,0.2)]"
             title={leftSidebarCollapsed ? zhCN.expandSidebar : zhCN.collapseSidebar}
           >
             {leftSidebarCollapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronLeft className="w-3 h-3" />}
@@ -2569,9 +2368,9 @@ function App() {
         </div>
 
         {/* Right Sidebar Collapse Button - On Boundary Line */}
-        <div className="w-3 flex-shrink-0 relative bg-slate-700/30 flex items-center justify-center cursor-pointer hover:bg-slate-600/50 transition-colors" onClick={() => setRightSidebarCollapsed(!rightSidebarCollapsed)}>
+        <div className="w-3 flex-shrink-0 relative bg-[rgba(0,240,255,0.03)] flex items-center justify-center cursor-pointer hover:bg-[rgba(0,240,255,0.08)] transition-colors" onClick={() => setRightSidebarCollapsed(!rightSidebarCollapsed)}>
           <button
-            className="absolute z-20 bg-slate-700/90 hover:bg-slate-600 text-white p-1 rounded-full transition-all duration-300 shadow-lg backdrop-blur-sm border border-slate-600/50"
+            className="absolute z-20 bg-[rgba(13,21,38,0.9)] hover:bg-[rgba(0,240,255,0.15)] text-neon-cyan p-1 rounded-full transition-all duration-300 shadow-lg shadow-neon-cyan/10 backdrop-blur-sm border border-[rgba(0,240,255,0.2)]"
             title={rightSidebarCollapsed ? zhCN.expandSidebar : zhCN.collapseSidebar}
           >
             {rightSidebarCollapsed ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
@@ -2579,17 +2378,26 @@ function App() {
         </div>
 
         {/* Right Sidebar */}
-        <div className={`sidebar-right ${rightSidebarCollapsed ? 'w-0 overflow-hidden collapsed' : 'w-72'} bg-slate-800 overflow-y-auto p-3 space-y-3 transition-all duration-300`}>
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <Plane className="w-4 h-4 text-blue-400" />{zhCN.uavList}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
+        <AnimatePresence initial={false}>
+        {!rightSidebarCollapsed && (
+        <motion.div
+          key="right-sidebar"
+          initial={{ width: 0, opacity: 0 }}
+          animate={{ width: 288, opacity: 1 }}
+          exit={{ width: 0, opacity: 0 }}
+          transition={{ duration: 0.3, ease: 'easeInOut' }}
+          className="sidebar-right bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-l border-[rgba(0,240,255,0.08)] overflow-y-auto p-3 space-y-3"
+        >
+          <div className="glass-panel p-0">
+            <div className="py-2 px-3">
+              <div className="text-sm flex items-center gap-2 text-white font-medium">
+                <Plane className="w-4 h-4 text-neon-cyan" />{zhCN.uavList}
+              </div>
+            </div>
+            <div className="px-3 pb-3">
               <div ref={droneListScrollRef} className="space-y-2 max-h-64 overflow-y-auto">
                 {drones.map((drone) => (
-                  <div key={drone.uavId} className="bg-slate-600 p-2 rounded cursor-pointer hover:bg-slate-500 transition-colors" onClick={() => handleDroneListClick(drone)}>
+                  <div key={drone.uavId} className="bg-[rgba(13,21,38,0.5)] border border-[rgba(0,240,255,0.08)] p-2 rounded cursor-pointer hover:bg-[rgba(0,240,255,0.08)] hover:border-[rgba(0,240,255,0.2)] transition-all" onClick={() => handleDroneListClick(drone)}>
                     <div className="flex justify-between items-start">
                       <div>
                         <div className="font-mono text-xs font-bold">{drone.uavId}</div>
@@ -2600,29 +2408,32 @@ function App() {
                       </Badge>
                     </div>
                     <div className="flex justify-between mt-1 text-xs">
-                      {drone.battery != null && (
-                        <span className={`flex items-center gap-1 ${drone.battery > 50 ? 'text-green-400' : drone.battery > 20 ? 'text-yellow-400' : 'text-red-400'}`}>
-                          <Battery className="w-3 h-3" />{drone.battery?.toFixed(0)}%
-                        </span>
-                      )}
-                      <span className="text-slate-400">{drone.altitude?.toFixed(0)}m</span>
+                        {drone.battery != null && (
+                          <BatteryGauge percent={drone.battery} size="sm" />
+                        )}
+                        <span className="text-slate-400">{drone.altitude?.toFixed(0)}m</span>
                     </div>
                   </div>
                 ))}
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
           {/* Team List with Member Expansion - 暂时隐藏，等待后续对接数据库或订阅话题后再显示 */}
           {/* TODO: 当任务小队数据源确定后（数据库查询或话题订阅），取消注释以下组件 */}
 
-          <Card className="bg-slate-700 border-slate-600">
-            <CardHeader className="py-2 px-3">
-              <CardTitle className="text-sm flex items-center gap-2 text-white">
-                <AlertTriangle className="w-4 h-4 text-yellow-400" />{zhCN.events}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.15, duration: 0.3 }}
+            className="glass-panel p-0"
+          >
+            <div className="py-2 px-3">
+              <div className="text-sm flex items-center gap-2 text-white font-medium">
+                <AlertTriangle className="w-4 h-4 text-neon-amber" />{zhCN.events}
+              </div>
+            </div>
+            <div className="px-3 pb-3">
               <div className="space-y-2 max-h-48 overflow-y-auto">
                 {events.length === 0 ? (
                   <p className="text-slate-400 text-center py-2 text-xs">{zhCN.noEvents}</p>
@@ -2638,12 +2449,14 @@ function App() {
                   ))
                 )}
               </div>
-            </CardContent>
-          </Card>
-        </div>
+            </div>
+          </motion.div>
+        </motion.div>
+        )}
+        </AnimatePresence>
       </div>
 
-      <footer className="px-4 py-1 bg-slate-800 border-t border-slate-700 text-center text-slate-500 text-xs">
+      <footer className="relative z-10 px-4 py-1 bg-[rgba(13,21,38,0.8)] backdrop-blur-md border-t border-[rgba(0,240,255,0.1)] text-center text-slate-500 text-xs">
         {zhCN.footerInfo}
         {currentLocation && ` | ${zhCN.locationInfo}: ${currentLocation.lat.toFixed(4)}, ${currentLocation.lng.toFixed(4)}`}
       </footer>

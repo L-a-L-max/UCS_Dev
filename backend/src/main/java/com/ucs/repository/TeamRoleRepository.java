@@ -7,5 +7,5 @@ import java.util.List;
 
 @Repository
 public interface TeamRoleRepository extends JpaRepository<TeamRole, Long> {
-    List<TeamRole> findByTeamId(Long teamId);
+    java.util.Optional<TeamRole> findByRoleName(String roleName);
 }

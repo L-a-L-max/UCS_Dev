@@ -21,7 +21,7 @@ public class CommandLog {
     @Column(name = "command_type", nullable = false, length = 50)
     private String commandType;
     
-    @Column(columnDefinition = "JSON")
+    @Column(length = 2000)
     private String payload;
     
     @Column(length = 20)

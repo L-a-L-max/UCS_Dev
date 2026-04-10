@@ -15,6 +15,7 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+
 import java.util.Arrays;
 import java.util.List;
 
@@ -39,13 +40,26 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/auth/**").permitAll()
                 .requestMatchers("/api/v1/public/**").permitAll()
                 .requestMatchers("/api/v1/map/**").permitAll()
-                .requestMatchers("/api/v1/telemetry/**").permitAll() // Allow ROS 2 gateway access
+                .requestMatchers("/api/v1/telemetry/**").permitAll() // Allow gateway access
+                .requestMatchers("/api/v1/dds-gateway/**").permitAll() // DDS gateway telemetry ingestion
                 .requestMatchers("/ws/**").permitAll()
                 .requestMatchers("/h2-console/**").permitAll()
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
-                .requestMatchers("/api/v1/screen/**").hasRole("OBSERVER")
-                .requestMatchers("/api/v1/pilot/**").hasAnyRole("PILOT", "LEADER", "COMMANDER")
+                // Role-based access control (RBAC)
+                .requestMatchers("/api/v1/screen/**").authenticated()
+                .requestMatchers("/api/v1/pilot/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
                 .requestMatchers("/api/v1/leader/**").hasAnyRole("LEADER", "COMMANDER")
+                // Zenoh control endpoints - pilots/operators and above can send commands
+                .requestMatchers("/api/v1/control/**").hasAnyRole("PILOT", "OPERATOR", "LEADER", "COMMANDER")
+                // Rally point management - permitAll to bypass Spring Security 6.x
+                // URL pattern matching issues. The controller uses @AuthenticationPrincipal
+                // to get the user, so unauthenticated calls will get null principal.
+                .requestMatchers("/api/v1/rally-points").permitAll()
+                .requestMatchers("/api/v1/rally-points/**").permitAll()
+                // Commander-only endpoints - permission transfer, global management
+                .requestMatchers("/api/v1/commander/**").hasRole("COMMANDER")
+                // Operation logs - all authenticated users can view
+                .requestMatchers("/api/v1/operations/**").authenticated()
                 .anyRequest().authenticated()
             )
             .headers(headers -> headers.frameOptions(frame -> frame.disable()))
@@ -57,7 +71,8 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of("*"));
+        configuration.setAllowedOriginPatterns(List.of("*"));
+        configuration.setAllowCredentials(true);
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setExposedHeaders(List.of("Authorization"));

@@ -101,11 +101,8 @@ public class TeamServiceImpl implements ITeamService {
         member.setTeamId(teamId);
         member.setUserId(userId);
         
-        // Find role by iterating through team roles
-        List<com.ucs.entity.TeamRole> teamRoles = teamRoleRepository.findByTeamId(teamId);
-        teamRoles.stream()
-                .filter(r -> r.getRoleName().equalsIgnoreCase(role))
-                .findFirst()
+        // Find role by name from the lookup table
+        teamRoleRepository.findByRoleName(role)
                 .ifPresent(teamRole -> member.setTeamRoleId(teamRole.getId()));
         
         teamMemberRepository.save(member);

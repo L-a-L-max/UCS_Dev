@@ -12,21 +12,14 @@ public class TeamRole {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     
-    @Column(name = "team_id", nullable = false)
-    private Long teamId;
-    
-    @Column(name = "role_name", nullable = false, length = 50)
+    @Column(name = "role_name", nullable = false, unique = true, length = 50)
     private String roleName;
     
-    @Column(columnDefinition = "TEXT")
+    @Column(length = 500)
     private String description;
     
     @Column(name = "created_at")
     private LocalDateTime createdAt;
-    
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "team_id", insertable = false, updatable = false)
-    private Team team;
     
     @PrePersist
     protected void onCreate() {

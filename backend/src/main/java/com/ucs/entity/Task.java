@@ -18,10 +18,10 @@ public class Task {
     @Column(name = "task_type", length = 50)
     private String taskType;
     
-    @Column(columnDefinition = "SMALLINT DEFAULT 0")
+    @Column
     private Integer status = 0;
     
-    @Column(columnDefinition = "SMALLINT DEFAULT 0")
+    @Column
     private Integer priority = 0;
     
     @Column(name = "start_time")
@@ -33,7 +33,7 @@ public class Task {
     @Column(name = "created_by")
     private Long createdBy;
     
-    @Column(columnDefinition = "TEXT")
+    @Column(length = 2000)
     private String description;
     
     @Column(name = "created_at")

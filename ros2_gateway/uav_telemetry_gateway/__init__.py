@@ -1,1 +1,0 @@
-# UAV Telemetry Gateway Package

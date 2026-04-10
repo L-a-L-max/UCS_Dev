@@ -3,8 +3,11 @@ package com.ucs.service.impl;
 import com.ucs.dto.DroneStatusDTO;
 import com.ucs.dto.HeatmapPointDTO;
 import com.ucs.entity.*;
+import com.ucs.kafka.CommandKafkaProducer;
 import com.ucs.repository.*;
 import com.ucs.service.IDroneService;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,6 +22,7 @@ import java.util.stream.Collectors;
  * Drone Service Implementation
  * Following MyBatis-Plus convention with ServiceImpl pattern
  */
+@Slf4j
 @Service
 public class DroneServiceImpl implements IDroneService {
     
@@ -30,6 +34,10 @@ public class DroneServiceImpl implements IDroneService {
     private final CommandLogRepository commandLogRepository;
     private final EventLogRepository eventLogRepository;
     private final UavLatestStateRepository uavLatestStateRepository;
+
+    /** Kafka 指令生产者（可选，Kafka 未启用时为 null） */
+    @Autowired(required = false)
+    private CommandKafkaProducer commandKafkaProducer;
     
     public DroneServiceImpl(DroneRepository droneRepository,
                             DroneStatusRepository droneStatusRepository,
@@ -77,19 +85,19 @@ public class DroneServiceImpl implements IDroneService {
     
     private DroneStatusDTO convertToDto(UavLatestState state) {
         DroneStatusDTO dto = new DroneStatusDTO();
-        dto.setUavId("UAV_" + String.format("%03d", state.getUavId()));
-        dto.setDroneSn("UAV-" + state.getUavId());
+        dto.setUavId(state.getUavId());
+        dto.setDroneSn(state.getUavId());
         dto.setLat(state.getLat());
         dto.setLng(state.getLon());
         dto.setAltitude(state.getAlt());
-        dto.setVelocity(state.getGroundSpeed() != null ? state.getGroundSpeed().floatValue() : 0f);
-        dto.setHeading(state.getHeading() != null ? state.getHeading().floatValue() : 0f);
+        dto.setVelocity(state.getGroundSpeed() != null ? state.getGroundSpeed() : 0f);
+        dto.setHeading(state.getHeading() != null ? state.getHeading() : 0f);
         dto.setFlightStatus(Boolean.TRUE.equals(state.getIsActive()) ? "FLYING" : "IDLE");
         dto.setTaskStatus("IDLE");
         dto.setHardwareStatus("NORMAL");
         dto.setColor(Boolean.TRUE.equals(state.getIsActive()) ? "#00FF00" : "#808080");
-        dto.setModel("ROS2-UAV");
-        dto.setOwner("ROS2");
+        dto.setModel("PX4-SITL");
+        dto.setOwner("DDS");
         return dto;
     }
     
@@ -189,13 +197,35 @@ public class DroneServiceImpl implements IDroneService {
         Drone drone = droneRepository.findById(droneId)
                 .orElseThrow(() -> new RuntimeException("Drone not found"));
         
-        CommandLog log = new CommandLog();
-        log.setDroneId(droneId);
-        log.setUserId(userId);
-        log.setCommandType(commandType);
-        log.setPayload(payload);
-        log.setStatus("ACCEPTED");
-        commandLogRepository.save(log);
+        CommandLog cmdLog = new CommandLog();
+        cmdLog.setDroneId(droneId);
+        cmdLog.setUserId(userId);
+        cmdLog.setCommandType(commandType);
+        cmdLog.setPayload(payload);
+        cmdLog.setStatus("PENDING");
+        commandLogRepository.save(cmdLog);
+        
+        // [Phase 1] Publish command to Kafka commands.down topic
+        String uavId = drone.getUavId() != null ? drone.getUavId() : "UNKNOWN_" + droneId;
+        if (commandKafkaProducer != null) {
+            try {
+                commandKafkaProducer.sendCommand(uavId, commandType, payload, userId, cmdLog.getId());
+                cmdLog.setStatus("SENT");
+                commandLogRepository.save(cmdLog);
+                log.info("[DroneServiceImpl] Command {} -> {} sent via Kafka (cmdLogId={})",
+                        commandType, uavId, cmdLog.getId());
+            } catch (Exception e) {
+                cmdLog.setStatus("KAFKA_SEND_FAILED");
+                commandLogRepository.save(cmdLog);
+                log.warn("[DroneServiceImpl] Kafka send failed for {} -> {}: {}",
+                        commandType, uavId, e.getMessage());
+            }
+        } else {
+            cmdLog.setStatus("ACCEPTED");
+            commandLogRepository.save(cmdLog);
+            log.info("[DroneServiceImpl] Kafka not available, command {} -> {} logged only",
+                    commandType, uavId);
+        }
         
         EventLog event = new EventLog();
         event.setEventType("COMMAND_SENT");
@@ -205,7 +235,7 @@ public class DroneServiceImpl implements IDroneService {
         event.setMessage("Command " + commandType + " sent to drone " + drone.getDroneSn());
         eventLogRepository.save(event);
         
-        return "CMD_" + log.getId();
+        return "CMD_" + cmdLog.getId();
     }
     
     @Override

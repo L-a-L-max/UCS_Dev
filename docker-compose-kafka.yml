@@ -1,0 +1,60 @@
+# ============================================================
+# Kafka 单节点开发环境 (KRaft 模式, 无需 ZooKeeper)
+# 启动: docker-compose -f docker-compose-kafka.yml up -d
+# 停止: docker-compose -f docker-compose-kafka.yml down
+# ============================================================
+version: '3.8'
+
+services:
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: ucs-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft 模式配置 (无需 ZooKeeper)
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # 双 Listener 配置:
+      #   EXTERNAL  — 宿主机访问 (localhost:9092)
+      #   INTERNAL  — 容器间访问 (kafka:29092)，Kafka UI 通过此端口连接
+      #   CONTROLLER — KRaft 内部选举
+      KAFKA_LISTENERS: EXTERNAL://0.0.0.0:9092,INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # Topic 默认配置
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: 16
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      # 集群 ID (KRaft 必需)
+      CLUSTER_ID: 'UCS-Kafka-Dev-Cluster-001'
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Kafka UI (可选, 用于可视化管理)
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: ucs-kafka-ui
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: ucs-dev
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  kafka-data:
+    driver: local

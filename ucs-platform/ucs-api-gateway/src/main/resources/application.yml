@@ -1,0 +1,61 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ucs-api-gateway
+  cloud:
+    gateway:
+      routes:
+        # ---- 无人机状态服务 ----
+        - id: drone-state
+          uri: ${DRONE_STATE_URI:http://localhost:8085}
+          predicates:
+            - Path=/api/v1/drones/**
+
+        # ---- 指令下发服务 ----
+        - id: command
+          uri: ${COMMAND_URI:http://localhost:8084}
+          predicates:
+            - Path=/api/v1/commands/**
+
+        # ---- 业务管理服务 ----
+        - id: business
+          uri: ${BUSINESS_URI:http://localhost:8086}
+          predicates:
+            - Path=/api/v1/users/**,/api/v1/user/**,/api/v1/auth/**,/api/v1/teams/**,/api/v1/events/**,/api/v1/tasks/**,/api/v1/rally-points/**,/api/v1/screen/**,/api/v1/pilot/**,/api/v1/leader/**,/api/v1/commander/**,/api/v1/operations/**,/api/v1/public/**,/api/v1/map/**,/api/v1/control/**
+
+        # ---- WebSocket (路由到ucs-business，所有WebSocket广播/消费者均在此服务) ----
+        - id: business-ws
+          uri: ${BUSINESS_WS_URI:ws://localhost:8086}
+          predicates:
+            - Path=/ws/**
+
+        # ---- DDS Gateway 遥测接入 (HTTP降级通道) ----
+        - id: dds-gateway-ingest
+          uri: ${INGEST_URI:http://localhost:8081}
+          predicates:
+            - Path=/api/v1/dds-gateway/telemetry,/api/v1/dds-gateway/command-ack
+
+        # ---- 遥测存储服务 (历史查询) ----
+        - id: telemetry-store
+          uri: ${STORE_URI:http://localhost:8082}
+          predicates:
+            - Path=/api/v1/telemetry/**
+
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+jwt:
+  secret: ${JWT_SECRET:change-me-in-production}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,gateway

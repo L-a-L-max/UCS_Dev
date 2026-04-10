@@ -3,14 +3,28 @@ package com.ucs.service;
 import com.ucs.entity.*;
 import com.ucs.repository.*;
 import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Profile;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ucs.util.PartitionNameUtil;
 import java.time.LocalDateTime;
-import java.util.Random;
+import java.util.*;
 
+/**
+ * Data initialization service.
+ * Creates initial data for H2 in-memory database on startup.
+ * 
+ * Teams: 巡检队伍 (Inspection), 应急队伍 (Emergency)
+ * Personnel: 8 total (2 leaders, 4 operators, 1 observer, 1 commander)
+ * Partition naming: observer/commander fixed, others {username_initials}_{id}
+ * (e.g., zhangsan id=2 -> "zs_2", lisi id=3 -> "ls_3")
+ */
+@Slf4j
 @Service
+@Profile("h2dev")
 public class DataInitService {
     
     private final RoleRepository roleRepository;
@@ -22,13 +36,14 @@ public class DataInitService {
     private final DroneRepository droneRepository;
     private final DroneStatusRepository droneStatusRepository;
     private final DroneOwnershipRepository droneOwnershipRepository;
+    private final DronePartitionMapRepository dronePartitionMapRepository;
     private final TeamDroneMapRepository teamDroneMapRepository;
     private final TaskRepository taskRepository;
     private final TaskAssignmentRepository taskAssignmentRepository;
     private final WeatherSnapshotRepository weatherSnapshotRepository;
     private final PasswordEncoder passwordEncoder;
     
-    private final Random random = new Random();
+    private final Random random = new Random(42); // Fixed seed for reproducibility
     
     public DataInitService(RoleRepository roleRepository,
                           UserRepository userRepository,
@@ -39,6 +54,7 @@ public class DataInitService {
                           DroneRepository droneRepository,
                           DroneStatusRepository droneStatusRepository,
                           DroneOwnershipRepository droneOwnershipRepository,
+                          DronePartitionMapRepository dronePartitionMapRepository,
                           TeamDroneMapRepository teamDroneMapRepository,
                           TaskRepository taskRepository,
                           TaskAssignmentRepository taskAssignmentRepository,
@@ -53,6 +69,7 @@ public class DataInitService {
         this.droneRepository = droneRepository;
         this.droneStatusRepository = droneStatusRepository;
         this.droneOwnershipRepository = droneOwnershipRepository;
+        this.dronePartitionMapRepository = dronePartitionMapRepository;
         this.teamDroneMapRepository = teamDroneMapRepository;
         this.taskRepository = taskRepository;
         this.taskAssignmentRepository = taskAssignmentRepository;
@@ -70,8 +87,12 @@ public class DataInitService {
         initRoles();
         initTeams();
         initUsers();
+        initDrones();
         initTasks();
         initWeather();
+        
+        log.info("=== Data initialization complete ===");
+        logUserPartitions();
     }
     
     private void initRoles() {
@@ -90,48 +111,61 @@ public class DataInitService {
         }
     }
     
+    /**
+     * Initialize 2 teams: 巡检队伍 and 应急队伍.
+     * Each team has Leader and Pilot team roles.
+     */
     private void initTeams() {
         String[][] teams = {
-                {"侦察一队", "负责区域侦察和目标跟踪任务"},
-                {"巡检二队", "负责河道、管线等基础设施巡检"},
-                {"应急三队", "负责紧急救援和应急响应任务"}
+                {"巡检队伍", "负责河道、管线等基础设施巡检"},
+                {"应急队伍", "负责紧急救援和应急响应任务"}
         };
+        
+        // Create team roles first (lookup table, only 2 entries)
+        TeamRole leaderRole = new TeamRole();
+        leaderRole.setRoleName("Leader");
+        leaderRole.setDescription("队长");
+        teamRoleRepository.save(leaderRole);
+        
+        TeamRole pilotRole = new TeamRole();
+        pilotRole.setRoleName("Pilot");
+        pilotRole.setDescription("飞手");
+        teamRoleRepository.save(pilotRole);
         
         for (String[] teamData : teams) {
             Team team = new Team();
             team.setTeamName(teamData[0]);
             team.setDescription(teamData[1]);
-            team.setCreatedBy(1L);
+            // created_by removed per user request
             teamRepository.save(team);
-            
-            TeamRole leaderRole = new TeamRole();
-            leaderRole.setTeamId(team.getId());
-            leaderRole.setRoleName("Leader");
-            leaderRole.setDescription("队长");
-            teamRoleRepository.save(leaderRole);
-            
-            TeamRole pilotRole = new TeamRole();
-            pilotRole.setTeamId(team.getId());
-            pilotRole.setRoleName("Pilot");
-            pilotRole.setDescription("飞手");
-            teamRoleRepository.save(pilotRole);
         }
     }
     
+    /**
+     * Initialize 8 users with partition naming:
+     * - commander: partition = "commander"
+     * - observer: partition = "observer"
+     * - others: partition = "{username_initials}_{id}" (e.g., zhangsan id=2 -> "zs_2")
+     * 
+     * Team 1 (巡检队伍): zhangsan(leader), lisi(operator), wangwu(operator)
+     * Team 2 (应急队伍): zhaoliu(leader), qianqi(operator), sunba(operator)
+     * No team: commander, observer
+     */
     private void initUsers() {
         Role operatorRole = roleRepository.findByRoleName("operator").orElseThrow();
         Role leaderRole = roleRepository.findByRoleName("leader").orElseThrow();
         Role observerRole = roleRepository.findByRoleName("observer").orElseThrow();
+        Role commanderRole = roleRepository.findByRoleName("commander").orElseThrow();
         
+        // username, realName, teamId(null=no team), roleName
         String[][] users = {
+                {"commander", "指挥官", null, "commander"},
                 {"zhangsan", "张三", "1", "leader"},
                 {"lisi", "李四", "1", "operator"},
                 {"wangwu", "王五", "1", "operator"},
                 {"zhaoliu", "赵六", "2", "leader"},
                 {"qianqi", "钱七", "2", "operator"},
                 {"sunba", "孙八", "2", "operator"},
-                {"zhoujiu", "周九", "3", "leader"},
-                {"wushi", "吴十", "3", "operator"},
                 {"observer", "观察员", null, "observer"}
         };
         
@@ -149,24 +183,30 @@ public class DataInitService {
                 user.setTeamId(Long.parseLong(userData[2]));
             }
             
+            // Save first to get auto-generated ID
             user = userRepository.save(user);
             
+            // Set partition name based on role and username initials
+            String partitionName = PartitionNameUtil.computePartitionName(userData[3], userData[0], user.getId());
+            user.setPartitionName(partitionName);
+            user = userRepository.save(user);
+            
+            // Assign system role
             UserRoleMap urm = new UserRoleMap();
             urm.setUserId(user.getId());
-            
             switch (userData[3]) {
+                case "commander" -> urm.setRoleId(commanderRole.getId());
                 case "leader" -> urm.setRoleId(leaderRole.getId());
                 case "observer" -> urm.setRoleId(observerRole.getId());
                 default -> urm.setRoleId(operatorRole.getId());
             }
             userRoleMapRepository.save(urm);
             
+            // Assign to team if applicable
             if (userData[2] != null) {
                 Long teamId = Long.parseLong(userData[2]);
-                TeamRole teamRole = teamRoleRepository.findAll().stream()
-                        .filter(tr -> tr.getTeamId().equals(teamId) && 
-                                tr.getRoleName().equalsIgnoreCase(userData[3].equals("leader") ? "Leader" : "Pilot"))
-                        .findFirst()
+                String teamRoleName = "leader".equals(userData[3]) ? "Leader" : "Pilot";
+                TeamRole teamRole = teamRoleRepository.findByRoleName(teamRoleName)
                         .orElse(null);
                 
                 TeamMember tm = new TeamMember();
@@ -177,74 +217,149 @@ public class DataInitService {
                 }
                 teamMemberRepository.save(tm);
             }
+            
+            log.info("Created user: {} (id={}, partition={})", 
+                    userData[0], user.getId(), partitionName);
         }
     }
     
+    // Partition name computation delegated to PartitionNameUtil
+    
+    /**
+     * Initialize drones with DDS-style identifiers (px4_1, px4_2, etc.)
+     * matching PX4 simulation topic naming convention.
+     * 
+     * Each drone gets default partition mappings (observer + commander)
+     * plus the partition of its assigned operator.
+     */
     private void initDrones() {
+        // droneSn, uavId (DDS identifier), model, manufacturer, teamId, mavlinkSystemId
         String[][] drones = {
-                {"DJI-M300-001", "M300 RTK", "DJI", "1"},
-                {"DJI-M300-002", "M300 RTK", "DJI", "1"},
-                {"DJI-M300-003", "M300 RTK", "DJI", "1"},
-                {"DJI-M30-001", "M30", "DJI", "1"},
-                {"DJI-M30-002", "M30", "DJI", "2"},
-                {"DJI-M30-003", "M30", "DJI", "2"},
-                {"DJI-AIR2S-001", "Air 2S", "DJI", "2"},
-                {"DJI-AIR2S-002", "Air 2S", "DJI", "3"},
-                {"DJI-MINI3-001", "Mini 3 Pro", "DJI", "3"},
-                {"DJI-MINI3-002", "Mini 3 Pro", "DJI", "3"}
+                {"PX4-SIM-001", "px4_1", "PX4-SITL", "PX4", "1", "1"},
+                {"PX4-SIM-002", "px4_2", "PX4-SITL", "PX4", "1", "2"},
+                {"PX4-SIM-003", "px4_3", "PX4-SITL", "PX4", "1", "3"},
+                {"PX4-SIM-004", "px4_4", "PX4-SITL", "PX4", "2", "4"},
         };
         
         double baseLat = 39.9042;
         double baseLng = 116.4074;
+        
+        // Drone ownership: [ownerUserId, assignedByUserId]
+        // User IDs (based on init order): 1=commander, 2=zhangsan, 3=lisi, 4=wangwu
+        // 5=zhaoliu, 6=qianqi, 7=sunba, 8=observer
+        long[][] droneOwners = {
+                {3L, 1L},  // px4_1 → lisi (operator, 巡检队伍)
+                {3L, 1L},  // px4_2 → lisi
+                {4L, 1L},  // px4_3 → wangwu (operator, 巡检队伍)
+                {6L, 1L},  // px4_4 → qianqi (operator, 应急队伍)
+        };
         
         for (int i = 0; i < drones.length; i++) {
             String[] droneData = drones[i];
             
             Drone drone = new Drone();
             drone.setDroneSn(droneData[0]);
-            drone.setModel(droneData[1]);
-            drone.setManufacturer(droneData[2]);
-            drone.setDefaultTeamId(Long.parseLong(droneData[3]));
-            drone.setCapabilities("{\"camera\": true, \"thermal\": " + (i < 4) + ", \"zoom\": true}");
+            drone.setUavId(droneData[1]);
+            drone.setModel(droneData[2]);
+            drone.setManufacturer(droneData[3]);
+            drone.setDefaultTeamId(Long.parseLong(droneData[4]));
+            drone.setMavlinkSystemId(Integer.parseInt(droneData[5]));
+            drone.setOnlineStatus(false);
+            drone.setCapabilities("{\"camera\": true, \"thermal\": " + (i < 2) + ", \"zoom\": true}");
             drone = droneRepository.save(drone);
             
+            // Assign drone to team
             TeamDroneMap tdm = new TeamDroneMap();
-            tdm.setTeamId(Long.parseLong(droneData[3]));
+            tdm.setTeamId(Long.parseLong(droneData[4]));
             tdm.setDroneId(drone.getId());
             teamDroneMapRepository.save(tdm);
             
-            Long userId = (long) (2 + (i % 6));
+            // Assign drone to operator
             DroneOwnership ownership = new DroneOwnership();
             ownership.setDroneId(drone.getId());
-            ownership.setUserId(userId);
-            ownership.setAssignedBy(1L);
+            ownership.setUserId(droneOwners[i][0]);
+            ownership.setAssignedBy(droneOwners[i][1]);
             droneOwnershipRepository.save(ownership);
             
+            // Create partition mappings: observer + commander + owner's partition + leader's partition
+            createDronePartitions(drone, droneOwners[i][0], Long.parseLong(droneData[4]));
+            
+            // Create initial drone status
             DroneStatus status = new DroneStatus();
             status.setDroneId(drone.getId());
-            status.setLat(baseLat + (random.nextDouble() - 0.5) * 0.1);
-            status.setLng(baseLng + (random.nextDouble() - 0.5) * 0.1);
-            status.setAlt(50.0 + random.nextDouble() * 150);
+            status.setLat(baseLat + (random.nextDouble() - 0.5) * 0.02);
+            status.setLng(baseLng + (random.nextDouble() - 0.5) * 0.02);
+            status.setAlt(0.0);
             status.setHeading((float) (random.nextDouble() * 360));
-            status.setVelocity((float) (random.nextDouble() * 15));
-            status.setBattery((float) (50 + random.nextDouble() * 50));
-            status.setHealthStatus(random.nextInt(10) < 8 ? 0 : 1);
-            status.setRiskLevel(random.nextInt(10) < 7 ? 0 : (random.nextInt(10) < 9 ? 1 : 2));
-            status.setFlightStatus(random.nextBoolean() ? "FLYING" : "IDLE");
-            status.setTaskStatus(random.nextBoolean() ? "EXECUTING" : "IDLE");
-            status.setGridX((int) ((status.getLng() - 121.0) * 100));
-            status.setGridY((int) ((status.getLat() - 31.0) * 100));
+            status.setVelocity(0f);
+            status.setBattery((float) (80 + random.nextDouble() * 20));
+            status.setHealthStatus(0);
+            status.setRiskLevel(0);
+            status.setFlightStatus("IDLE");
+            status.setTaskStatus("IDLE");
+            status.setGridX((int) ((status.getLng() - 116.0) * 1000));
+            status.setGridY((int) ((status.getLat() - 39.0) * 1000));
             droneStatusRepository.save(status);
+            
+            log.info("Created drone: {} (id={}) with partition mappings", droneData[1], drone.getId());
         }
+    }
+    
+    /**
+     * Create partition mappings for a drone.
+     * Default: observer + commander
+     * Plus: owner's partition + team leader's partition
+     */
+    private void createDronePartitions(Drone drone, Long ownerUserId, Long teamId) {
+        Set<String> partitions = new LinkedHashSet<>();
+        
+        // Always include observer and commander
+        partitions.add("observer");
+        partitions.add("commander");
+        
+        // Add owner's partition
+        userRepository.findById(ownerUserId).ifPresent(owner -> {
+            if (owner.getPartitionName() != null) {
+                partitions.add(owner.getPartitionName());
+            }
+        });
+        
+        // Add team leader's partition
+        // Use teamRoleRepository.findById instead of lazy tm.getTeamRole() to avoid
+        // LazyInitializationException when @PostConstruct + @Transactional don't cooperate
+        List<TeamMember> teamMembers = teamMemberRepository.findByTeamId(teamId);
+        for (TeamMember tm : teamMembers) {
+            if (tm.getTeamRoleId() != null) {
+                teamRoleRepository.findById(tm.getTeamRoleId()).ifPresent(teamRole -> {
+                    if ("Leader".equalsIgnoreCase(teamRole.getRoleName())) {
+                        userRepository.findById(tm.getUserId()).ifPresent(leader -> {
+                            if (leader.getPartitionName() != null) {
+                                partitions.add(leader.getPartitionName());
+                            }
+                        });
+                    }
+                });
+            }
+        }
+        
+        // Save all partition mappings
+        for (String partitionName : partitions) {
+            DronePartitionMap dpm = new DronePartitionMap();
+            dpm.setDroneId(drone.getId());
+            dpm.setUavId(drone.getUavId());
+            dpm.setPartitionName(partitionName);
+            dpm.setIsActive(true);
+            dronePartitionMapRepository.save(dpm);
+        }
+        
+        log.info("Drone {} partitions: {}", drone.getUavId(), partitions);
     }
     
     private void initTasks() {
         String[][] tasks = {
-                {"河道巡检任务A", "INSPECTION", "对黄浦江段进行日常巡检", "1"},
-                {"管线监测任务B", "MONITORING", "对输油管线进行热成像监测", "1"},
-                {"区域侦察任务C", "RECONNAISSANCE", "对指定区域进行侦察", "0"},
-                {"应急响应任务D", "EMERGENCY", "响应突发事件", "0"},
-                {"设施检查任务E", "INSPECTION", "对电力设施进行检查", "3"}
+                {"河道巡检任务A", "INSPECTION", "对河道进行日常巡检", "1"},
+                {"管线监测任务B", "MONITORING", "对输油管线进行热成像监测", "0"},
+                {"应急响应任务C", "EMERGENCY", "响应突发事件", "0"},
         };
         
         for (String[] taskData : tasks) {
@@ -275,5 +390,23 @@ public class DataInitService {
         weather.setRiskLevel("MEDIUM");
         weather.setLocation("Beijing");
         weatherSnapshotRepository.save(weather);
+    }
+    
+    /**
+     * Log all user partition assignments for debugging.
+     */
+    private void logUserPartitions() {
+        log.info("=== User Partition Assignments ===");
+        userRepository.findAll().forEach(user -> 
+            log.info("  {} (id={}, role={}) -> partition: {}", 
+                    user.getUsername(), user.getId(), 
+                    user.getTeamId() != null ? "team:" + user.getTeamId() : "global",
+                    user.getPartitionName())
+        );
+        
+        log.info("=== Drone Partition Mappings ===");
+        dronePartitionMapRepository.findAll().forEach(dpm ->
+            log.info("  drone {} -> partition: {}", dpm.getUavId(), dpm.getPartitionName())
+        );
     }
 }
