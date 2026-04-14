@@ -1368,22 +1368,33 @@ class MavlinkGateway:
             # Save home position
             self._save_home_position(uav_id)
 
-            # OFFBOARD takeoff — PX4 MAVLink requires:
-            #   1. Stream position setpoints at ≥2Hz (start_offboard_heartbeat)
-            #   2. Switch to OFFBOARD mode WHILE DISARMED (PX4 accepts this)
-            #   3. ARM — PX4 is already in OFFBOARD with active setpoints,
-            #      so it immediately follows the target position (climbs)
+            # OFFBOARD takeoff — correct MAVLink sequence:
+            #   1. Stream COMPLETE position setpoints (x, y, z) at 10Hz
+            #   2. Switch to OFFBOARD mode WHILE DISARMED
+            #   3. ARM — PX4 immediately follows the target position
             #
-            # Key difference from DDS gateway: MAVLink requires OFFBOARD mode
-            # to be set BEFORE arming. If we ARM first (like DDS does via
-            # VehicleCommand), PX4 has no active flight mode and triggers
-            # "auto preflight disarming" after ~10s.
+            # Critical: x/y MUST be valid numbers (not NaN)!
+            # PX4 rejects setpoints with NaN position values even if type_mask
+            # says "use position". Use current NED position for x/y so the
+            # drone holds horizontal position while climbing to target_z.
             #
             # NED coordinate system: Z is negative-up (z=-5 means 5m above home).
 
-            # Step 1: Start heartbeat with target altitude BEFORE mode switch
-            self.start_offboard_heartbeat(uav_id, target_z=target_z)
-            time.sleep(1.0)  # ~4 heartbeat messages at 4Hz, ensure PX4 sees them
+            # Read current NED position for x/y (hold horizontal position)
+            cur_x, cur_y = 0.0, 0.0
+            with self._lock:
+                state = self.drone_states.get(uav_id)
+            if state:
+                cur_x = state.ned_x
+                cur_y = state.ned_y
+            logger.info("[Command] TAKEOFF NED target: x=%.2f y=%.2f z=%.2f for %s",
+                        cur_x, cur_y, target_z, uav_id)
+
+            # Step 1: Start heartbeat at 10Hz with COMPLETE position (x, y, z)
+            self.start_offboard_heartbeat(
+                uav_id, target_z=target_z, target_x=cur_x, target_y=cur_y,
+                interval=0.1)  # 10Hz for stable OFFBOARD control
+            time.sleep(1.0)  # ~10 setpoints sent, PX4 sees stable stream
 
             # Step 2: Switch to OFFBOARD mode while still DISARMED
             # param1=1.0 = MAV_MODE_FLAG_CUSTOM_MODE_ENABLED (no ARMED flag)
@@ -1396,13 +1407,14 @@ class MavlinkGateway:
 
             time.sleep(0.5)  # Let PX4 confirm mode switch
 
-            # Step 3: ARM — PX4 is in OFFBOARD mode with active setpoints,
+            # Step 3: ARM — PX4 is in OFFBOARD mode with valid setpoints,
             # will immediately follow the target position and climb
             ok = self._send_mavlink_command_long(
                 uav_id, MAV_CMD_COMPONENT_ARM_DISARM, param1=1.0)
 
-            logger.info("[Command] MAVLink TAKEOFF for %s: heartbeat→OFFBOARD→ARM (%.1fm AGL) ok=%s",
-                        uav_id, relative_alt, ok)
+            logger.info("[Command] MAVLink TAKEOFF for %s: heartbeat(10Hz)→OFFBOARD→ARM "
+                        "(x=%.2f y=%.2f z=%.2f) ok=%s",
+                        uav_id, cur_x, cur_y, target_z, ok)
 
         elif command_type == 'LAND':
             self.stop_offboard_heartbeat(uav_id)
@@ -1628,12 +1640,16 @@ class MavlinkGateway:
     # Offboard Heartbeat (mirrors DDS gateway)
     # ============================================================
 
-    def start_offboard_heartbeat(self, uav_id: str, interval: float = 0.25,
+    def start_offboard_heartbeat(self, uav_id: str, interval: float = 0.1,
                                  target_z: float = None,
                                  target_x: float = None,
                                  target_y: float = None,
                                  target_yaw: float = None):
-        """Start sending SET_POSITION_TARGET_LOCAL_NED at 4Hz for OFFBOARD mode."""
+        """Start sending SET_POSITION_TARGET_LOCAL_NED at 10Hz for OFFBOARD mode.
+
+        IMPORTANT: target_x and target_y should be valid floats (not None/NaN)
+        for TAKEOFF. PX4 rejects setpoints with NaN position values.
+        """
         key = f"heartbeat_{uav_id}"
 
         sp = self._heartbeat_setpoints.get(uav_id, {})
