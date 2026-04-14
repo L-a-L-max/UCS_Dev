@@ -457,34 +457,17 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
       //    screen) than the ground pixel.y. Convert that pixel offset to meters
       //    using the map's zoom level and pitch angle.
       map.on('click', (e: any) => {
-        const lat = e.lnglat.getLat();
-        const lng = e.lnglat.getLng();
-        onMapClickRef.current?.(lat, lng);
-        if (hasDroneSelectedRef.current) {
-          const pixel = e.pixel;
-          const containerRect = containerRef.current?.getBoundingClientRect();
-          if (pixel && containerRect) {
-            let estimatedHeight = 0;
-            try {
-              // Method 1: Three.js raycasting for drone model detection
-              if (cameraRef.current && sceneRef.current && containerRef.current) {
-                const rect = containerRef.current.getBoundingClientRect();
-                const ndcX = ((pixel.x) / rect.width) * 2 - 1;
-                const ndcY = -((pixel.y) / rect.height) * 2 + 1;
-                const raycaster = new THREE.Raycaster();
-                raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), cameraRef.current);
-                const intersects = raycaster.intersectObjects(sceneRef.current.children, true);
-                if (intersects.length > 0) {
-                  // Found a 3D object - convert scene Z to meters
-                  const altScale = altitudeScaleRef.current * ALTITUDE_EXAGGERATION;
-                  if (altScale > 0) {
-                    estimatedHeight = Math.max(0, intersects[0].point.z / altScale);
-                  }
-                }
-              }
-
-              // Method 2: Pixel-difference estimation for buildings/terrain
-              if (estimatedHeight === 0) {
+        try {
+          const lat = e.lnglat.getLat();
+          const lng = e.lnglat.getLng();
+          onMapClickRef.current?.(lat, lng);
+          if (hasDroneSelectedRef.current) {
+            const pixel = e.pixel;
+            const containerRect = containerRef.current?.getBoundingClientRect();
+            if (pixel && containerRect) {
+              let estimatedHeight = 0;
+              try {
+                // Method 1: Pixel-difference estimation for buildings/terrain
                 const mapPitch = map.getPitch();
                 if (mapPitch > 3) {
                   const groundPixel = map.lngLatToContainer(
@@ -496,17 +479,17 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
                       const mapZoom = map.getZoom();
                       const metersPerPixel = 156543.03 * Math.cos(lat * Math.PI / 180) / Math.pow(2, mapZoom);
                       const pitchRad = mapPitch * Math.PI / 180;
-                      // Vertical pixel offset is foreshortened by pitch angle
                       estimatedHeight = Math.max(0, pixelDiff * metersPerPixel / Math.sin(pitchRad));
-                      // Clamp to reasonable building height range
                       estimatedHeight = Math.min(estimatedHeight, 800);
                     }
                   }
                 }
-              }
-            } catch { /* ignore height estimation errors */ }
-            showMapClickMenu(lat, lng, pixel.x + containerRect.left, pixel.y + containerRect.top, estimatedHeight);
+              } catch { /* ignore height estimation errors */ }
+              showMapClickMenu(lat, lng, pixel.x + containerRect.left, pixel.y + containerRect.top, estimatedHeight);
+            }
           }
+        } catch (err) {
+          console.error('[AMap3D] Click handler error:', err);
         }
       });
 
@@ -661,7 +644,7 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
   }, []);
 
   const updateDroneModels = useCallback(() => {
-    if (!sceneRef.current || !customCoordsRef.current) return;
+    if (!sceneRef.current || !customCoordsRef.current || !AMapRef.current) return;
 
     const scene = sceneRef.current;
     const currentIds = new Set(drones.map(d => d.uavId));
@@ -753,17 +736,19 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
       updateLabelMarker(drone, isSelected);
 
       // Update info popup position if it belongs to this drone
-      if (popupDroneIdRef.current === drone.uavId && mapRef.current) {
-        const pixel = mapRef.current.lngLatToContainer(
-          new AMapRef.current.LngLat(drone.lng, drone.lat)
-        );
-        if (pixel) {
-          const overlay = popupOverlayRef.current;
-          if (overlay && overlay.style.display !== 'none') {
-            overlay.style.left = `${pixel.x + 10}px`;
-            overlay.style.top = `${Math.max(0, pixel.y - 10)}px`;
+      if (popupDroneIdRef.current === drone.uavId && mapRef.current && AMapRef.current) {
+        try {
+          const pixel = mapRef.current.lngLatToContainer(
+            new AMapRef.current.LngLat(drone.lng, drone.lat)
+          );
+          if (pixel) {
+            const overlay = popupOverlayRef.current;
+            if (overlay && overlay.style.display !== 'none') {
+              overlay.style.left = `${pixel.x + 10}px`;
+              overlay.style.top = `${Math.max(0, pixel.y - 10)}px`;
+            }
           }
-        }
+        } catch { /* ignore if map not ready */ }
       }
     });
 
@@ -843,13 +828,17 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
       });
       // Issue 4: Click on label marker to show drone info popup
       marker.on('click', (e: any) => {
-        onDroneClickRef.current?.(drone.uavId);
-        const d = dronesRef.current.find(dr => dr.uavId === drone.uavId);
-        if (d) {
-          const pixel = e.pixel || e.originEvent;
-          const x = pixel?.clientX ?? pixel?.x ?? 300;
-          const y = pixel?.clientY ?? pixel?.y ?? 300;
-          showDronePopup(d, x, y);
+        try {
+          onDroneClickRef.current?.(drone.uavId);
+          const d = dronesRef.current.find(dr => dr.uavId === drone.uavId);
+          if (d) {
+            const pixel = e.pixel || e.originEvent;
+            const x = pixel?.clientX ?? pixel?.x ?? 300;
+            const y = pixel?.clientY ?? pixel?.y ?? 300;
+            showDronePopup(d, x, y);
+          }
+        } catch (err) {
+          console.error('[AMap3D] Label click error:', err);
         }
       });
       mapRef.current.add(marker);
@@ -876,40 +865,39 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
   // target the hidden 2D view or not animate properly in 3D mode.
   // setZoomAndCenter is the AMap-recommended way to animate in 3D.
   const focusOnDrones = useCallback(() => {
-    if (!mapRef.current || drones.length === 0) return;
-    const valid = drones.filter(d => d.lat != null && d.lng != null);
-    if (valid.length === 0) return;
+    try {
+      if (!mapRef.current || drones.length === 0) return;
+      const valid = drones.filter(d => d.lat != null && d.lng != null);
+      if (valid.length === 0) return;
 
-    closePopup();
-    const map = mapRef.current;
+      closePopup();
+      const map = mapRef.current;
 
-    if (valid.length === 1) {
-      const d = valid[0];
-      // Use setZoomAndCenter for atomic animated move in 3D view
-      map.setZoomAndCenter(16, [d.lng, d.lat], false, 800);
-      map.setPitch(50, false, 800);
-      map.setRotation(0, false, 800);
-    } else {
-      // Compute center of all drones
-      const avgLng = valid.reduce((s, d) => s + d.lng, 0) / valid.length;
-      const avgLat = valid.reduce((s, d) => s + d.lat, 0) / valid.length;
+      if (valid.length === 1) {
+        const d = valid[0];
+        map.setZoomAndCenter(16, [d.lng, d.lat], false, 800);
+        map.setPitch(50, false, 800);
+        map.setRotation(0, false, 800);
+      } else {
+        const avgLng = valid.reduce((s, d) => s + d.lng, 0) / valid.length;
+        const avgLat = valid.reduce((s, d) => s + d.lat, 0) / valid.length;
 
-      // Compute appropriate zoom level based on spread
-      const lngs = valid.map(d => d.lng);
-      const lats = valid.map(d => d.lat);
-      const lngSpan = Math.max(...lngs) - Math.min(...lngs);
-      const latSpan = Math.max(...lats) - Math.min(...lats);
-      const maxSpan = Math.max(lngSpan, latSpan);
-      // Approximate zoom level from geographic span
-      let targetZoom = 16;
-      if (maxSpan > 0.0001) {
-        targetZoom = Math.min(18, Math.max(4, Math.floor(Math.log2(360 / maxSpan)) - 1));
+        const lngs = valid.map(d => d.lng);
+        const lats = valid.map(d => d.lat);
+        const lngSpan = Math.max(...lngs) - Math.min(...lngs);
+        const latSpan = Math.max(...lats) - Math.min(...lats);
+        const maxSpan = Math.max(lngSpan, latSpan);
+        let targetZoom = 16;
+        if (maxSpan > 0.0001) {
+          targetZoom = Math.min(18, Math.max(4, Math.floor(Math.log2(360 / maxSpan)) - 1));
+        }
+
+        map.setZoomAndCenter(targetZoom, [avgLng, avgLat], false, 800);
+        map.setPitch(45, false, 800);
+        map.setRotation(0, false, 800);
       }
-
-      // setZoomAndCenter provides an atomic animated transition in AMap 3D view
-      map.setZoomAndCenter(targetZoom, [avgLng, avgLat], false, 800);
-      map.setPitch(45, false, 800);
-      map.setRotation(0, false, 800);
+    } catch (err) {
+      console.error('[AMap3D] Focus error:', err);
     }
   }, [drones, closePopup]);
 

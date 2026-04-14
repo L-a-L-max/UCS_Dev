@@ -1368,54 +1368,42 @@ class MavlinkGateway:
             # Save home position
             self._save_home_position(uav_id)
 
-            # PX4 OFFBOARD takeoff requires a strict sequence:
-            # 1. Stream valid setpoints for >=2s (PX4 rejects OFFBOARD without prior setpoints)
-            # 2. Switch to OFFBOARD mode
-            # 3. ARM
-            # If we ARM first without OFFBOARD, PX4's "auto preflight disarming"
-            # will disarm after ~10s since the vehicle never takes off in the
-            # default mode (MANUAL/STABILIZED don't respond to setpoints).
+            # MAVLink takeoff differs from DDS:
+            # - DDS uses OFFBOARD mode with TrajectorySetpoint (external control)
+            # - MAVLink uses PX4's native AUTO.TAKEOFF mode (internal control)
+            #
+            # The AUTO.TAKEOFF approach lets PX4 handle the climb internally,
+            # which prevents the "auto preflight disarming" that occurs when
+            # the vehicle is armed but no valid flight mode is active.
+            #
+            # Sequence: ARM → AUTO.TAKEOFF mode → PX4 climbs to altitude
+            # After reaching altitude, PX4 transitions to AUTO.LOITER.
 
-            # Get drone's current NED position for valid initial setpoints
-            cur_x, cur_y, cur_z = 0.0, 0.0, 0.0
-            lock = self._drone_locks.get(uav_id)
-            if lock:
-                with lock:
-                    state = self.drone_states.get(uav_id)
-                    if state:
-                        cur_x = state.ned_x
-                        cur_y = state.ned_y
-                        cur_z = state.ned_z
+            # Step 1: ARM the vehicle
+            ok = self._send_mavlink_command_long(
+                uav_id, MAV_CMD_COMPONENT_ARM_DISARM, param1=1.0)
 
-            # Step 1: Start streaming setpoints with current X/Y + target altitude
-            # Using current horizontal position ensures PX4 accepts the setpoints
-            self.start_offboard_heartbeat(
-                uav_id, target_z=target_z,
-                target_x=cur_x, target_y=cur_y)
+            if ok:
+                time.sleep(0.3)
 
-            def _offboard_takeoff_sequence():
-                # Step 1 cont: Stream setpoints for 2.5s before switching mode
-                time.sleep(2.5)
-
-                # Step 2: Switch to OFFBOARD mode (PX4 requires >=2s of setpoints first)
-                custom_mode = PX4_CUSTOM_MAIN_MODE_OFFBOARD << 16
-                mode_ok = self._send_mavlink_command_long(
+                # Step 2: Switch to AUTO.TAKEOFF mode immediately after ARM
+                # PX4 custom mode encoding: main_mode in bits 16-23, sub_mode in bits 24-31
+                auto_takeoff_mode = (PX4_CUSTOM_MAIN_MODE_AUTO << 16) | \
+                                    (PX4_CUSTOM_SUB_MODE_AUTO_TAKEOFF << 24)
+                self._send_mavlink_command_long(
                     uav_id, MAV_CMD_DO_SET_MODE,
                     param1=209.0,  # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED | ARMED
-                    param2=float(custom_mode))
-                logger.info("[Command] OFFBOARD mode set for %s: %s", uav_id, mode_ok)
+                    param2=float(auto_takeoff_mode))
 
-                time.sleep(0.5)
+                # Step 3: Send NAV_TAKEOFF with target altitude
+                # param4=NaN (yaw unchanged), param7=altitude (relative, meters)
+                self._send_mavlink_command_long(
+                    uav_id, MAV_CMD_NAV_TAKEOFF,
+                    param4=float('nan'),
+                    param7=relative_alt)
 
-                # Step 3: ARM after OFFBOARD is active
-                arm_ok = self._send_mavlink_command_long(
-                    uav_id, MAV_CMD_COMPONENT_ARM_DISARM, param1=1.0)
-                logger.info("[Command] ARM sent for %s (%.1fm AGL): %s",
-                            uav_id, relative_alt, arm_ok)
-
-            threading.Thread(target=_offboard_takeoff_sequence, daemon=True,
-                             name=f"takeoff-{uav_id}").start()
-            ok = True  # Sequence initiated (async)
+                logger.info("[Command] MAVLink TAKEOFF for %s: ARM + AUTO.TAKEOFF (%.1fm AGL)",
+                            uav_id, relative_alt)
 
         elif command_type == 'LAND':
             self.stop_offboard_heartbeat(uav_id)
