@@ -1372,38 +1372,42 @@ class MavlinkGateway:
             # - DDS uses OFFBOARD mode with TrajectorySetpoint (external control)
             # - MAVLink uses PX4's native AUTO.TAKEOFF mode (internal control)
             #
-            # The AUTO.TAKEOFF approach lets PX4 handle the climb internally,
-            # which prevents the "auto preflight disarming" that occurs when
-            # the vehicle is armed but no valid flight mode is active.
+            # Critical: set AUTO.TAKEOFF mode BEFORE arming!
+            # If we ARM first without a valid flight mode, PX4's "auto preflight
+            # disarming" triggers after ~10s because no takeoff activity is detected.
+            # By switching to AUTO.TAKEOFF while still disarmed, PX4 knows to
+            # start climbing immediately upon ARM.
             #
-            # Sequence: ARM → AUTO.TAKEOFF mode → PX4 climbs to altitude
+            # Sequence: AUTO.TAKEOFF mode → NAV_TAKEOFF (altitude) → ARM
             # After reaching altitude, PX4 transitions to AUTO.LOITER.
 
-            # Step 1: ARM the vehicle
+            # Step 1: Switch to AUTO.TAKEOFF mode while still disarmed
+            # PX4 custom mode encoding: main_mode in bits 16-23, sub_mode in bits 24-31
+            auto_takeoff_mode = (PX4_CUSTOM_MAIN_MODE_AUTO << 16) | \
+                                (PX4_CUSTOM_SUB_MODE_AUTO_TAKEOFF << 24)
+            self._send_mavlink_command_long(
+                uav_id, MAV_CMD_DO_SET_MODE,
+                param1=1.0,  # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED (not armed yet)
+                param2=float(auto_takeoff_mode))
+            logger.info("[Command] AUTO.TAKEOFF mode set for %s", uav_id)
+
+            time.sleep(0.5)
+
+            # Step 2: Send NAV_TAKEOFF to set target altitude
+            # param4=NaN (yaw unchanged), param7=altitude (relative, meters)
+            self._send_mavlink_command_long(
+                uav_id, MAV_CMD_NAV_TAKEOFF,
+                param4=float('nan'),
+                param7=relative_alt)
+
+            time.sleep(0.3)
+
+            # Step 3: ARM - PX4 is already in AUTO.TAKEOFF, will climb immediately
             ok = self._send_mavlink_command_long(
                 uav_id, MAV_CMD_COMPONENT_ARM_DISARM, param1=1.0)
 
-            if ok:
-                time.sleep(0.3)
-
-                # Step 2: Switch to AUTO.TAKEOFF mode immediately after ARM
-                # PX4 custom mode encoding: main_mode in bits 16-23, sub_mode in bits 24-31
-                auto_takeoff_mode = (PX4_CUSTOM_MAIN_MODE_AUTO << 16) | \
-                                    (PX4_CUSTOM_SUB_MODE_AUTO_TAKEOFF << 24)
-                self._send_mavlink_command_long(
-                    uav_id, MAV_CMD_DO_SET_MODE,
-                    param1=209.0,  # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED | ARMED
-                    param2=float(auto_takeoff_mode))
-
-                # Step 3: Send NAV_TAKEOFF with target altitude
-                # param4=NaN (yaw unchanged), param7=altitude (relative, meters)
-                self._send_mavlink_command_long(
-                    uav_id, MAV_CMD_NAV_TAKEOFF,
-                    param4=float('nan'),
-                    param7=relative_alt)
-
-                logger.info("[Command] MAVLink TAKEOFF for %s: ARM + AUTO.TAKEOFF (%.1fm AGL)",
-                            uav_id, relative_alt)
+            logger.info("[Command] MAVLink TAKEOFF for %s: mode→ARM (%.1fm AGL) ok=%s",
+                        uav_id, relative_alt, ok)
 
         elif command_type == 'LAND':
             self.stop_offboard_heartbeat(uav_id)

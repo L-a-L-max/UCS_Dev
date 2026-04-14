@@ -853,12 +853,6 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
     }
   }, [drones, selectedDroneId, selectedDroneIds, mapReady, updateDroneModels]);
 
-  // Expose focusOnDrones to parent via ref
-  // IMPORTANT: include focusOnDrones in deps so that the parent always gets
-  // the latest closure with current drone data — otherwise the captured
-  // drones array is stale and focus calculations use empty/old data.
-  useImperativeHandle(ref, () => ({ focusOnDrones: () => focusOnDrones() }), [focusOnDrones]);
-
   // Focus/zoom on all drones with smooth animation.
   // Uses setZoomAndCenter for atomic animated transition in AMap 3D view.
   // The key issue was that separate setCenter/setZoom/setPitch calls may
@@ -900,6 +894,10 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
       console.error('[AMap3D] Focus error:', err);
     }
   }, [drones, closePopup]);
+
+  // Expose focusOnDrones to parent via ref
+  // IMPORTANT: must be defined AFTER focusOnDrones to avoid temporal dead zone
+  useImperativeHandle(ref, () => ({ focusOnDrones: () => focusOnDrones() }), [focusOnDrones]);
 
   // Locate drone: fly to a specific drone when locateDroneCounter changes
   useEffect(() => {
