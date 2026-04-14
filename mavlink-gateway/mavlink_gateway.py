@@ -283,6 +283,84 @@ class MavlinkGateway:
         self._orbit_threads: Dict[str, threading.Thread] = {}
         self._orbit_active: Dict[str, bool] = {}
 
+        # GCS heartbeat thread (sends HEARTBEAT to all connected drones at 1Hz)
+        self._gcs_heartbeat_thread: Optional[threading.Thread] = None
+
+    # ============================================================
+    # GCS Heartbeat (required by PX4 to consider link alive)
+    # ============================================================
+
+    def _start_gcs_heartbeat(self):
+        """Start sending GCS HEARTBEAT messages to all connected drones at 1Hz.
+
+        PX4 requires receiving HEARTBEAT from a GCS (system type MAV_TYPE_GCS)
+        to clear the 'No Connection to GCS' preflight check. Without this,
+        the drone will deny arming with 'Resolve system health failures first'.
+
+        The heartbeat identifies us as:
+        - type = MAV_TYPE_GCS (6)
+        - autopilot = MAV_AUTOPILOT_INVALID (8) — we are not an autopilot
+        - system_status = MAV_STATE_ACTIVE (4)
+        - base_mode = 0 (no special modes)
+        - custom_mode = 0
+        """
+        from pymavlink import mavutil
+
+        def _gcs_hb_loop():
+            logger.info("[GCS-HB] GCS heartbeat thread started (1Hz)")
+            # MAVLink constants
+            MAV_TYPE_GCS = 6
+            MAV_AUTOPILOT_INVALID = 8
+            MAV_STATE_ACTIVE = 4
+            MAVLINK_VERSION = 3  # MAVLink 2.0
+
+            while self.running:
+                try:
+                    # Build heartbeat message
+                    mav = mavutil.mavlink.MAVLink(None)
+                    mav.srcSystem = 255  # GCS system ID (matches QGC convention)
+                    mav.srcComponent = 190  # GCS component ID
+
+                    hb_msg = mav.heartbeat_encode(
+                        MAV_TYPE_GCS,        # type
+                        MAV_AUTOPILOT_INVALID,  # autopilot
+                        0,                   # base_mode
+                        0,                   # custom_mode
+                        MAV_STATE_ACTIVE,    # system_status
+                    )
+                    packed = hb_msg.pack(mav)
+
+                    # Send to all known drone addresses
+                    sent_count = 0
+                    for uav_id, addr in list(self._ip_map.items()):
+                        try:
+                            state = self.drone_states.get(uav_id)
+                            if not state:
+                                continue
+                            conn_type = state.connection_type
+                            if conn_type == 'udp' and self._udp_socket:
+                                self._udp_socket.sendto(packed, addr)
+                                sent_count += 1
+                            elif conn_type == 'tcp':
+                                tcp_sock = self._tcp_connections.get(addr)
+                                if tcp_sock:
+                                    tcp_sock.sendall(packed)
+                                    sent_count += 1
+                        except Exception as e:
+                            logger.debug("[GCS-HB] Failed to send to %s: %s", uav_id, e)
+
+                    if sent_count > 0:
+                        logger.debug("[GCS-HB] Sent heartbeat to %d drones", sent_count)
+                except Exception as e:
+                    logger.error("[GCS-HB] Heartbeat loop error: %s", e)
+
+                time.sleep(1.0)  # 1Hz
+            logger.info("[GCS-HB] GCS heartbeat thread stopped")
+
+        self._gcs_heartbeat_thread = threading.Thread(
+            target=_gcs_hb_loop, daemon=True, name='gcs-heartbeat')
+        self._gcs_heartbeat_thread.start()
+
     # ============================================================
     # Multi-Instance Partitioning
     # ============================================================
@@ -1840,6 +1918,9 @@ class MavlinkGateway:
 
         # Start Kafka command consumer
         self._start_kafka_command_consumer()
+
+        # Start GCS heartbeat (required for PX4 to accept arming)
+        self._start_gcs_heartbeat()
 
         # Start epoch maintenance
         self._start_epoch_maintenance()

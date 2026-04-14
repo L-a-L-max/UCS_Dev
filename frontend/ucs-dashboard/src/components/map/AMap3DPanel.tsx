@@ -447,10 +447,15 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
       });
 
       // Map click handler - show popup with lat/lng/height and control buttons
-      // Height estimation: AMap 3D renders buildings with height data. We estimate
-      // click height by comparing the clicked pixel Y against the ground-projected
-      // pixel Y for the same lng/lat. The vertical pixel difference indicates
-      // the visual height of the clicked point above ground.
+      // Height estimation strategy:
+      // 1. Three.js raycasting: cast ray from camera through click point into the
+      //    Three.js scene to detect drone models (provides exact 3D position).
+      // 2. Pixel-difference method: compare the clicked pixel Y against the
+      //    ground-projected pixel Y for the same lng/lat. AMap's lngLatToContainer
+      //    always projects to ground level, so if the user clicked a point above
+      //    ground (building roof), the click pixel.y will be smaller (higher on
+      //    screen) than the ground pixel.y. Convert that pixel offset to meters
+      //    using the map's zoom level and pitch angle.
       map.on('click', (e: any) => {
         const lat = e.lnglat.getLat();
         const lng = e.lnglat.getLng();
@@ -459,29 +464,43 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
           const pixel = e.pixel;
           const containerRect = containerRef.current?.getBoundingClientRect();
           if (pixel && containerRect) {
-            // Estimate height above ground by comparing click pixel vs ground pixel
             let estimatedHeight = 0;
             try {
-              const mapPitch = map.getPitch();
-              if (mapPitch > 3) {
-                // lngLatToContainer projects lng/lat to screen coords at ground level.
-                // If the user clicked above ground (e.g. on a building), the click
-                // pixel.y will be ABOVE (lower value) the ground pixel.y.
-                const groundPixel = map.lngLatToContainer(
-                  new AMap.LngLat(lng, lat)
-                );
-                if (groundPixel) {
-                  const pixelDiff = groundPixel.y - pixel.y;
-                  if (pixelDiff > 3) {
-                    // Convert pixel offset to meters using zoom-dependent scale
-                    // At zoom Z, ~156543 * cos(lat) / 2^Z meters per pixel at equator
-                    const mapZoom = map.getZoom();
-                    const metersPerPixel = 156543.03 * Math.cos(lat * Math.PI / 180) / Math.pow(2, mapZoom);
-                    const pitchRad = mapPitch * Math.PI / 180;
-                    // The pixel offset is foreshortened by the pitch angle
-                    estimatedHeight = Math.max(0, pixelDiff * metersPerPixel / Math.sin(pitchRad));
-                    // Clamp to reasonable building height range
-                    estimatedHeight = Math.min(estimatedHeight, 800);
+              // Method 1: Three.js raycasting for drone model detection
+              if (cameraRef.current && sceneRef.current && containerRef.current) {
+                const rect = containerRef.current.getBoundingClientRect();
+                const ndcX = ((pixel.x) / rect.width) * 2 - 1;
+                const ndcY = -((pixel.y) / rect.height) * 2 + 1;
+                const raycaster = new THREE.Raycaster();
+                raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), cameraRef.current);
+                const intersects = raycaster.intersectObjects(sceneRef.current.children, true);
+                if (intersects.length > 0) {
+                  // Found a 3D object - convert scene Z to meters
+                  const altScale = altitudeScaleRef.current * ALTITUDE_EXAGGERATION;
+                  if (altScale > 0) {
+                    estimatedHeight = Math.max(0, intersects[0].point.z / altScale);
+                  }
+                }
+              }
+
+              // Method 2: Pixel-difference estimation for buildings/terrain
+              if (estimatedHeight === 0) {
+                const mapPitch = map.getPitch();
+                if (mapPitch > 3) {
+                  const groundPixel = map.lngLatToContainer(
+                    new AMap.LngLat(lng, lat)
+                  );
+                  if (groundPixel) {
+                    const pixelDiff = groundPixel.y - pixel.y;
+                    if (pixelDiff > 3) {
+                      const mapZoom = map.getZoom();
+                      const metersPerPixel = 156543.03 * Math.cos(lat * Math.PI / 180) / Math.pow(2, mapZoom);
+                      const pitchRad = mapPitch * Math.PI / 180;
+                      // Vertical pixel offset is foreshortened by pitch angle
+                      estimatedHeight = Math.max(0, pixelDiff * metersPerPixel / Math.sin(pitchRad));
+                      // Clamp to reasonable building height range
+                      estimatedHeight = Math.min(estimatedHeight, 800);
+                    }
                   }
                 }
               }
@@ -784,14 +803,41 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
       <div style="color:#94a3b8;font-size:9px">${altitude.toFixed(1)}m | ${battery}</div>
     </div>`;
 
+    // Compute pixel offset to position the label at drone's altitude, not on the ground.
+    // lngLatToContainer gives ground-level pixel; we subtract the altitude's screen
+    // height so the label floats above the 3D model.
+    let labelOffset = new AMap.Pixel(-30, -50);
+    if (mapRef.current && drone.altitude != null && drone.altitude > 0) {
+      try {
+        const groundPx = mapRef.current.lngLatToContainer(
+          new AMap.LngLat(drone.lng, drone.lat)
+        );
+        // Estimate vertical pixel offset for altitude:
+        // Use two nearby points to calculate meters-per-pixel vertically.
+        const mapZoom = mapRef.current.getZoom();
+        const mapPitch = mapRef.current.getPitch() || 50;
+        const pitchRad = mapPitch * Math.PI / 180;
+        const metersPerPixel = 156543.03 * Math.cos((drone.lat || 30) * Math.PI / 180) / Math.pow(2, mapZoom);
+        // Vertical pixel offset = altitude / metersPerPixel * sin(pitch)
+        // sin(pitch) accounts for the foreshortening of vertical axis in 3D view
+        const altPixelOffset = metersPerPixel > 0 ? (drone.altitude / metersPerPixel) * Math.sin(pitchRad) : 0;
+        // Clamp to reasonable range (max 400px offset to avoid labels going offscreen)
+        const clampedOffset = Math.min(Math.max(altPixelOffset, 0), 400);
+        labelOffset = new AMap.Pixel(-30, -50 - clampedOffset);
+      } catch {
+        // Fallback to default offset if calculation fails
+      }
+    }
+
     if (existing) {
       existing.setPosition(new AMap.LngLat(drone.lng, drone.lat));
       existing.setContent(content);
+      existing.setOffset(labelOffset);
     } else {
       const marker = new AMap.Marker({
         position: new AMap.LngLat(drone.lng, drone.lat),
         content,
-        offset: new AMap.Pixel(-30, -50),
+        offset: labelOffset,
         zIndex: 200,
         anchor: 'bottom-center',
       });
@@ -819,11 +865,16 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
   }, [drones, selectedDroneId, selectedDroneIds, mapReady, updateDroneModels]);
 
   // Expose focusOnDrones to parent via ref
-  useImperativeHandle(ref, () => ({ focusOnDrones: () => focusOnDrones() }), []);
+  // IMPORTANT: include focusOnDrones in deps so that the parent always gets
+  // the latest closure with current drone data — otherwise the captured
+  // drones array is stale and focus calculations use empty/old data.
+  useImperativeHandle(ref, () => ({ focusOnDrones: () => focusOnDrones() }), [focusOnDrones]);
 
   // Focus/zoom on all drones with smooth animation.
-  // Uses a two-step approach: first set center, then adjust zoom + pitch.
-  // AMap 3D's setZoomAndCenter with immediate=false provides animation.
+  // Uses setZoomAndCenter for atomic animated transition in AMap 3D view.
+  // The key issue was that separate setCenter/setZoom/setPitch calls may
+  // target the hidden 2D view or not animate properly in 3D mode.
+  // setZoomAndCenter is the AMap-recommended way to animate in 3D.
   const focusOnDrones = useCallback(() => {
     if (!mapRef.current || drones.length === 0) return;
     const valid = drones.filter(d => d.lat != null && d.lng != null);
@@ -834,12 +885,10 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
 
     if (valid.length === 1) {
       const d = valid[0];
-      // Animate: zoom in to drone, lower pitch to see from above
-      map.setCenter([d.lng, d.lat], false, 600);
-      setTimeout(() => {
-        map.setZoom(16, false, 600);
-        map.setPitch(50, false, 600);
-      }, 100);
+      // Use setZoomAndCenter for atomic animated move in 3D view
+      map.setZoomAndCenter(16, [d.lng, d.lat], false, 800);
+      map.setPitch(50, false, 800);
+      map.setRotation(0, false, 800);
     } else {
       // Compute center of all drones
       const avgLng = valid.reduce((s, d) => s + d.lng, 0) / valid.length;
@@ -857,11 +906,10 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
         targetZoom = Math.min(18, Math.max(4, Math.floor(Math.log2(360 / maxSpan)) - 1));
       }
 
-      map.setCenter([avgLng, avgLat], false, 600);
-      setTimeout(() => {
-        map.setZoom(targetZoom, false, 600);
-        map.setPitch(45, false, 600);
-      }, 100);
+      // setZoomAndCenter provides an atomic animated transition in AMap 3D view
+      map.setZoomAndCenter(targetZoom, [avgLng, avgLat], false, 800);
+      map.setPitch(45, false, 800);
+      map.setRotation(0, false, 800);
     }
   }, [drones, closePopup]);
 
@@ -872,11 +920,10 @@ const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMa
     if (!drone || drone.lat == null || drone.lng == null) return;
 
     const map = mapRef.current;
-    map.setCenter([drone.lng, drone.lat], false, 600);
-    setTimeout(() => {
-      map.setZoom(Math.max(map.getZoom(), 16), false, 600);
-      map.setPitch(50, false, 400);
-    }, 100);
+    const targetZoom = Math.max(map.getZoom(), 16);
+    // Use setZoomAndCenter for reliable 3D animated transition
+    map.setZoomAndCenter(targetZoom, [drone.lng, drone.lat], false, 800);
+    map.setPitch(50, false, 800);
   }, [locateDroneCounter, locateDroneId, drones]);
 
   // Follow mode: continuously track a specific drone's position.
