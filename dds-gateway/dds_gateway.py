@@ -1334,11 +1334,17 @@ class DDSGateway:
                         if now - last < SEND_INTERVAL:
                             continue  # Throttle: 10Hz per drone
                         _last_sent[uid] = now
+                        # Compute relative altitude (same logic as build_telemetry_payload)
+                        if state.ref_alt_valid and state.alt > 0:
+                            _rel_alt = state.alt - state.ref_alt
+                        else:
+                            _rel_alt = -state.ned_z
                         batch_drones.append({
                             "uavId": state.uav_id,
                             "lat": state.lat,
                             "lon": state.lon,
-                            "alt": state.alt,
+                            "alt": _rel_alt,
+                            "altAmsl": state.alt,
                             "heading": state.heading,
                             "groundSpeed": state.ground_speed,
                             "verticalSpeed": state.vertical_speed,

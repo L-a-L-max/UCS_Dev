@@ -25,6 +25,19 @@ public class Drone {
     @Column(name = "mavlink_system_id")
     private Integer mavlinkSystemId;
     
+    /**
+     * MAVLink connection IP address (for real drones).
+     * Used by MAVLink gateway to route commands back to the drone.
+     */
+    @Column(name = "mavlink_ip", length = 45)
+    private String mavlinkIp;
+    
+    @Column(name = "mavlink_port")
+    private Integer mavlinkPort;
+    
+    @Column(name = "connection_protocol", length = 10)
+    private String connectionProtocol;
+    
     @Column(length = 100)
     private String model;
     

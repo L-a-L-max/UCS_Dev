@@ -29,6 +29,7 @@ import { lazy, Suspense } from 'react';
 
 // Lazy load AMap 3D panel to avoid loading Three.js + AMap SDK when not needed
 const AMap3DPanel = lazy(() => import('./map/AMap3DPanel'));
+import type { AMap3DPanelHandle } from './map/AMap3DPanel';
 
 // Lazy load Cesium Holographic Dashboard
 const HoloDashboard = lazy(() => import('./cesium/HoloDashboard'));
@@ -271,6 +272,7 @@ export default function MapPanel({
   // 3D map toggle - switches between MapLibre 2D, AMap 3D, and Cesium Holographic
   const [is3DMode, setIs3DMode] = useState(false);
   const [isCesiumMode, setIsCesiumMode] = useState(false);
+  const amap3DRef = useRef<AMap3DPanelHandle>(null);
 
   // 弹窗自动关闭逻辑 - 默认5秒后关闭，鼠标移入保持，移出后倒计时关闭
   const POPUP_AUTO_CLOSE_MS = 5000;
@@ -463,8 +465,13 @@ export default function MapPanel({
     await initMap(newSource);
   };
 
-  // 聚焦无人机
+  // 聚焦无人机 - delegates to AMap3DPanel when in 3D mode
   const focusOnDrones = useCallback(() => {
+    // Delegate to 3D panel if in 3D mode
+    if (is3DMode && amap3DRef.current) {
+      amap3DRef.current.focusOnDrones();
+      return;
+    }
     if (!map.current || drones.length === 0) return;
     const validDrones = drones.filter(d => d.lat != null && d.lng != null);
     if (validDrones.length === 0) return;
@@ -476,7 +483,7 @@ export default function MapPanel({
       validDrones.forEach(d => bounds.extend([d.lng, d.lat]));
       map.current.fitBounds(bounds, { padding: 50, duration: 1000 });
     }
-  }, [drones]);
+  }, [drones, is3DMode]);
 
   // ==================== DOM Reuse Marker Update ====================
   // Instead of innerHTML replacement (which destroys and recreates all DOM nodes,
@@ -960,6 +967,7 @@ export default function MapPanel({
             </div>
           }>
             <AMap3DPanel
+              ref={amap3DRef}
               drones={drones}
               selectedDroneId={selectedDroneId}
               selectedDroneIds={selectedDroneIds}

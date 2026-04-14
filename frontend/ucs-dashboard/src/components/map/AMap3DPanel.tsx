@@ -12,10 +12,15 @@
  * - Issue 4: Drone click info popup with auto-close after 5 seconds
  * - Issue 5: Altitude information display in all popups and labels
  */
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useImperativeHandle, forwardRef } from 'react';
 import AMapLoader from '@amap/amap-jsapi-loader';
 import * as THREE from 'three';
 import type { MapDrone } from '../MapPanel';
+
+/** Public handle exposed via ref for parent components */
+export interface AMap3DPanelHandle {
+  focusOnDrones: () => void;
+}
 
 // AMap credentials from environment variables
 const AMAP_KEY = import.meta.env.VITE_AMAP_KEY || '';
@@ -69,7 +74,7 @@ function getDroneStatusText(drone: MapDrone): string {
 // Altitude exaggeration factor for visual clarity at typical zoom levels
 const ALTITUDE_EXAGGERATION = 1.0;
 
-export default function AMap3DPanel({
+const AMap3DPanel = forwardRef<AMap3DPanelHandle, AMap3DPanelProps>(function AMap3DPanel({
   drones,
   selectedDroneId,
   selectedDroneIds,
@@ -85,7 +90,7 @@ export default function AMap3DPanel({
   center = [105, 30],
   zoom = 4,
   pitch = 50,
-}: AMap3DPanelProps) {
+}: AMap3DPanelProps, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const AMapRef = useRef<any>(null);
@@ -813,6 +818,9 @@ export default function AMap3DPanel({
     }
   }, [drones, selectedDroneId, selectedDroneIds, mapReady, updateDroneModels]);
 
+  // Expose focusOnDrones to parent via ref
+  useImperativeHandle(ref, () => ({ focusOnDrones: () => focusOnDrones() }), []);
+
   // Focus/zoom on all drones with smooth animation.
   // Uses a two-step approach: first set center, then adjust zoom + pitch.
   // AMap 3D's setZoomAndCenter with immediate=false provides animation.
@@ -917,4 +925,6 @@ export default function AMap3DPanel({
       </div>
     </div>
   );
-}
+});
+
+export default AMap3DPanel;
