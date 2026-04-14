@@ -1368,50 +1368,40 @@ class MavlinkGateway:
             # Save home position
             self._save_home_position(uav_id)
 
-            # OFFBOARD takeoff — mirrors DDS gateway's approach exactly.
+            # OFFBOARD takeoff — PX4 MAVLink requires:
+            #   1. Stream position setpoints at ≥2Hz (start_offboard_heartbeat)
+            #   2. Switch to OFFBOARD mode WHILE DISARMED (PX4 accepts this)
+            #   3. ARM — PX4 is already in OFFBOARD with active setpoints,
+            #      so it immediately follows the target position (climbs)
             #
-            # The OFFBOARD pattern is the standard way to control PX4 externally:
-            #   1. Start streaming position setpoints at ≥2Hz BEFORE arming
-            #   2. ARM the vehicle
-            #   3. Switch to OFFBOARD mode (background thread, after short delay)
-            #   4. PX4 follows the setpoint and climbs to target altitude
-            #
-            # We already have start_offboard_heartbeat() which sends
-            # SET_POSITION_TARGET_LOCAL_NED at 4Hz — identical to DDS's
-            # OffboardControlMode + TrajectorySetpoint heartbeat.
+            # Key difference from DDS gateway: MAVLink requires OFFBOARD mode
+            # to be set BEFORE arming. If we ARM first (like DDS does via
+            # VehicleCommand), PX4 has no active flight mode and triggers
+            # "auto preflight disarming" after ~10s.
             #
             # NED coordinate system: Z is negative-up (z=-5 means 5m above home).
-            # This is consistent with DDS gateway which also uses negative Z.
 
-            # Step 0: Save home position
-            self._save_home_position(uav_id)
-
-            # Step 1: Start heartbeat with target altitude BEFORE arming
-            # NED frame: negative z = up, so z = -altitude
+            # Step 1: Start heartbeat with target altitude BEFORE mode switch
             self.start_offboard_heartbeat(uav_id, target_z=target_z)
-            time.sleep(0.5)  # ~2 heartbeat messages at 4Hz
+            time.sleep(1.0)  # ~4 heartbeat messages at 4Hz, ensure PX4 sees them
 
-            # Step 2: ARM
+            # Step 2: Switch to OFFBOARD mode while still DISARMED
+            # param1=1.0 = MAV_MODE_FLAG_CUSTOM_MODE_ENABLED (no ARMED flag)
+            custom_mode = PX4_CUSTOM_MAIN_MODE_OFFBOARD << 16
+            self._send_mavlink_command_long(
+                uav_id, MAV_CMD_DO_SET_MODE,
+                param1=1.0,  # CUSTOM_MODE_ENABLED only, NOT armed
+                param2=float(custom_mode))
+            logger.info("[Command] OFFBOARD mode set (disarmed) for %s", uav_id)
+
+            time.sleep(0.5)  # Let PX4 confirm mode switch
+
+            # Step 3: ARM — PX4 is in OFFBOARD mode with active setpoints,
+            # will immediately follow the target position and climb
             ok = self._send_mavlink_command_long(
                 uav_id, MAV_CMD_COMPONENT_ARM_DISARM, param1=1.0)
 
-            if ok:
-                # Step 3: Switch to OFFBOARD mode in background thread
-                # Small delay ensures PX4 sees enough setpoints before mode switch
-                def _offboard_takeoff():
-                    time.sleep(1.0)
-                    custom_mode = PX4_CUSTOM_MAIN_MODE_OFFBOARD << 16
-                    self._send_mavlink_command_long(
-                        uav_id, MAV_CMD_DO_SET_MODE,
-                        param1=209.0,  # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED | ARMED
-                        param2=float(custom_mode))
-                    logger.info("[Command] OFFBOARD takeoff initiated for %s (%.1fm AGL)",
-                                uav_id, relative_alt)
-
-                threading.Thread(target=_offboard_takeoff, daemon=True,
-                                 name=f"offboard-takeoff-{uav_id}").start()
-
-            logger.info("[Command] MAVLink TAKEOFF for %s: heartbeat→ARM→OFFBOARD (%.1fm AGL) ok=%s",
+            logger.info("[Command] MAVLink TAKEOFF for %s: heartbeat→OFFBOARD→ARM (%.1fm AGL) ok=%s",
                         uav_id, relative_alt, ok)
 
         elif command_type == 'LAND':
