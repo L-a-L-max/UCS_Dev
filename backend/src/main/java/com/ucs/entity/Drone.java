@@ -38,6 +38,15 @@ public class Drone {
     @Column(name = "connection_protocol", length = 10)
     private String connectionProtocol;
     
+    /**
+     * T-03: 网关类型标识 — 决定指令路由到哪种网关。
+     * "DDS" = 仿真无人机（ROS2/DDS协议）
+     * "MAVLINK" = 真实无人机（MAVLink协议）
+     * NULL/空 = 根据 uavId 前缀自动推断
+     */
+    @Column(name = "gateway_type", length = 20)
+    private String gatewayType;
+    
     @Column(length = 100)
     private String model;
     

@@ -1,0 +1,101 @@
+# ============================================================
+# T-12: Prometheus 告警规则 — Kafka 消费者 Lag 监控
+#
+# 告警阈值设计 (基于1000架无人机 @10Hz = 10K msg/s):
+#   - WARNING:  lag > 50,000  持续2分钟 (约5秒延迟)
+#   - CRITICAL: lag > 300,000 持续1分钟 (约30秒延迟)
+#   - 动态阈值: lag / 生产速率 > 5秒
+# ============================================================
+groups:
+  - name: kafka_consumer_lag
+    rules:
+      # ---- WARNING: 消费者Lag超过50K (约5秒延迟 @1000架无人机) ----
+      - alert: KafkaConsumerLagWarning
+        expr: |
+          sum by (consumergroup, topic) (kafka_consumergroup_lag) > 50000
+        for: 2m
+        labels:
+          severity: warning
+          component: kafka
+        annotations:
+          summary: "Kafka消费者Lag超过50K"
+          description: |
+            消费者组 {{ $labels.consumergroup }} 在 Topic {{ $labels.topic }}
+            的Lag为 {{ $value }}，超过50K阈值（约5秒延迟）。
+            请检查消费者是否正常运行，或考虑增加消费者并发数。
+
+      # ---- CRITICAL: 消费者Lag超过300K (约30秒延迟) ----
+      - alert: KafkaConsumerLagCritical
+        expr: |
+          sum by (consumergroup, topic) (kafka_consumergroup_lag) > 300000
+        for: 1m
+        labels:
+          severity: critical
+          component: kafka
+        annotations:
+          summary: "Kafka消费者Lag严重积压"
+          description: |
+            消费者组 {{ $labels.consumergroup }} 在 Topic {{ $labels.topic }}
+            的Lag为 {{ $value }}，超过300K阈值（约30秒延迟）。
+            需要立即检查消费者状态，可能存在消费者宕机或处理瓶颈。
+
+      # ---- 动态阈值: Lag / 生产速率 > 5秒 ----
+      - alert: KafkaConsumerLagTimeBased
+        expr: |
+          (sum by (consumergroup, topic) (kafka_consumergroup_lag))
+          /
+          (sum by (topic) (rate(kafka_topic_partition_current_offset[5m])) > 0)
+          > 5
+        for: 3m
+        labels:
+          severity: warning
+          component: kafka
+        annotations:
+          summary: "Kafka消费延迟超过5秒"
+          description: |
+            消费者组 {{ $labels.consumergroup }} 在 Topic {{ $labels.topic }}
+            的消费延迟为 {{ $value | printf "%.1f" }}秒（Lag/生产速率）。
+
+  - name: kafka_cluster_health
+    rules:
+      # ---- Broker 离线告警 ----
+      - alert: KafkaBrokerDown
+        expr: |
+          count(kafka_brokers) < 3
+        for: 1m
+        labels:
+          severity: critical
+          component: kafka
+        annotations:
+          summary: "Kafka Broker 数量不足"
+          description: |
+            当前在线Broker数量为 {{ $value }}，低于预期的3个。
+            Raft仲裁需要至少2个Broker，请尽快恢复宕机节点。
+
+      # ---- ISR 收缩告警 ----
+      - alert: KafkaUnderReplicatedPartitions
+        expr: |
+          sum(kafka_topic_partition_under_replicated_partition) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: kafka
+        annotations:
+          summary: "Kafka存在副本不足的分区"
+          description: |
+            有 {{ $value }} 个分区的ISR副本数低于配置值。
+            可能有Broker离线或网络分区，需要检查集群状态。
+
+      # ---- Topic 无消息产生告警 ----
+      - alert: KafkaTopicNoProduction
+        expr: |
+          rate(kafka_topic_partition_current_offset{topic="telemetry.raw"}[5m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: kafka
+        annotations:
+          summary: "telemetry.raw Topic 5分钟内无新消息"
+          description: |
+            遥测数据Topic telemetry.raw 在过去5分钟内没有新消息产生。
+            请检查网关(Rx Gateway)是否正常运行。

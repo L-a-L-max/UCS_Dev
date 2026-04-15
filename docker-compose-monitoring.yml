@@ -1,0 +1,100 @@
+# ============================================================
+# T-12: Kafka 监控 + Prometheus 告警规则
+#
+# 架构升级2.1 — Kafka消费者Lag监控与告警
+# 组件:
+#   - kafka-exporter: 导出 Kafka 指标到 Prometheus
+#   - prometheus: 指标采集 + 告警规则
+#   - alertmanager: 告警通知 (可选)
+#
+# 启动: docker-compose -f docker-compose-monitoring.yml up -d
+# 停止: docker-compose -f docker-compose-monitoring.yml down
+# ============================================================
+version: '3.8'
+
+services:
+  # ================================================================
+  # Kafka Exporter — 导出 Kafka 集群指标
+  # ================================================================
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: ucs-kafka-exporter
+    command:
+      - --kafka.server=kafka-1:29092
+      - --kafka.server=kafka-2:29092
+      - --kafka.server=kafka-3:29092
+      - --topic.filter=telemetry.*|commands.*|events.*
+      - --group.filter=ucs-.*
+      - --log.enable-sarama=false
+    ports:
+      - "9308:9308"
+    networks:
+      - kafka-net
+      - monitor-net
+    depends_on:
+      - kafka-1
+    restart: unless-stopped
+
+  # ================================================================
+  # Prometheus — 指标采集 + 告警规则
+  # ================================================================
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: ucs-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    networks:
+      - monitor-net
+    restart: unless-stopped
+
+  # ================================================================
+  # Alertmanager — 告警通知 (可选)
+  # ================================================================
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: ucs-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - monitor-net
+    restart: unless-stopped
+
+  # ================================================================
+  # Grafana — 可视化仪表盘 (可选)
+  # ================================================================
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: ucs-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ucs_admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - monitor-net
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+networks:
+  kafka-net:
+    external: true
+    name: ucs_dev_kafka-net
+  monitor-net:
+    driver: bridge

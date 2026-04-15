@@ -4,6 +4,8 @@ import com.ucs.dto.ControlCommandRequest;
 import com.ucs.dto.ControlCommandResponse;
 import com.ucs.entity.CommandLog;
 import com.ucs.entity.Drone;
+import com.ucs.gateway.GatewayRouter;
+import com.ucs.gateway.GatewayStrategy;
 import com.ucs.kafka.CommandKafkaProducer;
 import com.ucs.repository.CommandLogRepository;
 import com.ucs.repository.DroneOwnershipRepository;
@@ -44,6 +46,9 @@ public class ControlService {
     private final OperationLogService operationLogService;
     private final DdsCommandService ddsCommandService;
     private final DDSSimulatorService ddsSimulatorService;
+
+    /** T-03: 网关路由器 — 根据 uavId 自动选择 DDS 或 MAVLink 策略 */
+    private final GatewayRouter gatewayRouter;
 
     /** Kafka 指令生产者（可选，Kafka 未启用时为 null） */
     @Autowired(required = false)
@@ -96,21 +101,22 @@ public class ControlService {
         cmdLog.setStatus("PENDING");
         commandLogRepository.save(cmdLog);
         
-        // 5. Publish command: Kafka (primary) -> HTTP fallback
-        boolean published = sendCommandViaKafkaOrHttp(uavId, commandType, request.getParams(),
+        // 5. T-03: 通过 GatewayRouter 策略模式路由命令（替代硬编码前缀检查）
+        boolean published = sendCommandViaStrategy(uavId, commandType, request.getParams(),
                 userId, cmdLog.getId());
         
         if (published) {
             cmdLog.setStatus("SENT");
             commandLogRepository.save(cmdLog);
             
-            // Handle OFFBOARD heartbeat lifecycle
+            // T-03: 通过策略模式管理心跳（DDS/MAVLink各自处理）
+            GatewayStrategy strategy = gatewayRouter.resolve(uavId);
             if ("OFFBOARD".equalsIgnoreCase(commandType)) {
-                ddsCommandService.startHeartbeat(uavId);
+                strategy.startHeartbeat(uavId);
             } else if ("LAND".equalsIgnoreCase(commandType)
                     || "RTL".equalsIgnoreCase(commandType)
                     || "DISARM".equalsIgnoreCase(commandType)) {
-                ddsCommandService.stopHeartbeat(uavId);
+                strategy.stopHeartbeat(uavId);
             }
             
             // Update simulator armed state so telemetry reflects the change
@@ -177,24 +183,25 @@ public class ControlService {
     }
 
     /**
-     * Send command via Kafka (primary) with HTTP fallback.
-     * If CommandKafkaProducer is available, sends to commands.down topic.
-     * Otherwise, falls back to direct HTTP call to Gateway.
+     * T-03: 通过 GatewayRouter 策略模式发送命令。
+     * GatewayRouter 根据 uavId 自动选择 DDS 或 MAVLink 策略，
+     * 每种策略内部各自处理 Kafka 投递和 HTTP Fallback。
      */
+    private boolean sendCommandViaStrategy(String uavId, String commandType,
+                                            String params, Long userId, Long commandLogId) {
+        GatewayStrategy strategy = gatewayRouter.resolve(uavId);
+        log.info("[Command] Routing {} -> {} via {} strategy",
+                commandType, uavId, strategy.getGatewayType());
+        return strategy.sendCommand(uavId, commandType, params, userId, commandLogId);
+    }
+
+    /**
+     * @deprecated 保留兼容 — 新代码请使用 sendCommandViaStrategy
+     */
+    @Deprecated
     private boolean sendCommandViaKafkaOrHttp(String uavId, String commandType,
                                                String params, Long userId, Long commandLogId) {
-        // Try Kafka first
-        if (commandKafkaProducer != null) {
-            try {
-                commandKafkaProducer.sendCommand(uavId, commandType, params, userId, commandLogId);
-                log.info("[Command] Sent via Kafka: {} -> {} (cmdLogId={})", commandType, uavId, commandLogId);
-                return true;
-            } catch (Exception e) {
-                log.warn("[Command] Kafka send failed, falling back to HTTP: {}", e.getMessage());
-            }
-        }
-        // Fallback to direct HTTP
-        return ddsCommandService.sendCommand(uavId, commandType, params);
+        return sendCommandViaStrategy(uavId, commandType, params, userId, commandLogId);
     }
 
     /**

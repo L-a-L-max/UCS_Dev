@@ -1,0 +1,186 @@
+# ============================================================
+# T-07: 网关 Docker Compose 拆分部署
+#
+# 架构升级2.1 — 将 DDS 和 MAVLink 网关拆分为独立的 Rx/Tx 进程
+# Rx Gateway: 接收遥测数据，批量发送到 Kafka（可水平扩展）
+# Tx Gateway: 消费 Kafka 指令，转发到无人机（单实例，保证指令有序）
+#
+# 启动: docker-compose -f docker-compose-gateways.yml up -d
+# 停止: docker-compose -f docker-compose-gateways.yml down
+# ============================================================
+version: '3.8'
+
+services:
+  # ================================================================
+  # DDS Rx Gateway (遥测接收, 可水平扩展)
+  # ================================================================
+  dds-rx-gateway:
+    build:
+      context: ./dds-gateway
+      dockerfile: Dockerfile
+    container_name: ucs-dds-rx-gateway
+    command: python dds_rx_gateway.py
+    environment:
+      # Kafka 3-Broker 集群
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      KAFKA_ENABLED: "true"
+      # Redis 连接状态存储 (T-06)
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      # ROS2/DDS 配置
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      # 多实例分片 (INSTANCE_ID=0,1 对应 replicas=2)
+      INSTANCE_ID: ${INSTANCE_ID:-0}
+      TOTAL_INSTANCES: ${TOTAL_INSTANCES:-2}
+      # 健康检查端口
+      HEALTH_PORT: 5070
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    depends_on:
+      - redis
+    networks:
+      - ucs-net
+    restart: unless-stopped
+
+  # ================================================================
+  # DDS Tx Gateway (指令下发, 单实例保证有序)
+  # ================================================================
+  dds-tx-gateway:
+    build:
+      context: ./dds-gateway
+      dockerfile: Dockerfile
+    container_name: ucs-dds-tx-gateway
+    command: python dds_tx_gateway.py
+    environment:
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      KAFKA_ENABLED: "true"
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      INSTANCE_ID: 0
+      TOTAL_INSTANCES: 1
+      # HTTP 命令服务端口 (供后端 HTTP Fallback 使用)
+      COMMAND_PORT: 5050
+    ports:
+      - "5050:5050"
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    depends_on:
+      - redis
+    networks:
+      - ucs-net
+    restart: unless-stopped
+
+  # ================================================================
+  # MAVLink Rx Gateway (遥测接收, 可水平扩展)
+  # ================================================================
+  mavlink-rx-gateway:
+    build:
+      context: ./mavlink-gateway
+      dockerfile: Dockerfile
+    container_name: ucs-mavlink-rx-gateway
+    command: python mavlink_rx_gateway.py
+    environment:
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      KAFKA_ENABLED: "true"
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      # MAVLink UDP 监听端口
+      MAVLINK_UDP_PORT: ${MAVLINK_UDP_PORT:-14550}
+      MAVLINK_TCP_PORT: ${MAVLINK_TCP_PORT:-5760}
+      INSTANCE_ID: ${INSTANCE_ID:-0}
+      TOTAL_INSTANCES: ${TOTAL_INSTANCES:-2}
+      HEALTH_PORT: 5071
+    ports:
+      - "14550:14550/udp"
+      - "5760:5760"
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    depends_on:
+      - redis
+    networks:
+      - ucs-net
+    restart: unless-stopped
+
+  # ================================================================
+  # MAVLink Tx Gateway (指令下发, 单实例保证有序)
+  # ================================================================
+  mavlink-tx-gateway:
+    build:
+      context: ./mavlink-gateway
+      dockerfile: Dockerfile
+    container_name: ucs-mavlink-tx-gateway
+    command: python mavlink_tx_gateway.py
+    environment:
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      KAFKA_ENABLED: "true"
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      MAVLINK_UDP_PORT: ${MAVLINK_UDP_PORT:-14551}
+      INSTANCE_ID: 0
+      TOTAL_INSTANCES: 1
+      COMMAND_PORT: 5061
+    ports:
+      - "5061:5061"
+      - "14551:14551/udp"
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    depends_on:
+      - redis
+    networks:
+      - ucs-net
+    restart: unless-stopped
+
+  # ================================================================
+  # 基础依赖 (外部定义时可移除)
+  # ================================================================
+  redis:
+    image: redis:7.2-alpine
+    container_name: ucs-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - ucs-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:
+
+networks:
+  ucs-net:
+    driver: bridge

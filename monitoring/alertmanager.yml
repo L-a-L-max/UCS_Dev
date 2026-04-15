@@ -1,0 +1,43 @@
+# ============================================================
+# T-12: Alertmanager 配置 — 告警通知路由
+#
+# 当前配置为基础模板，生产环境需配置实际的通知渠道:
+#   - webhook: 企业微信/钉钉/飞书
+#   - email: SMTP 邮件通知
+# ============================================================
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'severity', 'component']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'default'
+  routes:
+    # Critical 告警立即通知
+    - match:
+        severity: critical
+      receiver: 'critical'
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  - name: 'default'
+    # 生产环境替换为实际的 webhook URL
+    webhook_configs:
+      - url: 'http://localhost:9999/webhook/alert'
+        send_resolved: true
+
+  - name: 'critical'
+    webhook_configs:
+      - url: 'http://localhost:9999/webhook/critical'
+        send_resolved: true
+
+# 告警抑制规则: critical 告警激活时抑制同名 warning
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'component']

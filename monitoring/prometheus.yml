@@ -1,0 +1,31 @@
+# ============================================================
+# T-12: Prometheus 配置 — Kafka 集群监控
+# ============================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# 告警规则文件
+rule_files:
+  - "alert-rules.yml"
+
+# 告警通知
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# 数据采集目标
+scrape_configs:
+  # Kafka Exporter 指标
+  - job_name: 'kafka-exporter'
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+        labels:
+          cluster: 'ucs-kafka'
+
+  # Prometheus 自身指标
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
