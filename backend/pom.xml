@@ -106,6 +106,19 @@
             <version>3.5.5</version>
         </dependency>
         
+        <!-- Guava (BloomFilter for T-14 cache penetration protection) -->
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>33.0.0-jre</version>
+        </dependency>
+        
+        <!-- Caffeine (L1 local cache for T-23 three-level cache) -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+        
         <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>

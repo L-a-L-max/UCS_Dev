@@ -13,4 +13,8 @@ public interface TaskAssignmentRepository extends JpaRepository<TaskAssignment, 
     
     @Query("SELECT ta FROM TaskAssignment ta JOIN FETCH ta.task WHERE ta.userId = :userId")
     List<TaskAssignment> findByUserIdWithTask(Long userId);
+
+    /** T-18: 批量查询 — 一次查出多个用户的任务分配关系 */
+    @Query("SELECT ta FROM TaskAssignment ta WHERE ta.userId IN :userIds")
+    List<TaskAssignment> findByUserIdIn(List<Long> userIds);
 }

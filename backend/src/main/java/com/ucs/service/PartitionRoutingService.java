@@ -1,19 +1,25 @@
 package com.ucs.service;
 
+import com.google.common.hash.BloomFilter;
+import com.google.common.hash.Funnels;
 import com.ucs.entity.Drone;
 import com.ucs.entity.DronePartitionMap;
 import com.ucs.repository.DronePartitionMapRepository;
 import com.ucs.repository.DroneRepository;
-import lombok.RequiredArgsConstructor;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -59,12 +65,12 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class PartitionRoutingService {
 
     private final RedisService redisService;
     private final DroneRepository droneRepository;
     private final DronePartitionMapRepository dronePartitionMapRepository;
+    private final StringRedisTemplate stringRedisTemplate;
 
     /**
      * Pending Redis sync operations that failed and need retry.
@@ -72,17 +78,78 @@ public class PartitionRoutingService {
      */
     private final ConcurrentLinkedQueue<Runnable> pendingRedisSyncQueue = new ConcurrentLinkedQueue<>();
 
+    // ===================== T-14: 缓存穿透三层防护 =====================
+
+    /**
+     * T-14 ① 布隆过滤器 — 快速拦截不存在的uavId
+     * 判断“不存在”时100%准确，“存在”时有1%误判率
+     */
+    @SuppressWarnings("UnstableApiUsage")
+    private final BloomFilter<String> droneBloomFilter = BloomFilter.create(
+            Funnels.stringFunnel(StandardCharsets.UTF_8),
+            100_000,   // 预期最大无人机数量
+            0.01       // 1%误判率
+    );
+
+    /** T-14 ② uavId格式校验 — 源头拦截非法ID */
+    private static final Pattern VALID_UAV_ID = Pattern.compile(
+            "^(px4_\\d+|mav_\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}_\\d+)$"
+    );
+
+    /** T-14 ③ 空值缓存前缀 — 缓存“不存在”的查询结果，TTL=60s */
+    private static final String NULL_CACHE_PREFIX = "drone:%s:partitions:null";
+    private static final Duration NULL_CACHE_TTL = Duration.ofSeconds(60);
+
+    public PartitionRoutingService(RedisService redisService,
+                                   DroneRepository droneRepository,
+                                   DronePartitionMapRepository dronePartitionMapRepository,
+                                   StringRedisTemplate stringRedisTemplate) {
+        this.redisService = redisService;
+        this.droneRepository = droneRepository;
+        this.dronePartitionMapRepository = dronePartitionMapRepository;
+        this.stringRedisTemplate = stringRedisTemplate;
+    }
+
+    /** T-14: 服务启动时从数据库加载所有已有uavId到布隆过滤器 */
+    @SuppressWarnings("UnstableApiUsage")
+    @PostConstruct
+    public void initBloomFilter() {
+        droneRepository.findAll().forEach(drone -> droneBloomFilter.put(drone.getUavId()));
+        log.info("[PartitionRouting] Bloom filter initialized with {} drones", droneRepository.count());
+    }
+
     /**
      * Get partitions for a drone. Priority: Redis -> Database -> Auto-create.
      *
      * @param uavId DDS drone identifier (e.g., "px4_1")
      * @return Set of partition names this drone's data should be routed to
      */
+    @SuppressWarnings("UnstableApiUsage")
     public Set<String> getPartitionsForDrone(String uavId) {
+        // T-14 ② 格式校验：拦截非法uavId
+        if (!VALID_UAV_ID.matcher(uavId).matches()) {
+            log.debug("[PartitionRouting] Invalid uavId format rejected: {}", uavId);
+            return Collections.emptySet();
+        }
+
+        // T-14 ① 布隆过滤器：快速拦截不存在的uavId (O(1))
+        if (!droneBloomFilter.mightContain(uavId)) {
+            log.debug("[PartitionRouting] Bloom filter rejected: {}", uavId);
+            return Collections.emptySet();
+        }
+
+        // T-14 ③ 空值缓存：检查是否已缓存“不存在”的结果
+        String nullCacheKey = String.format(NULL_CACHE_PREFIX, uavId);
+        if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(nullCacheKey))) {
+            log.debug("[PartitionRouting] Null cache HIT for drone '{}'", uavId);
+            return Collections.emptySet();
+        }
+
         // 1. Try Redis first
         Set<String> cached = redisService.getDronePartitions(uavId);
         if (!cached.isEmpty()) {
-            log.info("[PartitionRouting] Cache HIT for drone '{}': partitions={}", uavId, cached);
+            // T-13: 降级为DEBUG，缓存命中是高频事件
+            log.debug("[PartitionRouting] Cache HIT for drone '{}': partitions={}", uavId, cached);
             return cached;
         }
         log.info("[PartitionRouting] Cache MISS for drone '{}', querying database...", uavId);
@@ -91,7 +158,6 @@ public class PartitionRoutingService {
         List<String> dbPartitions = dronePartitionMapRepository.findActivePartitionNamesByUavId(uavId);
         if (!dbPartitions.isEmpty()) {
             Set<String> partitionSet = new LinkedHashSet<>(dbPartitions);
-            // Write back to Redis for next lookup (cache-aside pattern)
             syncToRedis(uavId, partitionSet, Collections.emptySet());
             log.info("Loaded partitions for drone {} from DB: {}", uavId, partitionSet);
             return partitionSet;
@@ -106,25 +172,24 @@ public class PartitionRoutingService {
      * Auto-create a new drone entry with default partitions (observer + commander).
      * Uses post-commit hook to sync Redis after DB transaction commits.
      */
+    /**
+     * T-19: 使用 INSERT ON CONFLICT 替代 findByUavId + save 的两步操作。
+     * 多实例并发接收同一架新无人机遥测时，避免 DataIntegrityViolationException。
+     */
     @Transactional
     public Set<String> autoCreateDroneWithDefaultPartitions(String uavId) {
         log.info("Auto-creating new drone: {}", uavId);
 
-        // Check if drone already exists in DB
-        Optional<Drone> existingDrone = droneRepository.findByUavId(uavId);
-        Drone drone;
-        if (existingDrone.isPresent()) {
-            drone = existingDrone.get();
-        } else {
-            drone = new Drone();
-            drone.setUavId(uavId);
-            drone.setDroneSn("AUTO-" + uavId);
-            drone.setModel("PX4-SITL");
-            drone.setManufacturer("PX4");
-            drone.setOnlineStatus(true);
-            drone = droneRepository.save(drone);
-            log.info("Created new drone record: {} (id={})", uavId, drone.getId());
+        // T-19: INSERT ON CONFLICT DO NOTHING — 并发安全，冲突时静默跳过
+        int inserted = droneRepository.insertOnConflictDoNothing(
+                uavId, "AUTO-" + uavId, "PX4-SITL", "PX4");
+        if (inserted > 0) {
+            log.info("Created new drone record via INSERT ON CONFLICT: {}", uavId);
         }
+
+        // 无论是新建还是已存在，都需要获取drone实体
+        Drone drone = droneRepository.findByUavId(uavId)
+                .orElseThrow(() -> new RuntimeException("Drone not found after upsert: " + uavId));
 
         // Default partitions: observer + commander
         Set<String> defaultPartitions = new LinkedHashSet<>();
@@ -143,6 +208,9 @@ public class PartitionRoutingService {
 
         // Post-commit hook: sync to Redis only AFTER DB transaction commits
         registerPostCommitRedisSync(uavId, defaultPartitions, Collections.emptySet());
+
+        // T-14: 新无人机加入布隆过滤器
+        droneBloomFilter.put(uavId);
 
         log.info("Auto-created drone {} with default partitions: {}", uavId, defaultPartitions);
         return defaultPartitions;
@@ -277,12 +345,15 @@ public class PartitionRoutingService {
      * Runs every 60 seconds. Compares DB state with Redis state and fixes discrepancies.
      * This is the safety net that guarantees eventual consistency even after Redis restarts.
      */
-    @Scheduled(fixedDelay = 60000, initialDelay = 30000)
+    /**
+     * T-17: 优化对账 — 只查活跃记录 + Redis Pipeline批量查询
+     * 将N次Redis网络调用合并为1次Pipeline调用
+     */
+    @Scheduled(fixedDelay = 300000, initialDelay = 30000) // T-26: CDC引入后延长到300s作为兜底
     public void reconcileDbRedis() {
         try {
-            List<DronePartitionMap> allActive = dronePartitionMapRepository.findAll().stream()
-                    .filter(dpm -> Boolean.TRUE.equals(dpm.getIsActive()))
-                    .collect(Collectors.toList());
+            // T-17: 使用findAllActive()替代findAll().stream().filter()
+            List<DronePartitionMap> allActive = dronePartitionMapRepository.findAllActive();
 
             Map<String, Set<String>> dbState = new LinkedHashMap<>();
             for (DronePartitionMap dpm : allActive) {
@@ -290,16 +361,40 @@ public class PartitionRoutingService {
                         .add(dpm.getPartitionName());
             }
 
+            // T-17: Redis Pipeline批量查询 — N次网络调用 → 1次
+            List<String> uavIdList = new ArrayList<>(dbState.keySet());
+            List<Object> pipelineResults = stringRedisTemplate.executePipelined(
+                    (org.springframework.data.redis.connection.RedisCallback<Object>) connection -> {
+                        for (String uavId : uavIdList) {
+                            byte[] keyBytes = String.format("drone:%s:partitions", uavId)
+                                    .getBytes(StandardCharsets.UTF_8);
+                            connection.setCommands().sMembers(keyBytes);
+                        }
+                        return null;
+                    }
+            );
+
             int fixCount = 0;
-            for (Map.Entry<String, Set<String>> entry : dbState.entrySet()) {
-                String uavId = entry.getKey();
-                Set<String> dbPartitions = entry.getValue();
-                Set<String> redisPartitions = redisService.getDronePartitions(uavId);
+            for (int i = 0; i < uavIdList.size(); i++) {
+                String uavId = uavIdList.get(i);
+                Set<String> dbPartitions = dbState.get(uavId);
+
+                // Pipeline返回的Set<byte[]>需转为Set<String>
+                Set<String> redisPartitions = new LinkedHashSet<>();
+                Object result = pipelineResults.get(i);
+                if (result instanceof Set<?>) {
+                    for (Object item : (Set<?>) result) {
+                        if (item instanceof byte[]) {
+                            redisPartitions.add(new String((byte[]) item, StandardCharsets.UTF_8));
+                        } else if (item instanceof String) {
+                            redisPartitions.add((String) item);
+                        }
+                    }
+                }
 
                 if (!dbPartitions.equals(redisPartitions)) {
                     log.warn("[Reconcile] Drift detected for '{}': DB={} vs Redis={}. Fixing...",
                             uavId, dbPartitions, redisPartitions);
-                    // DB is source of truth — overwrite Redis
                     Set<String> toRemove = new LinkedHashSet<>(redisPartitions);
                     toRemove.removeAll(dbPartitions);
                     syncToRedis(uavId, dbPartitions, toRemove);
@@ -309,6 +404,8 @@ public class PartitionRoutingService {
 
             if (fixCount > 0) {
                 log.info("[Reconcile] Fixed {} DB-Redis drift(s) out of {} drones", fixCount, dbState.size());
+            } else {
+                log.debug("[Reconcile] All {} drones consistent", dbState.size());
             }
         } catch (Exception e) {
             log.error("[Reconcile] Reconciliation failed: {}", e.getMessage(), e);

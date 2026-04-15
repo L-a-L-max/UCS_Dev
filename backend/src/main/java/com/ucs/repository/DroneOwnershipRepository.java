@@ -17,4 +17,8 @@ public interface DroneOwnershipRepository extends JpaRepository<DroneOwnership, 
     
     @Query("SELECT do.droneId FROM DroneOwnership do WHERE do.userId = :userId AND do.expiredAt IS NULL")
     List<Long> findDroneIdsByUserId(Long userId);
+
+    /** T-18: 批量查询 — 一次查出多个用户的无人机归属，替代N次循环查询 */
+    @Query("SELECT do FROM DroneOwnership do WHERE do.userId IN :userIds AND do.expiredAt IS NULL")
+    List<DroneOwnership> findActiveByUserIdIn(List<Long> userIds);
 }

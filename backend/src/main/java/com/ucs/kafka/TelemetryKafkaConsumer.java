@@ -6,6 +6,7 @@ import com.ucs.service.PartitionRoutingService;
 import com.ucs.service.RedisService;
 import com.ucs.service.TelemetryPersistenceService;
 import com.ucs.service.WebSocketGatewayService;
+import com.ucs.websocket.WebSocketController;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -46,6 +47,7 @@ public class TelemetryKafkaConsumer {
     private final TelemetryPersistenceService telemetryPersistenceService;
     private final WebSocketGatewayService webSocketGatewayService;
     private final RedisService redisService;
+    private final WebSocketController webSocketController;
 
     /** 消息过期阈值（秒）：超过此时间的消息将被丢弃 */
     private static final long MAX_MESSAGE_AGE_SECONDS = 30;
@@ -115,6 +117,9 @@ public class TelemetryKafkaConsumer {
             Instant timestamp = tsStr != null ? Instant.parse(tsStr) : Instant.now();
             webSocketGatewayService.broadcastToPartitions(partitionData, timestamp);
             webSocketGatewayService.broadcastAll(List.of(payload), timestamp);
+
+            // T-15: 事件驱动增量推送 — 单架无人机实时数据推送到 /topic/drone/{uavId}
+            webSocketController.pushDroneTelemetry(uavId, payload);
 
             // T-11: 处理成功，手动提交offset
             ack.acknowledge();

@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -38,20 +39,31 @@ public class RedisService {
     
     // ========== Drone Online Status ==========
     
+    // T-16: 在线无人机集合Key（替代KEYS命令扫描）
+    private static final String ONLINE_DRONES_SET = "online_drones";
+
     /**
      * Mark drone as online with TTL-based heartbeat.
+     * T-16: 同时维护online_drones Set，避免KEYS扫描
      */
     public void setDroneOnline(String uavId) {
         String key = String.format(DRONE_ONLINE_PREFIX, uavId);
-        stringRedisTemplate.opsForValue().set(key, "true", HEARTBEAT_TTL);
+        // T-25: TTL随机化防雪崩 (30s ± 5s)
+        long ttl = HEARTBEAT_TTL.getSeconds() + ThreadLocalRandom.current().nextLong(-5, 6);
+        stringRedisTemplate.opsForValue().set(key, "true", Duration.ofSeconds(ttl));
+        // T-16: 加入在线集合 (O(1)操作)
+        stringRedisTemplate.opsForSet().add(ONLINE_DRONES_SET, uavId);
     }
     
     /**
      * Mark drone as offline explicitly.
+     * T-16: 同时从online_drones Set中移除
      */
     public void setDroneOffline(String uavId) {
         String key = String.format(DRONE_ONLINE_PREFIX, uavId);
         stringRedisTemplate.delete(key);
+        // T-16: 从在线集合移除
+        stringRedisTemplate.opsForSet().remove(ONLINE_DRONES_SET, uavId);
     }
     
     /**
@@ -68,40 +80,36 @@ public class RedisService {
     }
     
     /**
-     * Get all currently online drone IDs by scanning drone:*:online keys.
-     * Used by GatewayHealthMonitor to detect gateway offline scenarios.
+     * Get all currently online drone IDs.
+     * T-16: 使用Redis Set替代KEYS命令扫描 — O(N)但N是在线数而非总Key数
      *
-     * @return Set of uavIds that have active heartbeat keys in Redis
+     * @return Set of uavIds that are currently online
      */
     public Set<String> getAllOnlineDroneIds() {
-        Set<String> onlineDrones = new HashSet<>();
         try {
-            Set<String> keys = stringRedisTemplate.keys("drone:*:online");
-            if (keys != null) {
-                for (String key : keys) {
-                    // key format: drone:{uavId}:online
-                    String[] parts = key.split(":");
-                    if (parts.length >= 3) {
-                        onlineDrones.add(parts[1]);
-                    }
-                }
-            }
+            Set<String> members = stringRedisTemplate.opsForSet().members(ONLINE_DRONES_SET);
+            return members != null ? members : Collections.emptySet();
         } catch (Exception e) {
             log.debug("Redis unavailable for getAllOnlineDroneIds(), returning empty set");
+            return Collections.emptySet();
         }
-        return onlineDrones;
     }
 
     // ========== Drone Partition Mapping ==========
     
     /**
      * Set the partitions a drone belongs to.
+     * T-25: TTL随机化防雪崩
      */
     public void setDronePartitions(String uavId, Set<String> partitionNames) {
         String key = String.format(DRONE_PARTITIONS_PREFIX, uavId);
         stringRedisTemplate.delete(key);
         if (!partitionNames.isEmpty()) {
             stringRedisTemplate.opsForSet().add(key, partitionNames.toArray(new String[0]));
+            // T-25: 基础TTL 5分钟 + 随机偏移0-30秒，打散过期时间
+            long baseTtlSeconds = 300;
+            long jitter = ThreadLocalRandom.current().nextLong(30);
+            stringRedisTemplate.expire(key, Duration.ofSeconds(baseTtlSeconds + jitter));
         }
     }
     

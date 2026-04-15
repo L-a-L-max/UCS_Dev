@@ -11,8 +11,7 @@ import com.ucs.service.ITeamService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -31,6 +30,7 @@ public class TeamServiceImpl implements ITeamService {
     private final TeamDroneMapRepository teamDroneMapRepository;
     private final TaskRepository taskRepository;
     private final TeamRoleRepository teamRoleRepository;
+    private final TaskAssignmentRepository taskAssignmentRepository;
     
     private final Map<Long, Boolean> onlineUsers = new ConcurrentHashMap<>();
     
@@ -41,7 +41,8 @@ public class TeamServiceImpl implements ITeamService {
                            DroneOwnershipRepository droneOwnershipRepository,
                            TeamDroneMapRepository teamDroneMapRepository,
                            TaskRepository taskRepository,
-                           TeamRoleRepository teamRoleRepository) {
+                           TeamRoleRepository teamRoleRepository,
+                           TaskAssignmentRepository taskAssignmentRepository) {
         this.teamRepository = teamRepository;
         this.teamMemberRepository = teamMemberRepository;
         this.userRepository = userRepository;
@@ -50,6 +51,7 @@ public class TeamServiceImpl implements ITeamService {
         this.teamDroneMapRepository = teamDroneMapRepository;
         this.taskRepository = taskRepository;
         this.teamRoleRepository = teamRoleRepository;
+        this.taskAssignmentRepository = taskAssignmentRepository;
     }
     
     @Override
@@ -149,9 +151,40 @@ public class TeamServiceImpl implements ITeamService {
         return dto;
     }
     
+    /**
+     * T-18: N+1查询优化 — 批量预加载无人机归属和任务，替代循环内逐条查询。
+     * 优化前: N个成员 → 2N+1条SQL (1条成员查询 + N条归属查询 + N条任务查询)
+     * 优化后: N个成员 → 3条SQL (1条成员查询 + 1条批量归属查询 + 1条批量任务查询)
+     */
     public List<TeamMemberDTO> getTeamMembers(Long teamId) {
         List<TeamMember> members = teamMemberRepository.findByTeamIdWithUser(teamId);
-        
+        if (members.isEmpty()) return Collections.emptyList();
+
+        // T-18: 收集所有用户ID，批量查询
+        List<Long> userIds = members.stream()
+                .map(m -> m.getUser().getId())
+                .collect(Collectors.toList());
+
+        // T-18: 1次批量查询替代N次循环查询 — 无人机归属
+        Map<Long, List<Long>> userDroneMap = droneOwnershipRepository.findActiveByUserIdIn(userIds)
+                .stream()
+                .collect(Collectors.groupingBy(
+                        com.ucs.entity.DroneOwnership::getUserId,
+                        Collectors.mapping(com.ucs.entity.DroneOwnership::getDroneId, Collectors.toList())
+                ));
+
+        // T-18: 1次批量查询替代N次循环查询 — 活跃任务
+        Map<Long, com.ucs.entity.Task> userActiveTaskMap = new LinkedHashMap<>();
+        taskRepository.findActiveByAssignedUserIdIn(userIds).forEach(task -> {
+            // 只取每个用户的第一个活跃任务（与原逻辑一致）
+            // 需要通过TaskAssignment关联回用户
+            taskAssignmentRepository.findByTaskId(task.getId()).forEach(ta -> {
+                if (userIds.contains(ta.getUserId())) {
+                    userActiveTaskMap.putIfAbsent(ta.getUserId(), task);
+                }
+            });
+        });
+
         return members.stream().map(member -> {
             TeamMemberDTO dto = new TeamMemberDTO();
             User user = member.getUser();
@@ -160,22 +193,23 @@ public class TeamServiceImpl implements ITeamService {
             dto.setAvatarUrl(user.getAvatarUrl());
             dto.setOnline(isUserOnline(user.getId()));
             dto.setStatus(isUserOnline(user.getId()) ? "ONLINE" : "OFFLINE");
-            
+
             if (member.getTeamRole() != null) {
                 dto.setRole(member.getTeamRole().getRoleName());
             }
-            
-            List<Long> droneIds = droneOwnershipRepository.findDroneIdsByUserId(user.getId());
+
+            // T-18: 从预加载的Map中获取，O(1)查询
+            List<Long> droneIds = userDroneMap.getOrDefault(user.getId(), Collections.emptyList());
             dto.setUavIds(droneIds.stream()
                     .map(id -> "UAV_" + String.format("%03d", id))
                     .collect(Collectors.toList()));
-            
-            List<com.ucs.entity.Task> tasks = taskRepository.findByAssignedUserId(user.getId());
-            tasks.stream()
-                    .filter(t -> t.getStatus() == 1)
-                    .findFirst()
-                    .ifPresent(t -> dto.setCurrentTask(t.getTaskName()));
-            
+
+            // T-18: 从预加载的Map中获取，O(1)查询
+            com.ucs.entity.Task activeTask = userActiveTaskMap.get(user.getId());
+            if (activeTask != null) {
+                dto.setCurrentTask(activeTask.getTaskName());
+            }
+
             return dto;
         }).collect(Collectors.toList());
     }

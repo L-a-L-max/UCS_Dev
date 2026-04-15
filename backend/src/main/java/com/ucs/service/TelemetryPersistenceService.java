@@ -13,6 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Persistence gateway service.
@@ -31,6 +33,10 @@ public class TelemetryPersistenceService {
 
     // Buffer for batch persistence
     private final ConcurrentLinkedQueue<TelemetryRecord> buffer = new ConcurrentLinkedQueue<>();
+
+    // T-13: 日志降频计数器 — 每12次flush(5s×12=60s)输出一次摘要
+    private final AtomicInteger flushCount = new AtomicInteger(0);
+    private final AtomicLong minuteRecordCount = new AtomicLong(0);
 
     /**
      * Accept telemetry data from the DDS simulator for persistence.
@@ -124,12 +130,13 @@ public class TelemetryPersistenceService {
             latestStateRepository.saveAll(latestStates);
         }
 
-        log.info("[Persistence] Flushed buffer: {} telemetry records, {} latest states", 
+        // T-13: 每次flush降级为DEBUG，每分钟(12×5s)输出一次INFO摘要
+        log.debug("[Persistence] Flushed buffer: {} records, {} states",
                 telemetryList.size(), latestStates.size());
-        for (Map.Entry<String, TelemetryRecord> logEntry : latestByUav.entrySet()) {
-            TelemetryRecord lr = logEntry.getValue();
-            log.info("[Persistence]   Drone '{}': lat={}, lon={}, alt={}",
-                    lr.uavId, lr.lat, lr.lon, lr.alt);
+        minuteRecordCount.addAndGet(telemetryList.size());
+        if (flushCount.incrementAndGet() % 12 == 0) {
+            log.info("[Persistence] Last minute: {} records flushed, {} unique drones",
+                    minuteRecordCount.getAndSet(0), latestByUav.size());
         }
     }
 

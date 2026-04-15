@@ -1,0 +1,128 @@
+##############################################
+# T-28: 后端多实例部署编排
+# 使用方式：docker-compose -f docker-compose-microservices.yml -f docker-compose-multi-instance.yml up -d
+#
+# 部署3个后端实例 + Nginx负载均衡，共享 Redis/Kafka/PostgreSQL
+# WebSocket通过Redis Pub/Sub桥接实现跨实例广播 (T-27)
+##############################################
+version: '3.8'
+
+services:
+
+  # ---- Nginx 负载均衡 ----
+  nginx-lb:
+    image: nginx:1.25-alpine
+    container_name: ucs-nginx-lb
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ucs-backend-1
+      - ucs-backend-2
+      - ucs-backend-3
+    networks:
+      - ucs-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ---- 后端实例 1 ----
+  ucs-backend-1:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ucs-backend-1
+    environment:
+      SERVER_PORT: 8080
+      INSTANCE_ID: backend-1
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/ucs
+      SPRING_DATASOURCE_USERNAME: ucs
+      SPRING_DATASOURCE_PASSWORD: ucs_password
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      KAFKA_ENABLED: "true"
+      DDS_GATEWAY_COMMAND_URL: ${DDS_GATEWAY_COMMAND_URL:-http://host.docker.internal:5050}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - ucs-net
+
+  # ---- 后端实例 2 ----
+  ucs-backend-2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ucs-backend-2
+    environment:
+      SERVER_PORT: 8080
+      INSTANCE_ID: backend-2
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/ucs
+      SPRING_DATASOURCE_USERNAME: ucs
+      SPRING_DATASOURCE_PASSWORD: ucs_password
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      KAFKA_ENABLED: "true"
+      DDS_GATEWAY_COMMAND_URL: ${DDS_GATEWAY_COMMAND_URL:-http://host.docker.internal:5050}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - ucs-net
+
+  # ---- 后端实例 3 ----
+  ucs-backend-3:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ucs-backend-3
+    environment:
+      SERVER_PORT: 8080
+      INSTANCE_ID: backend-3
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/ucs
+      SPRING_DATASOURCE_USERNAME: ucs
+      SPRING_DATASOURCE_PASSWORD: ucs_password
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      KAFKA_ENABLED: "true"
+      DDS_GATEWAY_COMMAND_URL: ${DDS_GATEWAY_COMMAND_URL:-http://host.docker.internal:5050}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - ucs-net
+
+networks:
+  ucs-net:
+    external: true

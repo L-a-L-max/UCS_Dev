@@ -17,4 +17,9 @@ public interface TaskRepository extends JpaRepository<Task, Long> {
     @Query("SELECT t FROM Task t WHERE t.id IN " +
            "(SELECT ta.taskId FROM TaskAssignment ta WHERE ta.userId = :userId)")
     List<Task> findByAssignedUserId(Long userId);
+
+    /** T-18: 批量查询 — 一次查出多个用户的活跃任务，替代N次循环查询 */
+    @Query("SELECT t FROM Task t WHERE t.status = 1 AND t.id IN " +
+           "(SELECT ta.taskId FROM TaskAssignment ta WHERE ta.userId IN :userIds)")
+    List<Task> findActiveByAssignedUserIdIn(List<Long> userIds);
 }

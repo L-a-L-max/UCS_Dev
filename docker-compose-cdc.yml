@@ -1,0 +1,86 @@
+##############################################
+# T-26: CDC (Change Data Capture) — Debezium
+# 监控 PostgreSQL WAL 变更，发布到 Kafka，消费端失效缓存
+#
+# 使用方式：docker-compose -f docker-compose-microservices.yml -f docker-compose-cdc.yml up -d
+##############################################
+version: '3.8'
+
+services:
+  # ---- Debezium Connect ----
+  debezium-connect:
+    image: debezium/connect:2.5
+    container_name: ucs-debezium-connect
+    ports:
+      - "8083:8083"
+    environment:
+      GROUP_ID: ucs-cdc-connect
+      BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      CONFIG_STORAGE_TOPIC: _cdc_configs
+      OFFSET_STORAGE_TOPIC: _cdc_offsets
+      STATUS_STORAGE_TOPIC: _cdc_status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 3
+      OFFSET_STORAGE_REPLICATION_FACTOR: 3
+      STATUS_STORAGE_REPLICATION_FACTOR: 3
+      # 连接器配置
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    depends_on:
+      - kafka-1
+      - postgres
+    networks:
+      - ucs-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---- Debezium 连接器初始化 ----
+  # 等待 Connect 启动后注册 PostgreSQL Source Connector
+  debezium-init:
+    image: curlimages/curl:latest
+    container_name: ucs-debezium-init
+    depends_on:
+      debezium-connect:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "=== T-26: Registering Debezium PostgreSQL connector ==="
+        curl -X POST http://debezium-connect:8083/connectors \
+          -H "Content-Type: application/json" \
+          -d '{
+            "name": "ucs-postgres-connector",
+            "config": {
+              "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+              "database.hostname": "postgres",
+              "database.port": "5432",
+              "database.user": "ucs",
+              "database.password": "ucs_password",
+              "database.dbname": "ucs",
+              "database.server.name": "ucs",
+              "plugin.name": "pgoutput",
+              "topic.prefix": "cdc",
+              "table.include.list": "public.drone_partition_map,public.drones",
+              "slot.name": "ucs_cdc_slot",
+              "publication.name": "ucs_cdc_pub",
+              "heartbeat.interval.ms": "10000",
+              "snapshot.mode": "initial",
+              "tombstones.on.delete": "false",
+              "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+              "key.converter.schemas.enable": "false",
+              "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+              "value.converter.schemas.enable": "false"
+            }
+          }'
+        echo ""
+        echo "=== Debezium connector registered ==="
+    networks:
+      - ucs-net
+
+networks:
+  ucs-net:
+    external: true

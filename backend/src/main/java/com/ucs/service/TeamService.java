@@ -8,9 +8,7 @@ import com.ucs.entity.User;
 import com.ucs.repository.*;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -24,6 +22,7 @@ public class TeamService {
     private final DroneOwnershipRepository droneOwnershipRepository;
     private final TeamDroneMapRepository teamDroneMapRepository;
     private final TaskRepository taskRepository;
+    private final TaskAssignmentRepository taskAssignmentRepository;
     
     private final Map<Long, Boolean> onlineUsers = new ConcurrentHashMap<>();
     
@@ -33,7 +32,8 @@ public class TeamService {
                        UserRoleMapRepository userRoleMapRepository,
                        DroneOwnershipRepository droneOwnershipRepository,
                        TeamDroneMapRepository teamDroneMapRepository,
-                       TaskRepository taskRepository) {
+                       TaskRepository taskRepository,
+                       TaskAssignmentRepository taskAssignmentRepository) {
         this.teamRepository = teamRepository;
         this.teamMemberRepository = teamMemberRepository;
         this.userRepository = userRepository;
@@ -41,6 +41,7 @@ public class TeamService {
         this.droneOwnershipRepository = droneOwnershipRepository;
         this.teamDroneMapRepository = teamDroneMapRepository;
         this.taskRepository = taskRepository;
+        this.taskAssignmentRepository = taskAssignmentRepository;
     }
     
     public TeamInfoDTO getTeamInfo(Long teamId) {
@@ -76,9 +77,38 @@ public class TeamService {
         return dto;
     }
     
+    /**
+     * T-18: N+1查询优化 — 批量预加载无人机归属和任务，替代循环内逐条查询。
+     * 优化前: N个成员 → 2N+1条SQL
+     * 优化后: N个成员 → 3条SQL
+     */
     public List<TeamMemberDTO> getTeamMembers(Long teamId) {
         List<TeamMember> members = teamMemberRepository.findByTeamIdWithUser(teamId);
-        
+        if (members.isEmpty()) return Collections.emptyList();
+
+        // T-18: 收集所有用户ID，批量查询
+        List<Long> userIds = members.stream()
+                .map(m -> m.getUser().getId())
+                .collect(Collectors.toList());
+
+        // T-18: 1次批量查询替代N次循环查询 — 无人机归属
+        Map<Long, List<Long>> userDroneMap = droneOwnershipRepository.findActiveByUserIdIn(userIds)
+                .stream()
+                .collect(Collectors.groupingBy(
+                        com.ucs.entity.DroneOwnership::getUserId,
+                        Collectors.mapping(com.ucs.entity.DroneOwnership::getDroneId, Collectors.toList())
+                ));
+
+        // T-18: 1次批量查询替代N次循环查询 — 活跃任务
+        Map<Long, com.ucs.entity.Task> userActiveTaskMap = new LinkedHashMap<>();
+        taskRepository.findActiveByAssignedUserIdIn(userIds).forEach(task -> {
+            taskAssignmentRepository.findByTaskId(task.getId()).forEach(ta -> {
+                if (userIds.contains(ta.getUserId())) {
+                    userActiveTaskMap.putIfAbsent(ta.getUserId(), task);
+                }
+            });
+        });
+
         return members.stream().map(member -> {
             TeamMemberDTO dto = new TeamMemberDTO();
             User user = member.getUser();
@@ -87,22 +117,21 @@ public class TeamService {
             dto.setAvatarUrl(user.getAvatarUrl());
             dto.setOnline(isUserOnline(user.getId()));
             dto.setStatus(isUserOnline(user.getId()) ? "ONLINE" : "OFFLINE");
-            
+
             if (member.getTeamRole() != null) {
                 dto.setRole(member.getTeamRole().getRoleName());
             }
-            
-            List<Long> droneIds = droneOwnershipRepository.findDroneIdsByUserId(user.getId());
+
+            List<Long> droneIds = userDroneMap.getOrDefault(user.getId(), Collections.emptyList());
             dto.setUavIds(droneIds.stream()
                     .map(id -> "UAV_" + String.format("%03d", id))
                     .collect(Collectors.toList()));
-            
-            List<com.ucs.entity.Task> tasks = taskRepository.findByAssignedUserId(user.getId());
-            tasks.stream()
-                    .filter(t -> t.getStatus() == 1)
-                    .findFirst()
-                    .ifPresent(t -> dto.setCurrentTask(t.getTaskName()));
-            
+
+            com.ucs.entity.Task activeTask = userActiveTaskMap.get(user.getId());
+            if (activeTask != null) {
+                dto.setCurrentTask(activeTask.getTaskName());
+            }
+
             return dto;
         }).collect(Collectors.toList());
     }
