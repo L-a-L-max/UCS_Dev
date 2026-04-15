@@ -292,6 +292,9 @@ class MavlinkGateway:
         # Store the result code when ACK arrives
         self._pending_ack_results: Dict[Tuple[str, int], int] = {}
 
+        # Mode change events for polling (uav_id -> Event)
+        self._mode_change_events: Dict[str, threading.Event] = {}
+
     # ============================================================
     # GCS Heartbeat (required by PX4 to consider link alive)
     # ============================================================
@@ -804,7 +807,19 @@ class MavlinkGateway:
             custom_mode = msg.custom_mode
             main_mode = (custom_mode >> 16) & 0xFF
             sub_mode = (custom_mode >> 24) & 0xFF
-            s.flight_mode = self._decode_px4_mode(main_mode, sub_mode)
+            old_mode = s.flight_mode
+            new_mode = self._decode_px4_mode(main_mode, sub_mode)
+            s.flight_mode = new_mode
+
+            # Log mode changes for diagnostics
+            if old_mode and old_mode != new_mode:
+                logger.info("[ModeChange] %s: %s -> %s (base_mode=0x%02X custom=0x%08X)",
+                            uav_id, old_mode, new_mode, msg.base_mode, custom_mode)
+
+            # Signal mode-change waiters
+            mode_event = self._mode_change_events.get(uav_id)
+            if mode_event:
+                mode_event.set()
 
             s.last_update = time.time()
             s.msg_count += 1
@@ -1313,7 +1328,8 @@ class MavlinkGateway:
 
     def _send_mavlink_set_position_target(self, uav_id: str,
                                            x: float, y: float, z: float,
-                                           yaw: float = float('nan')) -> bool:
+                                           yaw: float = float('nan'),
+                                           log: bool = False) -> bool:
         """Send SET_POSITION_TARGET_LOCAL_NED for OFFBOARD position control.
 
         This is the MAVLink equivalent of the DDS TrajectorySetpoint.
@@ -1322,6 +1338,8 @@ class MavlinkGateway:
 
         addr = self._resolve_uav_addr(uav_id)
         if not addr:
+            if log:
+                logger.warning("[SetpointSend] %s: addr=None, cannot send!", uav_id)
             return False
 
         state = self.drone_states.get(uav_id)
@@ -1333,11 +1351,10 @@ class MavlinkGateway:
             mav.srcSystem = 255
             mav.srcComponent = 190
 
-            # type_mask: ignore velocity and acceleration, use position + yaw
-            # Bits: 0=x, 1=y, 2=z, 3=vx, 4=vy, 5=vz, 6=ax, 7=ay, 8=az, 10=yaw, 11=yaw_rate
-            type_mask = 0b0000101111111000  # Use position (0-2) + yaw (10)
-            if math.isnan(yaw):
-                type_mask |= (1 << 10)  # Ignore yaw if NaN
+            # type_mask: use position only, ignore velocity/acceleration/yaw_rate
+            # Bits: 0=x, 1=y, 2=z, 3=vx, 4=vy, 5=vz, 6=ax, 7=ay, 8=az, 9=force, 10=yaw, 11=yaw_rate
+            type_mask = 0b0000111111111000  # Use position (0-2), ignore everything else
+            # Ignore yaw always for simplicity — let PX4 hold current heading
 
             msg = mav.set_position_target_local_ned_encode(
                 0,  # time_boot_ms (not used)
@@ -1347,10 +1364,18 @@ class MavlinkGateway:
                 x, y, z,  # position (NED)
                 0, 0, 0,  # velocity
                 0, 0, 0,  # acceleration
-                yaw if not math.isnan(yaw) else 0,  # yaw
+                0,  # yaw (ignored by type_mask)
                 0   # yaw_rate
             )
             packed = msg.pack(mav)
+
+            if log:
+                logger.info("[SetpointSend] %s: target_sys=%d target_comp=%d "
+                            "x=%.2f y=%.2f z=%.2f type_mask=0x%04X addr=%s:%d "
+                            "len=%d STX=0x%02X msgid=%d",
+                            uav_id, target_sys, target_comp,
+                            x, y, z, type_mask, addr[0], addr[1],
+                            len(packed), packed[0], msg.get_msgId())
 
             conn_type = state.connection_type if state else self.listen_protocol
             if conn_type == 'udp' and self._udp_socket:
@@ -1360,10 +1385,12 @@ class MavlinkGateway:
                 if tcp_sock:
                     tcp_sock.sendall(packed)
                 else:
+                    if log:
+                        logger.warning("[SetpointSend] %s: no TCP socket for %s", uav_id, addr)
                     return False
             return True
         except Exception as e:
-            logger.error("[Command] Failed to send SET_POSITION_TARGET: %s", e)
+            logger.error("[SetpointSend] Failed for %s: %s", uav_id, e)
             return False
 
     def _send_command_and_wait_ack(self, uav_id: str, command: int,
@@ -1423,16 +1450,16 @@ class MavlinkGateway:
             # Save home position
             self._save_home_position(uav_id)
 
-            # OFFBOARD takeoff with full verification.
+            # OFFBOARD takeoff — robust implementation.
             #
-            # Key insight: QGC works because it uses AUTO.TAKEOFF (PX4 internal)
-            # but we use OFFBOARD mode (external control). OFFBOARD has stricter
-            # requirements:
-            #   - PX4 must receive SET_POSITION_TARGET_LOCAL_NED continuously
-            #   - PX4 must confirm OFFBOARD mode switch (via COMMAND_ACK)
-            #   - x/y/z must ALL be valid numbers (not NaN)
-            #   - Setpoints must be sent BEFORE mode switch for PX4 to register
-            #     offboard_control_mode internally
+            # Problem analysis: PX4 accepted DO_SET_MODE → OFFBOARD (ACK=ACCEPTED)
+            # but immediately fell back to AUTO_LOITER. This means PX4 entered
+            # OFFBOARD mode but couldn't find valid offboard_control_mode updates
+            # from our SET_POSITION_TARGET_LOCAL_NED messages.
+            #
+            # Fix: Send setpoints from BOTH the background heartbeat thread AND
+            # the main thread. Send setpoints continuously before, during, and
+            # after the mode switch. Poll for actual mode change via PX4 heartbeat.
             #
             # NED: Z negative = up (z=-5 means 5m above home).
 
@@ -1444,81 +1471,161 @@ class MavlinkGateway:
                 cur_x = state.ned_x
                 cur_y = state.ned_y
                 logger.info("[TAKEOFF] %s current state: mode=%s armed=%s "
-                            "NED=(%.2f, %.2f, %.2f) sys_id=%d",
+                            "NED=(%.2f, %.2f, %.2f) sys_id=%d comp_id=%d",
                             uav_id, state.flight_mode, state.armed,
                             state.ned_x, state.ned_y, state.ned_z,
-                            state.system_id)
+                            state.system_id, state.component_id or 0)
             else:
                 logger.warning("[TAKEOFF] %s no state available!", uav_id)
 
-            # Step 1: Start heartbeat at 10Hz with COMPLETE position (x, y, z)
-            logger.info("[TAKEOFF] Step 1: Start setpoint stream (10Hz) "
-                        "x=%.2f y=%.2f z=%.2f for %s",
-                        cur_x, cur_y, target_z, uav_id)
+            # Step 1: Start background heartbeat AND send setpoints from main thread
+            logger.info("[TAKEOFF] Step 1: Start setpoint streams for %s "
+                        "(x=%.2f y=%.2f z=%.2f)", uav_id, cur_x, cur_y, target_z)
+
+            # Start background 10Hz heartbeat thread
             self.start_offboard_heartbeat(
                 uav_id, target_z=target_z, target_x=cur_x, target_y=cur_y,
-                interval=0.1)  # 10Hz for stable OFFBOARD control
-            time.sleep(1.5)  # ~15 setpoints, well above PX4's minimum
+                interval=0.1)
 
-            # Step 2: Switch to OFFBOARD mode (with ACK verification + retry)
-            custom_mode = PX4_CUSTOM_MAIN_MODE_OFFBOARD << 16
-            offboard_ok = False
-            for attempt in range(3):
-                logger.info("[TAKEOFF] Step 2: DO_SET_MODE → OFFBOARD (attempt %d/3) for %s",
-                            attempt + 1, uav_id)
-                ack_result = self._send_command_and_wait_ack(
-                    uav_id, MAV_CMD_DO_SET_MODE,
-                    param1=1.0,  # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
-                    param2=float(custom_mode),
-                    timeout=2.0)
+            # ALSO send setpoints from main thread — belt and suspenders.
+            # This ensures PX4 receives setpoints even if thread scheduling
+            # delays the heartbeat thread. First send with logging for diagnostics.
+            send_ok = self._send_mavlink_set_position_target(
+                uav_id, cur_x, cur_y, target_z, log=True)
+            logger.info("[TAKEOFF] First direct setpoint send: ok=%s", send_ok)
 
-                if ack_result == 0:  # MAV_RESULT_ACCEPTED
-                    logger.info("[TAKEOFF] OFFBOARD mode ACK accepted for %s", uav_id)
-                    offboard_ok = True
-                    break
-                elif ack_result is None:
-                    logger.warning("[TAKEOFF] No ACK for DO_SET_MODE (timeout) - attempt %d",
-                                   attempt + 1)
+            # Send 30 setpoints over 3 seconds from main thread
+            sp_success, sp_fail = 0, 0
+            for i in range(30):
+                if self._send_mavlink_set_position_target(uav_id, cur_x, cur_y, target_z):
+                    sp_success += 1
                 else:
-                    logger.warning("[TAKEOFF] DO_SET_MODE rejected: result=%d - attempt %d",
-                                   ack_result, attempt + 1)
-                time.sleep(0.5)  # Brief pause before retry
+                    sp_fail += 1
+                time.sleep(0.1)
+            logger.info("[TAKEOFF] Pre-mode-switch setpoints sent: ok=%d fail=%d",
+                        sp_success, sp_fail)
 
-            # Verify flight mode actually changed
-            time.sleep(0.3)
-            with self._lock:
-                state = self.drone_states.get(uav_id)
-            actual_mode = state.flight_mode if state else 'UNKNOWN'
-            logger.info("[TAKEOFF] After mode switch: actual_mode=%s for %s",
-                        actual_mode, uav_id)
-
-            if not offboard_ok:
-                logger.error("[TAKEOFF] FAILED: Could not switch to OFFBOARD mode for %s. "
-                             "PX4 may not be receiving setpoints or offboard is not available. "
-                             "Check: COM_RCL_EXCEPT, COM_OF_LOSS_T parameters.", uav_id)
+            if sp_fail > 20:
+                logger.error("[TAKEOFF] FAILED: Most setpoints failed to send for %s. "
+                             "Check connection/address.", uav_id)
                 self.stop_offboard_heartbeat(uav_id)
                 ok = False
             else:
-                # Step 3: ARM with ACK verification
-                logger.info("[TAKEOFF] Step 3: ARM for %s", uav_id)
-                arm_result = self._send_command_and_wait_ack(
-                    uav_id, MAV_CMD_COMPONENT_ARM_DISARM,
-                    param1=1.0, timeout=3.0)
+                # Step 2: Switch to OFFBOARD mode
+                # Set up mode change event for polling
+                mode_event = threading.Event()
+                self._mode_change_events[uav_id] = mode_event
 
-                if arm_result == 0:
-                    logger.info("[TAKEOFF] ARM ACK accepted for %s", uav_id)
-                    ok = True
-                elif arm_result is None:
-                    logger.warning("[TAKEOFF] No ACK for ARM (timeout) for %s", uav_id)
-                    ok = True  # ARM might still work without ACK
-                else:
-                    logger.error("[TAKEOFF] ARM rejected: result=%d for %s",
-                                 arm_result, uav_id)
+                custom_mode = PX4_CUSTOM_MAIN_MODE_OFFBOARD << 16
+                offboard_ok = False
+
+                for attempt in range(3):
+                    # Send a few more setpoints right before mode switch
+                    for _ in range(5):
+                        self._send_mavlink_set_position_target(uav_id, cur_x, cur_y, target_z)
+                        time.sleep(0.02)
+
+                    logger.info("[TAKEOFF] Step 2: DO_SET_MODE → OFFBOARD "
+                                "(attempt %d/3) for %s", attempt + 1, uav_id)
+                    ack_result = self._send_command_and_wait_ack(
+                        uav_id, MAV_CMD_DO_SET_MODE,
+                        param1=1.0,  # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+                        param2=float(custom_mode),
+                        timeout=2.0)
+
+                    if ack_result == 0:  # MAV_RESULT_ACCEPTED
+                        logger.info("[TAKEOFF] OFFBOARD ACK accepted for %s", uav_id)
+
+                        # CRITICAL: Keep sending setpoints immediately after mode switch
+                        # to prevent PX4 from exiting OFFBOARD due to stale setpoints
+                        for _ in range(10):
+                            self._send_mavlink_set_position_target(
+                                uav_id, cur_x, cur_y, target_z)
+                            time.sleep(0.05)
+
+                        # Poll for actual OFFBOARD mode (wait for PX4 heartbeat)
+                        for poll in range(20):  # up to 2 seconds
+                            with self._lock:
+                                st = self.drone_states.get(uav_id)
+                            if st and st.flight_mode == 'OFFBOARD':
+                                offboard_ok = True
+                                logger.info("[TAKEOFF] OFFBOARD mode confirmed by heartbeat "
+                                            "(poll %d) for %s", poll, uav_id)
+                                break
+                            # Send setpoint while waiting
+                            self._send_mavlink_set_position_target(
+                                uav_id, cur_x, cur_y, target_z)
+                            time.sleep(0.1)
+
+                        if offboard_ok:
+                            break
+                        else:
+                            with self._lock:
+                                st = self.drone_states.get(uav_id)
+                            actual = st.flight_mode if st else 'UNKNOWN'
+                            logger.warning("[TAKEOFF] OFFBOARD ACK accepted but mode=%s "
+                                           "(PX4 may have exited OFFBOARD). Retrying...",
+                                           actual)
+                    elif ack_result is None:
+                        logger.warning("[TAKEOFF] No ACK for DO_SET_MODE (timeout) "
+                                       "- attempt %d", attempt + 1)
+                    else:
+                        logger.warning("[TAKEOFF] DO_SET_MODE rejected: result=%d "
+                                       "- attempt %d", ack_result, attempt + 1)
+                    time.sleep(0.5)
+
+                # Clean up mode event
+                self._mode_change_events.pop(uav_id, None)
+
+                if not offboard_ok:
+                    # Log diagnostic info
+                    with self._lock:
+                        st = self.drone_states.get(uav_id)
+                    actual = st.flight_mode if st else 'UNKNOWN'
+                    logger.error("[TAKEOFF] FAILED: OFFBOARD mode did not stick for %s. "
+                                 "actual_mode=%s. PX4 accepted the command but fell back. "
+                                 "Possible causes:\n"
+                                 "  1. SET_POSITION_TARGET_LOCAL_NED not reaching PX4\n"
+                                 "  2. COM_RCL_EXCEPT not set (need bit 2 = value 4)\n"
+                                 "  3. COM_OF_LOSS_T too short\n"
+                                 "  4. MavRouter not forwarding setpoint messages",
+                                 uav_id, actual)
+                    self.stop_offboard_heartbeat(uav_id)
                     ok = False
+                else:
+                    # Step 3: ARM — send setpoints before and after
+                    for _ in range(5):
+                        self._send_mavlink_set_position_target(
+                            uav_id, cur_x, cur_y, target_z)
+                        time.sleep(0.02)
 
-            logger.info("[TAKEOFF] Complete for %s: offboard=%s arm_ok=%s "
+                    logger.info("[TAKEOFF] Step 3: ARM for %s", uav_id)
+                    arm_result = self._send_command_and_wait_ack(
+                        uav_id, MAV_CMD_COMPONENT_ARM_DISARM,
+                        param1=1.0, timeout=3.0)
+
+                    # Keep sending setpoints after ARM
+                    for _ in range(10):
+                        self._send_mavlink_set_position_target(
+                            uav_id, cur_x, cur_y, target_z)
+                        time.sleep(0.05)
+
+                    if arm_result == 0:
+                        logger.info("[TAKEOFF] ARM ACK accepted for %s", uav_id)
+                        ok = True
+                    elif arm_result is None:
+                        logger.warning("[TAKEOFF] No ACK for ARM (timeout) for %s "
+                                       "- proceeding anyway", uav_id)
+                        ok = True
+                    else:
+                        logger.error("[TAKEOFF] ARM rejected: result=%d for %s",
+                                     arm_result, uav_id)
+                        ok = False
+
+            logger.info("[TAKEOFF] Complete for %s: offboard=%s ok=%s "
                         "(x=%.2f y=%.2f z=%.2f)",
-                        uav_id, offboard_ok, ok, cur_x, cur_y, target_z)
+                        uav_id, offboard_ok if 'offboard_ok' in dir() else 'N/A',
+                        ok, cur_x, cur_y, target_z)
 
         elif command_type == 'LAND':
             self.stop_offboard_heartbeat(uav_id)
@@ -1778,6 +1885,8 @@ class MavlinkGateway:
         def _heartbeat_loop():
             logger.info("[Heartbeat] Started for %s at %.1f Hz", uav_id, 1.0 / interval)
             _arrival_logged = False
+            _send_count = 0
+            _fail_count = 0
             while self._heartbeat_active.get(uav_id, False) and self.running:
                 try:
                     current_sp = self._heartbeat_setpoints.get(uav_id, {})
@@ -1811,11 +1920,20 @@ class MavlinkGateway:
                                 current_sp['y'] = y
                                 current_sp['z'] = z
 
-                    self._send_mavlink_set_position_target(uav_id, x, y, z, yaw=yaw)
+                    sent = self._send_mavlink_set_position_target(uav_id, x, y, z, yaw=yaw)
+                    _send_count += 1
+                    if not sent:
+                        _fail_count += 1
+
+                    # Log first 3 sends and then every 50th for diagnostics
+                    if _send_count <= 3 or _send_count % 50 == 0:
+                        logger.info("[Heartbeat] %s send #%d: ok=%s x=%.2f y=%.2f z=%.2f "
+                                    "(fails=%d)", uav_id, _send_count, sent, x, y, z, _fail_count)
                 except Exception as e:
                     logger.error("[Heartbeat] Error for %s: %s", uav_id, e)
                 time.sleep(interval)
-            logger.info("[Heartbeat] Stopped for %s", uav_id)
+            logger.info("[Heartbeat] Stopped for %s (total=%d fails=%d)",
+                        uav_id, _send_count, _fail_count)
 
         t = threading.Thread(target=_heartbeat_loop, daemon=True, name=f"heartbeat-{uav_id}")
         t.start()
