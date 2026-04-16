@@ -13,12 +13,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Q7: Command service thread pool configuration.
  *
- * Uses CallerRunsPolicy because command messages MUST NOT be dropped.
- * When the pool is saturated, the Kafka consumer thread itself processes the command,
- * providing natural backpressure to Kafka (consumer slows down polling).
+ * Uses DiscardOldestPolicy to prioritize system availability (HA-first principle):
+ *   - CallerRunsPolicy would block the Kafka Consumer thread, potentially triggering
+ *     session.timeout → rebalance → cascading failure → worse availability
+ *   - DiscardOldestPolicy discards the oldest queued command (already stale) and
+ *     accepts the newest one, keeping the consumer thread unblocked
+ *   - Commands have idempotency protection (T-50), so the user can safely retry
+ *   - The rejected command is logged + metrics counter incremented for alerting
  *
- * This is the opposite of the telemetry pool (in ucs-business) which uses
- * DiscardOldestPolicy because stale telemetry data has no value.
+ * Same strategy as the telemetry pool in ucs-business — consistent HA-first approach.
  */
 @Slf4j
 @Configuration
@@ -32,10 +35,10 @@ public class ThreadPoolConfig {
                 60L, TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(256),
                 namedThreadFactory("cmd-processor"),
-                new ThreadPoolExecutor.CallerRunsPolicy()  // NEVER drop commands
+                new ThreadPoolExecutor.DiscardOldestPolicy()  // HA-first: never block Kafka Consumer
         );
         executor.allowCoreThreadTimeOut(true);
-        log.info("[Q7] commandProcessorPool initialized: core=4, max=16, queue=256, policy=CallerRuns (commands must not be dropped)");
+        log.info("[Q7] commandProcessorPool initialized: core=4, max=16, queue=256, policy=DiscardOldest (HA-first, never block consumer)");
         return executor;
     }
 
