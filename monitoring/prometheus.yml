@@ -1,5 +1,6 @@
 # ============================================================
-# T-12: Prometheus 配置 — Kafka 集群监控
+# T-12 + T-42: Prometheus 配置 — 全链路监控
+# 覆盖: Spring Boot Actuator, Kafka, Redis, Node, Prometheus
 # ============================================================
 global:
   scrape_interval: 15s
@@ -18,12 +19,41 @@ alerting:
 
 # 数据采集目标
 scrape_configs:
-  # Kafka Exporter 指标
+  # ---- T-42: Spring Boot Actuator 指标（后端多实例） ----
+  - job_name: 'ucs-backend'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['backend:8080']
+        labels:
+          service: 'ucs-backend'
+    # K8s环境使用Pod服务发现:
+    # kubernetes_sd_configs:
+    #   - role: pod
+    #     namespaces: { names: ['ucs'] }
+    # relabel_configs:
+    #   - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+    #     action: keep
+    #     regex: true
+
+  # ---- T-12: Kafka Exporter 指标 ----
   - job_name: 'kafka-exporter'
     static_configs:
       - targets: ['kafka-exporter:9308']
         labels:
           cluster: 'ucs-kafka'
+
+  # ---- T-42: Redis Exporter 指标 ----
+  - job_name: 'redis-exporter'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          cluster: 'ucs-redis'
+
+  # ---- T-42: Node Exporter（主机级指标） ----
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
 
   # Prometheus 自身指标
   - job_name: 'prometheus'

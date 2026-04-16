@@ -70,6 +70,74 @@ services:
     restart: unless-stopped
 
   # ================================================================
+  # T-42: Redis Exporter — 导出 Redis 集群指标
+  # ================================================================
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: ucs-redis-exporter
+    environment:
+      REDIS_ADDR: "redis-node-1:6371,redis-node-2:6372,redis-node-3:6373"
+    ports:
+      - "9121:9121"
+    networks:
+      - monitor-net
+    restart: unless-stopped
+
+  # ================================================================
+  # T-42: Node Exporter — 主机级指标（CPU/内存/磁盘/网络）
+  # ================================================================
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: ucs-node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+    networks:
+      - monitor-net
+    restart: unless-stopped
+
+  # ================================================================
+  # T-51: Jaeger — 分布式追踪（OpenTelemetry 收集端）
+  # ================================================================
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: ucs-jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - monitor-net
+    restart: unless-stopped
+
+  # ================================================================
+  # T-53: Nacos — 配置中心 + 服务发现
+  # ================================================================
+  nacos:
+    image: nacos/nacos-server:v2.3.2
+    container_name: ucs-nacos
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    environment:
+      - MODE=standalone
+      - NACOS_AUTH_ENABLE=true
+    volumes:
+      - nacos-data:/home/nacos/data
+    networks:
+      - monitor-net
+    restart: unless-stopped
+
+  # ================================================================
   # Grafana — 可视化仪表盘 (可选)
   # ================================================================
   grafana:
@@ -82,6 +150,7 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ucs_admin
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
     networks:
       - monitor-net
     restart: unless-stopped
@@ -90,6 +159,8 @@ volumes:
   prometheus-data:
     driver: local
   grafana-data:
+    driver: local
+  nacos-data:
     driver: local
 
 networks:

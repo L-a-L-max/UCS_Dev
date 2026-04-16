@@ -9,6 +9,7 @@ import com.ucs.repository.DroneRepository;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -319,6 +320,7 @@ public class PartitionRoutingService {
      * If it fails again, it goes back to the end of the queue.
      */
     @Scheduled(fixedDelay = 5000)
+    @SchedulerLock(name = "retryPendingRedisSync", lockAtLeastFor = "2s", lockAtMostFor = "10s")
     public void retryPendingRedisSync() {
         int size = pendingRedisSyncQueue.size();
         if (size == 0) return;
@@ -350,6 +352,7 @@ public class PartitionRoutingService {
      * 将N次Redis网络调用合并为1次Pipeline调用
      */
     @Scheduled(fixedDelay = 300000, initialDelay = 30000) // T-26: CDC引入后延长到300s作为兜底
+    @SchedulerLock(name = "reconcileDbRedis", lockAtLeastFor = "50s", lockAtMostFor = "5m")
     public void reconcileDbRedis() {
         try {
             // T-17: 使用findAllActive()替代findAll().stream().filter()

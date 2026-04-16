@@ -10,6 +10,14 @@ import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.PrivateKey;
+import java.security.PublicKey;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -26,7 +34,7 @@ import java.util.function.Function;
  *
  * <h3>三验证</h3>
  * <ol>
- *   <li><b>签名验证</b> — HMAC-SHA512，确保 token 未被篡改</li>
+ *   <li><b>签名验证</b> — T-46: RSA 非对称密钥（生产环境）/ HMAC-SHA512（开发环境）</li>
  *   <li><b>过期验证</b> — 检查 exp 时间戳</li>
  *   <li><b>黑名单验证</b> — Redis 中查询 token 是否已被注销</li>
  * </ol>
@@ -37,6 +45,14 @@ public class JwtUtil {
 
     @Value("${jwt.secret:change-me-in-production}")
     private String secret;
+
+    /** T-46: RSA 私钥 (Base64 编码，从环境变量读取，不配置时回退到 HMAC) */
+    @Value("${jwt.rsa.private-key:}")
+    private String rsaPrivateKeyBase64;
+
+    /** T-46: RSA 公钥 (Base64 编码) */
+    @Value("${jwt.rsa.public-key:}")
+    private String rsaPublicKeyBase64;
 
     /** Access Token 有效期，默认 30 分钟 */
     @Value("${jwt.access-token.expiration:1800000}")
@@ -54,13 +70,52 @@ public class JwtUtil {
 
     private final StringRedisTemplate stringRedisTemplate;
 
+    /** T-46: 缓存解析后的 RSA 密钥对 */
+    private volatile PrivateKey rsaPrivateKey;
+    private volatile PublicKey rsaPublicKey;
+
     public JwtUtil(StringRedisTemplate stringRedisTemplate) {
         this.stringRedisTemplate = stringRedisTemplate;
     }
 
-    // ======================== Key ========================
+    // ======================== T-46: RSA / HMAC 双模式 Key ========================
 
-    private SecretKey getSigningKey() {
+    /** 是否启用 RSA 模式（配置了私钥 + 公钥） */
+    private boolean isRsaEnabled() {
+        return rsaPrivateKeyBase64 != null && !rsaPrivateKeyBase64.isBlank()
+                && rsaPublicKeyBase64 != null && !rsaPublicKeyBase64.isBlank();
+    }
+
+    /** T-46: 获取 RSA 私钥（用于签名） */
+    private PrivateKey getRsaPrivateKey() {
+        if (rsaPrivateKey == null) {
+            try {
+                byte[] keyBytes = Base64.getDecoder().decode(rsaPrivateKeyBase64);
+                PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(keyBytes);
+                rsaPrivateKey = KeyFactory.getInstance("RSA").generatePrivate(spec);
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to load RSA private key", e);
+            }
+        }
+        return rsaPrivateKey;
+    }
+
+    /** T-46: 获取 RSA 公钥（用于验签） */
+    private PublicKey getRsaPublicKey() {
+        if (rsaPublicKey == null) {
+            try {
+                byte[] keyBytes = Base64.getDecoder().decode(rsaPublicKeyBase64);
+                X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
+                rsaPublicKey = KeyFactory.getInstance("RSA").generatePublic(spec);
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to load RSA public key", e);
+            }
+        }
+        return rsaPublicKey;
+    }
+
+    /** HMAC 回退密钥（开发环境） */
+    private SecretKey getHmacSigningKey() {
         byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
         if (keyBytes.length < 32) {
             byte[] paddedKey = new byte[32];
@@ -104,7 +159,7 @@ public class JwtUtil {
                 .claim("tokenType", tokenType)
                 .issuedAt(new Date())
                 .expiration(new Date(System.currentTimeMillis() + expirationMs))
-                .signWith(getSigningKey())
+                .signWith(isRsaEnabled() ? getRsaPrivateKey() : getHmacSigningKey())
                 .compact();
     }
 
@@ -133,9 +188,13 @@ public class JwtUtil {
     }
 
     private Claims extractAllClaims(String token) {
-        return Jwts.parser()
-                .verifyWith(getSigningKey())     // 验证 1: 签名验证 (HMAC-SHA)
-                .build()
+        var parserBuilder = Jwts.parser();
+        if (isRsaEnabled()) {
+            parserBuilder.verifyWith(getRsaPublicKey());   // T-46: RSA 签名验证
+        } else {
+            parserBuilder.verifyWith(getHmacSigningKey()); // 回退 HMAC-SHA
+        }
+        return parserBuilder.build()
                 .parseSignedClaims(token)
                 .getPayload();
     }

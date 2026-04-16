@@ -1,0 +1,152 @@
+##############################################
+# T-41: UCS Backend — K8s Deployment/Service/HPA
+# 后端微服务多实例部署，支持水平自动扩缩
+##############################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ucs-backend
+  namespace: ucs
+  labels:
+    app: ucs-backend
+    tier: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ucs-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ucs-backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8080"
+    spec:
+      containers:
+        - name: ucs-backend
+          image: ${DOCKER_REGISTRY}/ucs-backend:${IMAGE_TAG:-latest}
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: ucs-db-secret
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ucs-db-secret
+                  key: password
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://postgres-service:5432/ucsdb"
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+            - name: REDIS_CLUSTER_NODES
+              value: "redis-node-1:6371,redis-node-2:6372,redis-node-3:6373,redis-node-4:6374,redis-node-5:6375,redis-node-6:6376"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ucs-jwt-secret
+                  key: secret
+            - name: JAVA_OPTS
+              value: "-Xms512m -Xmx1024m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1536Mi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ucs-backend-service
+  namespace: ucs
+  labels:
+    app: ucs-backend
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: ucs-backend
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ucs-backend-hpa
+  namespace: ucs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ucs-backend
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    # CPU利用率超过70%触发扩容
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # 内存利用率超过80%触发扩容
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

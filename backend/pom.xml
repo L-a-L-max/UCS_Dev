@@ -119,6 +119,71 @@
             <artifactId>caffeine</artifactId>
         </dependency>
         
+        <!-- ============================================================ -->
+        <!-- T-43: Spring Boot Actuator + Micrometer Prometheus -->
+        <!-- ============================================================ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- ============================================================ -->
+        <!-- T-45: ShedLock 分布式定时任务锁 (Redis Provider) -->
+        <!-- ============================================================ -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
+            <version>5.13.0</version>
+        </dependency>
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-provider-redis-spring</artifactId>
+            <version>5.13.0</version>
+        </dependency>
+
+        <!-- ============================================================ -->
+        <!-- T-49: Resilience4j 熔断+重试+舱壁 -->
+        <!-- ============================================================ -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-spring-boot3</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+
+        <!-- ============================================================ -->
+        <!-- T-51: 分布式追踪 (Micrometer Tracing + OpenTelemetry) -->
+        <!-- ============================================================ -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
+        <!-- ============================================================ -->
+        <!-- T-52: 结构化日志 (Logstash Logback Encoder) -->
+        <!-- ============================================================ -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>7.4</version>
+        </dependency>
+
+        <!-- ============================================================ -->
+        <!-- T-53: Nacos 配置中心 -->
+        <!-- ============================================================ -->
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
+            <version>2023.0.1.0</version>
+        </dependency>
+
         <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>

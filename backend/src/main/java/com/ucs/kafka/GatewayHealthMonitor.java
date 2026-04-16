@@ -5,6 +5,7 @@ import com.ucs.service.WebSocketGatewayService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -67,6 +68,7 @@ public class GatewayHealthMonitor {
      *   4. 计数器达到 OFFLINE_THRESHOLD → 广播 GATEWAY_OFFLINE 事件
      */
     @Scheduled(fixedRate = 10_000) // 每 10 秒
+    @SchedulerLock(name = "checkGatewayHealth", lockAtLeastFor = "8s", lockAtMostFor = "30s")
     public void checkGatewayHealth() {
         try {
             Set<String> onlineDrones = redisService.getAllOnlineDroneIds();

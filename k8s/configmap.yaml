@@ -1,0 +1,66 @@
+##############################################
+# T-41: UCS Backend ConfigMap
+# 将 application.properties 外部化到 K8s ConfigMap
+##############################################
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ucs-backend-config
+  namespace: ucs
+data:
+  application.properties: |
+    server.port=8080
+    spring.profiles.active=prod
+
+    # Database
+    spring.datasource.url=jdbc:postgresql://${DB_HOST:postgres-service}:5432/ucsdb
+    spring.datasource.driverClassName=org.postgresql.Driver
+    spring.datasource.username=${DB_USERNAME}
+    spring.datasource.password=${DB_PASSWORD}
+    spring.datasource.hikari.maximum-pool-size=20
+    spring.datasource.hikari.minimum-idle=5
+    spring.datasource.hikari.connection-timeout=5000
+    spring.datasource.hikari.idle-timeout=300000
+    spring.datasource.hikari.max-lifetime=1800000
+    spring.datasource.hikari.leak-detection-threshold=30000
+    spring.datasource.hikari.pool-name=UCS-HikariPool
+
+    # JPA
+    spring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect
+    spring.jpa.hibernate.ddl-auto=none
+    spring.jpa.show-sql=false
+
+    # Redis Cluster
+    spring.data.redis.cluster.nodes=${REDIS_CLUSTER_NODES}
+    spring.data.redis.cluster.max-redirects=3
+    spring.data.redis.timeout=3000
+    spring.data.redis.lettuce.pool.max-active=20
+    spring.data.redis.lettuce.pool.max-idle=10
+    spring.data.redis.lettuce.pool.min-idle=5
+
+    # Kafka
+    spring.kafka.bootstrap-servers=${KAFKA_BOOTSTRAP_SERVERS}
+    spring.kafka.consumer.group-id=ucs-backend
+    spring.kafka.consumer.auto-offset-reset=latest
+    spring.kafka.consumer.enable-auto-commit=false
+    spring.kafka.producer.acks=all
+    spring.kafka.producer.retries=5
+    spring.kafka.producer.properties.enable.idempotence=true
+
+    # Actuator + Prometheus
+    management.endpoints.web.exposure.include=health,prometheus,metrics,info
+    management.endpoint.health.show-details=always
+    management.endpoint.health.probes.enabled=true
+    management.prometheus.metrics.export.enabled=true
+
+    # Tracing
+    management.tracing.sampling.probability=0.1
+    management.otlp.tracing.endpoint=http://jaeger:4317
+
+    # Logging
+    logging.level.com.ucs=INFO
+    logging.level.org.springframework.security=WARN
+
+    # Thread pool
+    spring.task.scheduling.pool.size=15
+    spring.threads.virtual.enabled=true

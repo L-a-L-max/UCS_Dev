@@ -1,6 +1,7 @@
 package com.ucs.kafka;
 
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -116,6 +117,7 @@ public class EpochManager {
      * 因为 validateEpoch 使用 >= 比较，新 epoch 一定 >= 1。
      */
     @Scheduled(fixedRate = 6 * 60 * 60 * 1000) // 每 6 小时
+    @SchedulerLock(name = "periodicEpochMaintenance", lockAtLeastFor = "5m", lockAtMostFor = "30m")
     public void periodicEpochMaintenance() {
         long now = System.currentTimeMillis();
         long idleThresholdMs = MAX_IDLE_HOURS * 60 * 60 * 1000;

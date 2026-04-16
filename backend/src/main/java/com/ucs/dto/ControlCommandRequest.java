@@ -1,5 +1,7 @@
 package com.ucs.dto;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import lombok.Data;
 
 /**
@@ -12,6 +14,7 @@ public class ControlCommandRequest {
      * Target drone's unique identifier (derived from MAC).
      * Example: "UAV_001"
      */
+    @NotBlank(message = "uavId is required")
     private String uavId;
     
     /**
@@ -19,6 +22,9 @@ public class ControlCommandRequest {
      * Examples: TAKEOFF, LAND, RTL (Return to Launch), ARM, DISARM,
      * GOTO (go to waypoint), HOLD (loiter), OFFBOARD
      */
+    @NotBlank(message = "commandType is required")
+    @Pattern(regexp = "^(ARM|DISARM|TAKEOFF|LAND|RTL|HOLD|GOTO|OFFBOARD|MARK_HOME)$",
+             message = "Invalid commandType")
     private String commandType;
     
     /**

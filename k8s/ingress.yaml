@@ -1,0 +1,49 @@
+##############################################
+# T-41: UCS Ingress — 外部流量入口
+# 支持WebSocket升级、TLS终止、路径路由
+##############################################
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ucs-ingress
+  namespace: ucs
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # WebSocket支持
+    nginx.ingress.kubernetes.io/websocket-services: "ucs-backend-service"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ucs.example.com
+      secretName: ucs-tls-secret
+  rules:
+    - host: ucs.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: ucs-backend-service
+                port:
+                  number: 8080
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: ucs-backend-service
+                port:
+                  number: 8080
+          - path: /actuator
+            pathType: Prefix
+            backend:
+              service:
+                name: ucs-backend-service
+                port:
+                  number: 8080

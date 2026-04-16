@@ -1,0 +1,9 @@
+##############################################
+# T-41: UCS Namespace
+##############################################
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ucs
+  labels:
+    app.kubernetes.io/part-of: ucs

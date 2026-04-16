@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Controller;
 
@@ -60,6 +61,7 @@ public class WebSocketController {
      * 供前端仪表盘/列表页做低频刷新（非实时地图渲染用途）。
      */
     @Scheduled(fixedRate = 5000)
+    @SchedulerLock(name = "broadcastDroneSummary", lockAtLeastFor = "1500ms", lockAtMostFor = "5s")
     public void broadcastDroneSummary() {
         try {
             List<DroneStatusDTO> allDrones = droneService.getAllDrones();
@@ -70,6 +72,7 @@ public class WebSocketController {
     }
     
     @Scheduled(fixedRate = 5000)
+    @SchedulerLock(name = "broadcastEvents", lockAtLeastFor = "4s", lockAtMostFor = "10s")
     public void broadcastEvents() {
         try {
             List<EventDTO> events = eventService.getLatestEvents(5);

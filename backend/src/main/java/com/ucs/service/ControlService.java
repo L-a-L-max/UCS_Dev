@@ -6,6 +6,7 @@ import com.ucs.entity.CommandLog;
 import com.ucs.entity.Drone;
 import com.ucs.gateway.GatewayRouter;
 import com.ucs.gateway.GatewayStrategy;
+import com.ucs.config.IdempotencyConfig;
 import com.ucs.kafka.CommandKafkaProducer;
 import com.ucs.repository.CommandLogRepository;
 import com.ucs.repository.DroneOwnershipRepository;
@@ -50,6 +51,9 @@ public class ControlService {
     /** T-03: 网关路由器 — 根据 uavId 自动选择 DDS 或 MAVLink 策略 */
     private final GatewayRouter gatewayRouter;
 
+    /** T-50: 幂等性保障（Redis SETNX 去重） */
+    private final IdempotencyConfig idempotencyConfig;
+
     /** Kafka 指令生产者（可选，Kafka 未启用时为 null） */
     @Autowired(required = false)
     private CommandKafkaProducer commandKafkaProducer;
@@ -84,6 +88,11 @@ public class ControlService {
             return ControlCommandResponse.failed(uavId, "No control permission for drone: " + uavId);
         }
         
+        // T-50: 幂等性检查 — 同一命令 5s 内不重复执行
+        if (!idempotencyConfig.tryAcquire(uavId, commandType, request.getParams())) {
+            return ControlCommandResponse.success("CMD_DEDUP", uavId);
+        }
+
         // 3. Check drone online status via Redis
         boolean isOnline = redisService.isDroneOnline(uavId);
         if (!isOnline) {
