@@ -7,6 +7,7 @@ import com.ucs.business.entity.WeatherSnapshot;
 import com.ucs.business.repository.WeatherSnapshotRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -93,6 +94,7 @@ public class WeatherService {
     }
     
     @Scheduled(fixedRate = 600000)
+    @SchedulerLock(name = "refreshWeather", lockAtLeastFor = "8m", lockAtMostFor = "15m")
     public void updateWeather() {
         fetchRealWeather(BEIJING_LAT, BEIJING_LNG, "Beijing");
     }

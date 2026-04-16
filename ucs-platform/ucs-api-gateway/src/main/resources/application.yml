@@ -54,8 +54,51 @@ spring:
 jwt:
   secret: ${JWT_SECRET:change-me-in-production}
 
+# ── T-43: Actuator + Micrometer ──
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,gateway
+        include: health,info,metrics,prometheus,gateway
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE_RATE:0.1}
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
+
+# ── T-47: Rate Limiting ──
+ucs:
+  rate-limit:
+    default-qps: ${RATE_LIMIT_DEFAULT_QPS:100}
+    command-qps: ${RATE_LIMIT_COMMAND_QPS:10}
+
+# ── T-56: TLS 加密配置（生产环境启用，去掉注释即可） ──
+# spring:
+#   kafka:
+#     ssl:
+#       key-store-location: classpath:kafka-keystore.jks
+#       key-store-password: ${KAFKA_SSL_KEYSTORE_PASS:changeme}
+#       trust-store-location: classpath:kafka-truststore.jks
+#       trust-store-password: ${KAFKA_SSL_TRUSTSTORE_PASS:changeme}
+#       key-store-type: JKS
+#     properties:
+#       security.protocol: SSL
+#   data:
+#     redis:
+#       ssl:
+#         enabled: true
+#       lettuce:
+#         client-options:
+#           ssl-options:
+#             trust-store-type: PEM
+#             trust-store-path: ${REDIS_CA_CERT_PATH:/etc/tls/ca-cert.pem}

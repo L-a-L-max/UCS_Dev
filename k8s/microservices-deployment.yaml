@@ -1,0 +1,708 @@
+##############################################
+# T-41: UCS 微服务架构 — K8s Deployment/Service/HPA
+# 7个微服务模块独立部署，支持水平自动扩缩
+# ucs-common 为共享库模块，不独立部署
+##############################################
+
+# ============================================================
+# 1. ucs-api-gateway — API网关（入口）
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ucs-api-gateway
+  namespace: ucs
+  labels:
+    app: ucs-api-gateway
+    tier: gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ucs-api-gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ucs-api-gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8080"
+    spec:
+      containers:
+        - name: ucs-api-gateway
+          image: ${DOCKER_REGISTRY}/ucs-api-gateway:${IMAGE_TAG:-latest}
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ucs-jwt-secret
+                  key: secret
+            - name: RATE_LIMIT_DEFAULT_QPS
+              value: "100"
+            - name: RATE_LIMIT_COMMAND_QPS
+              value: "10"
+            - name: NACOS_SERVER_ADDR
+              value: "nacos-service:8848"
+            - name: JAVA_OPTS
+              value: "-Xms256m -Xmx512m -XX:+UseG1GC"
+          envFrom:
+            - configMapRef:
+                name: ucs-common-config
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "768Mi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 40
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 20
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ucs-api-gateway-service
+  namespace: ucs
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: ucs-api-gateway
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ucs-api-gateway-hpa
+  namespace: ucs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ucs-api-gateway
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# ============================================================
+# 2. ucs-telemetry-ingest — 遥测数据接入（Kafka消费）
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ucs-telemetry-ingest
+  namespace: ucs
+  labels:
+    app: ucs-telemetry-ingest
+    tier: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ucs-telemetry-ingest
+  template:
+    metadata:
+      labels:
+        app: ucs-telemetry-ingest
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8081"
+    spec:
+      containers:
+        - name: ucs-telemetry-ingest
+          image: ${DOCKER_REGISTRY}/ucs-telemetry-ingest:${IMAGE_TAG:-latest}
+          ports:
+            - containerPort: 8081
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: JAVA_OPTS
+              value: "-Xms256m -Xmx512m -XX:+UseG1GC"
+          envFrom:
+            - configMapRef:
+                name: ucs-common-config
+            - secretRef:
+                name: ucs-db-secret
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1024Mi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8081
+            initialDelaySeconds: 40
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ucs-telemetry-ingest-service
+  namespace: ucs
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8081
+      targetPort: 8081
+  selector:
+    app: ucs-telemetry-ingest
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ucs-telemetry-ingest-hpa
+  namespace: ucs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ucs-telemetry-ingest
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# ============================================================
+# 3. ucs-telemetry-store — 遥测数据存储（Kafka批量消费→TimescaleDB）
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ucs-telemetry-store
+  namespace: ucs
+  labels:
+    app: ucs-telemetry-store
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ucs-telemetry-store
+  template:
+    metadata:
+      labels:
+        app: ucs-telemetry-store
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8082"
+    spec:
+      containers:
+        - name: ucs-telemetry-store
+          image: ${DOCKER_REGISTRY}/ucs-telemetry-store:${IMAGE_TAG:-latest}
+          ports:
+            - containerPort: 8082
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: JAVA_OPTS
+              value: "-Xms256m -Xmx512m -XX:+UseG1GC"
+          envFrom:
+            - configMapRef:
+                name: ucs-common-config
+            - secretRef:
+                name: ucs-db-secret
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1024Mi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8082
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8082
+            initialDelaySeconds: 40
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ucs-telemetry-store-service
+  namespace: ucs
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8082
+      targetPort: 8082
+  selector:
+    app: ucs-telemetry-store
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ucs-telemetry-store-hpa
+  namespace: ucs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ucs-telemetry-store
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# ============================================================
+# 4. ucs-realtime-push — 实时推送（Kafka→Redis Pub/Sub→WebSocket STOMP）
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ucs-realtime-push
+  namespace: ucs
+  labels:
+    app: ucs-realtime-push
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ucs-realtime-push
+  template:
+    metadata:
+      labels:
+        app: ucs-realtime-push
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8083"
+    spec:
+      containers:
+        - name: ucs-realtime-push
+          image: ${DOCKER_REGISTRY}/ucs-realtime-push:${IMAGE_TAG:-latest}
+          ports:
+            - containerPort: 8083
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: JAVA_OPTS
+              value: "-Xms256m -Xmx512m -XX:+UseG1GC"
+          envFrom:
+            - configMapRef:
+                name: ucs-common-config
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "768Mi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8083
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8083
+            initialDelaySeconds: 40
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ucs-realtime-push-service
+  namespace: ucs
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8083
+      targetPort: 8083
+  selector:
+    app: ucs-realtime-push
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ucs-realtime-push-hpa
+  namespace: ucs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ucs-realtime-push
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# ============================================================
+# 5. ucs-command — 命令调度（REST API→Kafka Producer）
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ucs-command
+  namespace: ucs
+  labels:
+    app: ucs-command
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ucs-command
+  template:
+    metadata:
+      labels:
+        app: ucs-command
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8084"
+    spec:
+      containers:
+        - name: ucs-command
+          image: ${DOCKER_REGISTRY}/ucs-command:${IMAGE_TAG:-latest}
+          ports:
+            - containerPort: 8084
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: JAVA_OPTS
+              value: "-Xms256m -Xmx512m -XX:+UseG1GC"
+          envFrom:
+            - configMapRef:
+                name: ucs-common-config
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "768Mi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8084
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8084
+            initialDelaySeconds: 40
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ucs-command-service
+  namespace: ucs
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8084
+      targetPort: 8084
+  selector:
+    app: ucs-command
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ucs-command-hpa
+  namespace: ucs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ucs-command
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# ============================================================
+# 6. ucs-drone-state — 无人机状态缓存（Redis Cluster + REST API）
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ucs-drone-state
+  namespace: ucs
+  labels:
+    app: ucs-drone-state
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ucs-drone-state
+  template:
+    metadata:
+      labels:
+        app: ucs-drone-state
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8085"
+    spec:
+      containers:
+        - name: ucs-drone-state
+          image: ${DOCKER_REGISTRY}/ucs-drone-state:${IMAGE_TAG:-latest}
+          ports:
+            - containerPort: 8085
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: JAVA_OPTS
+              value: "-Xms256m -Xmx512m -XX:+UseG1GC"
+          envFrom:
+            - configMapRef:
+                name: ucs-common-config
+            - secretRef:
+                name: ucs-db-secret
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "768Mi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8085
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8085
+            initialDelaySeconds: 40
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ucs-drone-state-service
+  namespace: ucs
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8085
+      targetPort: 8085
+  selector:
+    app: ucs-drone-state
+
+---
+# ============================================================
+# 7. ucs-business — 业务逻辑（用户/团队/任务/控制命令）
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ucs-business
+  namespace: ucs
+  labels:
+    app: ucs-business
+    tier: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ucs-business
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ucs-business
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8086"
+    spec:
+      containers:
+        - name: ucs-business
+          image: ${DOCKER_REGISTRY}/ucs-business:${IMAGE_TAG:-latest}
+          ports:
+            - containerPort: 8086
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ucs-jwt-secret
+                  key: secret
+            - name: JAVA_OPTS
+              value: "-Xms512m -Xmx1024m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+          envFrom:
+            - configMapRef:
+                name: ucs-common-config
+            - secretRef:
+                name: ucs-db-secret
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1536Mi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8086
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8086
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8086
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ucs-business-service
+  namespace: ucs
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8086
+      targetPort: 8086
+      protocol: TCP
+      name: http
+  selector:
+    app: ucs-business
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ucs-business-hpa
+  namespace: ucs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ucs-business
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

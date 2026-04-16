@@ -1,6 +1,7 @@
 ##############################################
-# T-41: UCS Ingress — 外部流量入口
-# 支持WebSocket升级、TLS终止、路径路由
+# T-41: UCS 微服务架构 Ingress — 外部流量入口
+# 所有外部请求统一经过 ucs-api-gateway
+# 支持WebSocket升级、TLS终止
 ##############################################
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -11,11 +12,14 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     # WebSocket支持
-    nginx.ingress.kubernetes.io/websocket-services: "ucs-backend-service"
+    nginx.ingress.kubernetes.io/websocket-services: "ucs-api-gateway-service"
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
     nginx.ingress.kubernetes.io/configuration-snippet: |
       proxy_set_header Upgrade $http_upgrade;
       proxy_set_header Connection "upgrade";
+    # 限流（与T-47 RateLimitFilter配合）
+    nginx.ingress.kubernetes.io/limit-rps: "200"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
 spec:
   ingressClassName: nginx
   tls:
@@ -26,24 +30,11 @@ spec:
     - host: ucs.example.com
       http:
         paths:
-          - path: /api
+          # 所有 API 请求统一走网关
+          - path: /
             pathType: Prefix
             backend:
               service:
-                name: ucs-backend-service
-                port:
-                  number: 8080
-          - path: /ws
-            pathType: Prefix
-            backend:
-              service:
-                name: ucs-backend-service
-                port:
-                  number: 8080
-          - path: /actuator
-            pathType: Prefix
-            backend:
-              service:
-                name: ucs-backend-service
+                name: ucs-api-gateway-service
                 port:
                   number: 8080

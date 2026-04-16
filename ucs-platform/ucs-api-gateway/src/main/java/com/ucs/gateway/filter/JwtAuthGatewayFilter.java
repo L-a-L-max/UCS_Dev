@@ -3,6 +3,7 @@ package com.ucs.gateway.filter;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
@@ -17,13 +18,20 @@ import reactor.core.publisher.Mono;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
+import java.security.PublicKey;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
 import java.util.List;
 import java.util.stream.Collectors;
 
 /**
  * API Gateway JWT鉴权全局过滤器。
+ * <p>
+ * T-46: 支持 RSA-256 非对称密钥验证 + HMAC-SHA 降级。
  * 在网关层统一校验 Access Token，通过后将用户信息写入请求头转发给下游微服务。
  * 白名单路径（登录/注册/刷新/健康检查）跳过校验。
+ * </p>
  */
 @Slf4j
 @Component
@@ -31,6 +39,34 @@ public class JwtAuthGatewayFilter implements GlobalFilter, Ordered {
 
     @Value("${jwt.secret:change-me-in-production}")
     private String jwtSecret;
+
+    /** RSA 公钥（Base64 PEM）— 可选，配置后优先使用 RSA 验证 */
+    @Value("${jwt.rsa.public-key:}")
+    private String rsaPublicKeyBase64;
+
+    private PublicKey rsaPublicKey;
+    private boolean useRsa = false;
+
+    @PostConstruct
+    public void init() {
+        if (rsaPublicKeyBase64 != null && !rsaPublicKeyBase64.isBlank()) {
+            try {
+                String cleaned = rsaPublicKeyBase64
+                        .replace("-----BEGIN PUBLIC KEY-----", "")
+                        .replace("-----END PUBLIC KEY-----", "")
+                        .replaceAll("\\s+", "");
+                byte[] decoded = Base64.getDecoder().decode(cleaned);
+                this.rsaPublicKey = KeyFactory.getInstance("RSA")
+                        .generatePublic(new X509EncodedKeySpec(decoded));
+                this.useRsa = true;
+                log.info("[Gateway] RSA public key loaded — using RS256 verification");
+            } catch (Exception e) {
+                log.warn("[Gateway] Failed to load RSA public key, falling back to HMAC: {}", e.getMessage());
+            }
+        } else {
+            log.info("[Gateway] RSA key not configured — using HMAC-SHA verification");
+        }
+    }
 
     /** 白名单路径 — 不需要JWT校验 */
     private static final List<String> WHITE_LIST = List.of(
@@ -66,9 +102,13 @@ public class JwtAuthGatewayFilter implements GlobalFilter, Ordered {
 
         String token = authHeader.substring(7);
         try {
-            SecretKey key = getSigningKey();
-            Claims claims = Jwts.parser()
-                    .verifyWith(key)
+            var parserBuilder = Jwts.parser();
+            if (useRsa) {
+                parserBuilder.verifyWith(rsaPublicKey);
+            } else {
+                parserBuilder.verifyWith(getSigningKey());
+            }
+            Claims claims = parserBuilder
                     .build()
                     .parseSignedClaims(token)
                     .getPayload();

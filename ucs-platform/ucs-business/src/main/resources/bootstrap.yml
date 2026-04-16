@@ -1,0 +1,20 @@
+# T-53: Nacos 配置中心 — 启动时从 Nacos 拉取外部化配置
+spring:
+  application:
+    name: ucs-business
+  cloud:
+    nacos:
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:ucs-dev}
+        group: UCS_GROUP
+        file-extension: yml
+        # 共享配置（所有微服务公共部分：Redis、Kafka、JWT等）
+        shared-configs:
+          - data-id: ucs-common.yml
+            group: UCS_GROUP
+            refresh: true
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:ucs-dev}
+        group: UCS_GROUP

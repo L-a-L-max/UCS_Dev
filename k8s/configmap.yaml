@@ -1,66 +1,39 @@
 ##############################################
-# T-41: UCS Backend ConfigMap
-# 将 application.properties 外部化到 K8s ConfigMap
+# T-41: UCS 微服务架构 — 公共 ConfigMap
+# 所有微服务共享的环境变量（Kafka/Redis/DB/Tracing）
 ##############################################
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: ucs-backend-config
+  name: ucs-common-config
   namespace: ucs
 data:
-  application.properties: |
-    server.port=8080
-    spring.profiles.active=prod
+  # ── Kafka 3-Broker 集群 ──
+  KAFKA_BOOTSTRAP: "kafka-1:29092,kafka-2:29092,kafka-3:29092"
 
-    # Database
-    spring.datasource.url=jdbc:postgresql://${DB_HOST:postgres-service}:5432/ucsdb
-    spring.datasource.driverClassName=org.postgresql.Driver
-    spring.datasource.username=${DB_USERNAME}
-    spring.datasource.password=${DB_PASSWORD}
-    spring.datasource.hikari.maximum-pool-size=20
-    spring.datasource.hikari.minimum-idle=5
-    spring.datasource.hikari.connection-timeout=5000
-    spring.datasource.hikari.idle-timeout=300000
-    spring.datasource.hikari.max-lifetime=1800000
-    spring.datasource.hikari.leak-detection-threshold=30000
-    spring.datasource.hikari.pool-name=UCS-HikariPool
+  # ── Redis Cluster ──
+  REDIS_HOST: "redis-1"
+  REDIS_PORT: "6379"
+  REDIS_CLUSTER_NODES: "redis-1:6379,redis-2:6379,redis-3:6379,redis-4:6379,redis-5:6379,redis-6:6379"
 
-    # JPA
-    spring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect
-    spring.jpa.hibernate.ddl-auto=none
-    spring.jpa.show-sql=false
+  # ── PostgreSQL ──
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "ucsdb"
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres-service:5432/ucsdb"
 
-    # Redis Cluster
-    spring.data.redis.cluster.nodes=${REDIS_CLUSTER_NODES}
-    spring.data.redis.cluster.max-redirects=3
-    spring.data.redis.timeout=3000
-    spring.data.redis.lettuce.pool.max-active=20
-    spring.data.redis.lettuce.pool.max-idle=10
-    spring.data.redis.lettuce.pool.min-idle=5
+  # ── TimescaleDB ──
+  TIMESCALEDB_HOST: "timescaledb-service"
+  TIMESCALEDB_PORT: "5432"
+  TIMESCALEDB_URL: "jdbc:postgresql://timescaledb-service:5432/ucs_telemetry"
 
-    # Kafka
-    spring.kafka.bootstrap-servers=${KAFKA_BOOTSTRAP_SERVERS}
-    spring.kafka.consumer.group-id=ucs-backend
-    spring.kafka.consumer.auto-offset-reset=latest
-    spring.kafka.consumer.enable-auto-commit=false
-    spring.kafka.producer.acks=all
-    spring.kafka.producer.retries=5
-    spring.kafka.producer.properties.enable.idempotence=true
+  # ── Nacos 配置中心 ──
+  NACOS_SERVER_ADDR: "nacos-service:8848"
+  NACOS_NAMESPACE: "ucs-prod"
 
-    # Actuator + Prometheus
-    management.endpoints.web.exposure.include=health,prometheus,metrics,info
-    management.endpoint.health.show-details=always
-    management.endpoint.health.probes.enabled=true
-    management.prometheus.metrics.export.enabled=true
+  # ── OpenTelemetry / Jaeger ──
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger-collector:4317"
+  TRACING_SAMPLE_RATE: "0.1"
 
-    # Tracing
-    management.tracing.sampling.probability=0.1
-    management.otlp.tracing.endpoint=http://jaeger:4317
-
-    # Logging
-    logging.level.com.ucs=INFO
-    logging.level.org.springframework.security=WARN
-
-    # Thread pool
-    spring.task.scheduling.pool.size=15
-    spring.threads.virtual.enabled=true
+  # ── Spring Profile ──
+  SPRING_PROFILES_ACTIVE: "prod"

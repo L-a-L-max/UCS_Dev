@@ -6,6 +6,7 @@ import com.ucs.business.service.ControlService;
 import com.ucs.business.service.RedisService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
@@ -43,7 +44,7 @@ public class ControlController {
     @Operation(summary = "Send control command to a drone via Zenoh")
     public ApiResponse<ControlCommandResponse> sendCommand(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestBody ControlCommandRequest request) {
+            @Valid @RequestBody ControlCommandRequest request) {
         try {
             ControlCommandResponse response = controlService.sendControlCommand(
                     request, principal.getUserId(), principal.getUsername());
@@ -65,7 +66,7 @@ public class ControlController {
     @Operation(summary = "Send batch control commands to multiple drones")
     public ApiResponse<Map<String, Object>> batchCommand(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestBody BatchControlCommandRequest request) {
+            @Valid @RequestBody BatchControlCommandRequest request) {
         try {
             List<String> successList = new ArrayList<>();
             List<String> failedList = new ArrayList<>();

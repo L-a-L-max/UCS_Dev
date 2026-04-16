@@ -3,6 +3,7 @@ package com.ucs.business.security;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -10,13 +11,25 @@ import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
+import java.security.PrivateKey;
+import java.security.PublicKey;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 /**
- * JWT 工具类 — 双 Token 三验证。
+ * JWT 工具类 — 双 Token 三验证 + RSA 非对称签名支持。
+ *
+ * <h3>T-46: RSA 非对称密钥签名</h3>
+ * <p>
+ * 优先使用 RSA-256 非对称密钥签名（私钥签名，公钥验证）。
+ * 如果未配置 RSA 密钥，自动降级到 HMAC-SHA 对称签名。
+ * </p>
  *
  * <h3>双 Token</h3>
  * <ul>
@@ -26,7 +39,7 @@ import java.util.function.Function;
  *
  * <h3>三验证</h3>
  * <ol>
- *   <li><b>签名验证</b> — HMAC-SHA512，确保 token 未被篡改</li>
+ *   <li><b>签名验证</b> — RSA-256 或 HMAC-SHA，确保 token 未被篡改</li>
  *   <li><b>过期验证</b> — 检查 exp 时间戳</li>
  *   <li><b>黑名单验证</b> — Redis 中查询 token 是否已被注销</li>
  * </ol>
@@ -37,6 +50,14 @@ public class JwtUtil {
 
     @Value("${jwt.secret:change-me-in-production}")
     private String secret;
+
+    /** RSA 私钥（Base64 PEM，用于签名）— 可选 */
+    @Value("${jwt.rsa.private-key:}")
+    private String rsaPrivateKeyBase64;
+
+    /** RSA 公钥（Base64 PEM，用于验证）— 可选 */
+    @Value("${jwt.rsa.public-key:}")
+    private String rsaPublicKeyBase64;
 
     /** Access Token 有效期，默认 30 分钟 */
     @Value("${jwt.access-token.expiration:1800000}")
@@ -54,13 +75,35 @@ public class JwtUtil {
 
     private final StringRedisTemplate stringRedisTemplate;
 
+    private PrivateKey rsaPrivateKey;
+    private PublicKey rsaPublicKey;
+    private boolean useRsa = false;
+
     public JwtUtil(StringRedisTemplate stringRedisTemplate) {
         this.stringRedisTemplate = stringRedisTemplate;
     }
 
+    @PostConstruct
+    public void init() {
+        if (rsaPrivateKeyBase64 != null && !rsaPrivateKeyBase64.isBlank()
+                && rsaPublicKeyBase64 != null && !rsaPublicKeyBase64.isBlank()) {
+            try {
+                this.rsaPrivateKey = loadPrivateKey(rsaPrivateKeyBase64);
+                this.rsaPublicKey = loadPublicKey(rsaPublicKeyBase64);
+                this.useRsa = true;
+                log.info("[JWT] RSA key pair loaded — using RS256 signing");
+            } catch (Exception e) {
+                log.warn("[JWT] Failed to load RSA keys, falling back to HMAC: {}", e.getMessage());
+                this.useRsa = false;
+            }
+        } else {
+            log.info("[JWT] RSA keys not configured — using HMAC-SHA signing");
+        }
+    }
+
     // ======================== Key ========================
 
-    private SecretKey getSigningKey() {
+    private SecretKey getHmacSigningKey() {
         byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
         if (keyBytes.length < 32) {
             byte[] paddedKey = new byte[32];
@@ -68,6 +111,29 @@ public class JwtUtil {
             keyBytes = paddedKey;
         }
         return Keys.hmacShaKeyFor(keyBytes);
+    }
+
+    private PrivateKey loadPrivateKey(String base64Key) throws Exception {
+        String cleaned = base64Key
+                .replace("-----BEGIN PRIVATE KEY-----", "")
+                .replace("-----END PRIVATE KEY-----", "")
+                .replaceAll("\\s+", "");
+        byte[] decoded = Base64.getDecoder().decode(cleaned);
+        return KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(decoded));
+    }
+
+    private PublicKey loadPublicKey(String base64Key) throws Exception {
+        String cleaned = base64Key
+                .replace("-----BEGIN PUBLIC KEY-----", "")
+                .replace("-----END PUBLIC KEY-----", "")
+                .replaceAll("\\s+", "");
+        byte[] decoded = Base64.getDecoder().decode(cleaned);
+        return KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(decoded));
+    }
+
+    /** 返回当前使用的签名算法 */
+    public boolean isUsingRsa() {
+        return useRsa;
     }
 
     // ======================== 生成 Token ========================
@@ -97,15 +163,21 @@ public class JwtUtil {
 
     private String buildToken(Long userId, String username, List<String> roles,
                               String tokenType, long expirationMs) {
-        return Jwts.builder()
+        var builder = Jwts.builder()
                 .subject(username)
                 .claim("userId", userId)
                 .claim("roles", roles)
                 .claim("tokenType", tokenType)
+                .claim("alg", useRsa ? "RS256" : "HS256")
                 .issuedAt(new Date())
-                .expiration(new Date(System.currentTimeMillis() + expirationMs))
-                .signWith(getSigningKey())
-                .compact();
+                .expiration(new Date(System.currentTimeMillis() + expirationMs));
+
+        if (useRsa) {
+            builder.signWith(rsaPrivateKey);
+        } else {
+            builder.signWith(getHmacSigningKey());
+        }
+        return builder.compact();
     }
 
     // ======================== 提取 Claims ========================
@@ -133,8 +205,13 @@ public class JwtUtil {
     }
 
     private Claims extractAllClaims(String token) {
-        return Jwts.parser()
-                .verifyWith(getSigningKey())     // 验证 1: 签名验证 (HMAC-SHA)
+        var parserBuilder = Jwts.parser();
+        if (useRsa) {
+            parserBuilder.verifyWith(rsaPublicKey);     // 验证 1: 签名验证 (RSA-256)
+        } else {
+            parserBuilder.verifyWith(getHmacSigningKey()); // 验证 1: 签名验证 (HMAC-SHA)
+        }
+        return parserBuilder
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();

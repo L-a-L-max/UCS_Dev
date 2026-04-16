@@ -6,6 +6,7 @@ import com.ucs.business.repository.DronePartitionMapRepository;
 import com.ucs.business.repository.DroneRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -251,6 +252,7 @@ public class PartitionRoutingService {
      * If it fails again, it goes back to the end of the queue.
      */
     @Scheduled(fixedDelay = 5000)
+    @SchedulerLock(name = "retryPendingRedisSync", lockAtLeastFor = "3s", lockAtMostFor = "10s")
     public void retryPendingRedisSync() {
         int size = pendingRedisSyncQueue.size();
         if (size == 0) return;
@@ -278,6 +280,7 @@ public class PartitionRoutingService {
      * This is the safety net that guarantees eventual consistency even after Redis restarts.
      */
     @Scheduled(fixedDelay = 60000, initialDelay = 30000)
+    @SchedulerLock(name = "reconcileDbRedis", lockAtLeastFor = "50s", lockAtMostFor = "5m")
     public void reconcileDbRedis() {
         try {
             List<DronePartitionMap> allActive = dronePartitionMapRepository.findAll().stream()
