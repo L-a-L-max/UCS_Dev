@@ -1,7 +1,11 @@
 server:
   port: 8081
 
+# ── T-22: Virtual Threads ──
 spring:
+  threads:
+    virtual:
+      enabled: ${VIRTUAL_THREADS_ENABLED:true}
   application:
     name: ucs-telemetry-ingest
   kafka:

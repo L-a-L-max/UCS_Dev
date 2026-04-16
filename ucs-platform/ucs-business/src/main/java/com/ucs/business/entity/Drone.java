@@ -25,6 +25,13 @@ public class Drone {
     @Column(name = "mavlink_system_id")
     private Integer mavlinkSystemId;
     
+    /**
+     * T-03: Gateway type for this drone (DDS / MAVLINK).
+     * Used by GatewayRouter to determine command routing strategy.
+     */
+    @Column(name = "gateway_type", length = 20)
+    private String gatewayType;
+    
     @Column(length = 100)
     private String model;
     

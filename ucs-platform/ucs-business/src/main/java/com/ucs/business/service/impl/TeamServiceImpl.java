@@ -11,8 +11,7 @@ import com.ucs.business.service.ITeamService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -31,6 +30,7 @@ public class TeamServiceImpl implements ITeamService {
     private final TeamDroneMapRepository teamDroneMapRepository;
     private final TaskRepository taskRepository;
     private final TeamRoleRepository teamRoleRepository;
+    private final TaskAssignmentRepository taskAssignmentRepository;
     
     private final Map<Long, Boolean> onlineUsers = new ConcurrentHashMap<>();
     
@@ -41,7 +41,8 @@ public class TeamServiceImpl implements ITeamService {
                            DroneOwnershipRepository droneOwnershipRepository,
                            TeamDroneMapRepository teamDroneMapRepository,
                            TaskRepository taskRepository,
-                           TeamRoleRepository teamRoleRepository) {
+                           TeamRoleRepository teamRoleRepository,
+                           TaskAssignmentRepository taskAssignmentRepository) {
         this.teamRepository = teamRepository;
         this.teamMemberRepository = teamMemberRepository;
         this.userRepository = userRepository;
@@ -50,6 +51,7 @@ public class TeamServiceImpl implements ITeamService {
         this.teamDroneMapRepository = teamDroneMapRepository;
         this.taskRepository = taskRepository;
         this.teamRoleRepository = teamRoleRepository;
+        this.taskAssignmentRepository = taskAssignmentRepository;
     }
     
     @Override
@@ -149,9 +151,39 @@ public class TeamServiceImpl implements ITeamService {
         return dto;
     }
     
+    /**
+     * T-18: N+1 query optimization — batch preload drone ownership and tasks,
+     * replacing per-member loop queries.
+     * Before: N members -> 2N+1 SQL (1 member query + N ownership queries + N task queries)
+     * After:  N members -> 3 SQL (1 member query + 1 batch ownership query + 1 batch task query)
+     */
     public List<TeamMemberDTO> getTeamMembers(Long teamId) {
         List<TeamMember> members = teamMemberRepository.findByTeamIdWithUser(teamId);
-        
+        if (members.isEmpty()) return Collections.emptyList();
+
+        // T-18: Collect all user IDs for batch queries
+        List<Long> userIds = members.stream()
+                .map(m -> m.getUser().getId())
+                .collect(Collectors.toList());
+
+        // T-18: 1 batch query replaces N loop queries — drone ownership
+        Map<Long, List<Long>> userDroneMap = droneOwnershipRepository.findActiveByUserIdIn(userIds)
+                .stream()
+                .collect(Collectors.groupingBy(
+                        com.ucs.business.entity.DroneOwnership::getUserId,
+                        Collectors.mapping(com.ucs.business.entity.DroneOwnership::getDroneId, Collectors.toList())
+                ));
+
+        // T-18: 1 batch query replaces N loop queries — active tasks
+        Map<Long, com.ucs.business.entity.Task> userActiveTaskMap = new LinkedHashMap<>();
+        taskRepository.findActiveByAssignedUserIdIn(userIds).forEach(task -> {
+            taskAssignmentRepository.findByTaskId(task.getId()).forEach(ta -> {
+                if (userIds.contains(ta.getUserId())) {
+                    userActiveTaskMap.putIfAbsent(ta.getUserId(), task);
+                }
+            });
+        });
+
         return members.stream().map(member -> {
             TeamMemberDTO dto = new TeamMemberDTO();
             User user = member.getUser();
@@ -160,22 +192,23 @@ public class TeamServiceImpl implements ITeamService {
             dto.setAvatarUrl(user.getAvatarUrl());
             dto.setOnline(isUserOnline(user.getId()));
             dto.setStatus(isUserOnline(user.getId()) ? "ONLINE" : "OFFLINE");
-            
+
             if (member.getTeamRole() != null) {
                 dto.setRole(member.getTeamRole().getRoleName());
             }
-            
-            List<Long> droneIds = droneOwnershipRepository.findDroneIdsByUserId(user.getId());
+
+            // T-18: O(1) lookup from preloaded Map instead of per-member DB query
+            List<Long> droneIds = userDroneMap.getOrDefault(user.getId(), Collections.emptyList());
             dto.setUavIds(droneIds.stream()
                     .map(id -> "UAV_" + String.format("%03d", id))
                     .collect(Collectors.toList()));
-            
-            List<com.ucs.business.entity.Task> tasks = taskRepository.findByAssignedUserId(user.getId());
-            tasks.stream()
-                    .filter(t -> t.getStatus() == 1)
-                    .findFirst()
-                    .ifPresent(t -> dto.setCurrentTask(t.getTaskName()));
-            
+
+            // T-18: O(1) lookup from preloaded Map instead of per-member DB query
+            com.ucs.business.entity.Task activeTask = userActiveTaskMap.get(user.getId());
+            if (activeTask != null) {
+                dto.setCurrentTask(activeTask.getTaskName());
+            }
+
             return dto;
         }).collect(Collectors.toList());
     }

@@ -47,6 +47,8 @@
         <opentelemetry.version>1.34.1</opentelemetry.version>
         <!-- T-52: Logstash Logback Encoder -->
         <logstash-logback.version>7.4</logstash-logback.version>
+        <!-- T-14: Guava (BloomFilter) -->
+        <guava.version>33.0.0-jre</guava.version>
     </properties>
 
     <dependencyManagement>
@@ -145,6 +147,13 @@
                 <groupId>net.logstash.logback</groupId>
                 <artifactId>logstash-logback-encoder</artifactId>
                 <version>${logstash-logback.version}</version>
+            </dependency>
+
+            <!-- T-14: Guava (BloomFilter) -->
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>${guava.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

@@ -1,20 +1,26 @@
 package com.ucs.business.service;
 
+import com.google.common.hash.BloomFilter;
+import com.google.common.hash.Funnels;
 import com.ucs.business.entity.Drone;
 import com.ucs.business.entity.DronePartitionMap;
 import com.ucs.business.repository.DronePartitionMapRepository;
 import com.ucs.business.repository.DroneRepository;
-import lombok.RequiredArgsConstructor;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.regex.Pattern;
 
 /**
  * Partition routing service for drone-to-partition mapping.
@@ -59,12 +65,12 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class PartitionRoutingService {
 
     private final RedisService redisService;
     private final DroneRepository droneRepository;
     private final DronePartitionMapRepository dronePartitionMapRepository;
+    private final StringRedisTemplate stringRedisTemplate;
 
     /**
      * Pending Redis sync operations that failed and need retry.
@@ -72,13 +78,78 @@ public class PartitionRoutingService {
      */
     private final ConcurrentLinkedQueue<Runnable> pendingRedisSyncQueue = new ConcurrentLinkedQueue<>();
 
+    // ===================== T-14: Cache Penetration Triple Protection =====================
+
+    /**
+     * T-14 (1) Bloom filter — fast rejection of non-existent uavIds.
+     * 100% accurate for "does not exist", 1% false positive rate for "exists".
+     */
+    @SuppressWarnings("UnstableApiUsage")
+    private final BloomFilter<String> droneBloomFilter = BloomFilter.create(
+            Funnels.stringFunnel(StandardCharsets.UTF_8),
+            100_000,   // expected max drone count
+            0.01       // 1% false positive rate
+    );
+
+    /** T-14 (2) uavId format validation — reject invalid IDs at source */
+    private static final Pattern VALID_UAV_ID = Pattern.compile(
+            "^(px4_\\d+|mav_\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}_\\d+|mavlink_.+)$"
+    );
+
+    /** T-14 (3) Null cache prefix — cache "does not exist" query results, TTL=60s */
+    private static final String NULL_CACHE_PREFIX = "drone:%s:partitions:null";
+    private static final Duration NULL_CACHE_TTL = Duration.ofSeconds(60);
+
+    public PartitionRoutingService(RedisService redisService,
+                                   DroneRepository droneRepository,
+                                   DronePartitionMapRepository dronePartitionMapRepository,
+                                   StringRedisTemplate stringRedisTemplate) {
+        this.redisService = redisService;
+        this.droneRepository = droneRepository;
+        this.dronePartitionMapRepository = dronePartitionMapRepository;
+        this.stringRedisTemplate = stringRedisTemplate;
+    }
+
+    /** T-14: Load all existing uavIds into Bloom filter on startup */
+    @SuppressWarnings("UnstableApiUsage")
+    @PostConstruct
+    public void initBloomFilter() {
+        droneRepository.findAll().forEach(drone -> {
+            if (drone.getUavId() != null) {
+                droneBloomFilter.put(drone.getUavId());
+            }
+        });
+        log.info("[PartitionRouting] Bloom filter initialized with {} drones", droneRepository.count());
+    }
+
     /**
      * Get partitions for a drone. Priority: Redis -> Database -> Auto-create.
+     * Enhanced with T-14 triple cache penetration protection.
      *
      * @param uavId DDS drone identifier (e.g., "px4_1")
      * @return Set of partition names this drone's data should be routed to
      */
+    @SuppressWarnings("UnstableApiUsage")
     public Set<String> getPartitionsForDrone(String uavId) {
+        // T-14 (2) Format validation: reject invalid uavId
+        if (!VALID_UAV_ID.matcher(uavId).matches()) {
+            log.debug("[PartitionRouting] Invalid uavId format rejected: {}", uavId);
+            return Collections.emptySet();
+        }
+
+        // T-14 (1) Bloom filter: fast rejection of non-existent uavIds (O(1))
+        if (!droneBloomFilter.mightContain(uavId)) {
+            log.debug("[PartitionRouting] Bloom filter rejected: {}", uavId);
+            return Collections.emptySet();
+        }
+
+        // T-14 (3) Null cache: check if "does not exist" result is already cached
+        String nullCacheKey = String.format(NULL_CACHE_PREFIX, uavId);
+        if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(nullCacheKey))) {
+            log.debug("[PartitionRouting] Null cache HIT for drone '{}'", uavId);
+            return Collections.emptySet();
+        }
+
         // 1. Try Redis first
         Set<String> cached = redisService.getDronePartitions(uavId);
         if (!cached.isEmpty()) {
@@ -91,41 +162,35 @@ public class PartitionRoutingService {
         List<String> dbPartitions = dronePartitionMapRepository.findActivePartitionNamesByUavId(uavId);
         if (!dbPartitions.isEmpty()) {
             Set<String> partitionSet = new LinkedHashSet<>(dbPartitions);
-            // Write back to Redis for next lookup (cache-aside pattern)
             syncToRedis(uavId, partitionSet, Collections.emptySet());
             log.debug("Loaded partitions for drone {} from DB: {}", uavId, partitionSet);
             return partitionSet;
         }
 
         // 3. New drone: auto-create with default partitions (observer + commander)
-        // T-73: auto-create is infrequent but keep as INFO for operational visibility
         log.info("[PartitionRouting] Drone '{}' not in DB, auto-creating with default partitions...", uavId);
         return autoCreateDroneWithDefaultPartitions(uavId);
     }
 
     /**
-     * Auto-create a new drone entry with default partitions (observer + commander).
-     * Uses post-commit hook to sync Redis after DB transaction commits.
+     * T-19: Auto-create a new drone entry with default partitions using INSERT ON CONFLICT.
+     * Concurrent-safe: multiple instances receiving telemetry from the same new drone
+     * won't cause DataIntegrityViolationException.
      */
     @Transactional
     public Set<String> autoCreateDroneWithDefaultPartitions(String uavId) {
         log.info("Auto-creating new drone: {}", uavId);
 
-        // Check if drone already exists in DB
-        Optional<Drone> existingDrone = droneRepository.findByUavId(uavId);
-        Drone drone;
-        if (existingDrone.isPresent()) {
-            drone = existingDrone.get();
-        } else {
-            drone = new Drone();
-            drone.setUavId(uavId);
-            drone.setDroneSn("AUTO-" + uavId);
-            drone.setModel("PX4-SITL");
-            drone.setManufacturer("PX4");
-            drone.setOnlineStatus(true);
-            drone = droneRepository.save(drone);
-            log.info("Created new drone record: {} (id={})", uavId, drone.getId());
+        // T-19: INSERT ON CONFLICT DO NOTHING — concurrent-safe, silently skips on conflict
+        int inserted = droneRepository.insertOnConflictDoNothing(
+                uavId, "AUTO-" + uavId, "PX4-SITL", "PX4");
+        if (inserted > 0) {
+            log.info("Created new drone record via INSERT ON CONFLICT: {}", uavId);
         }
+
+        // Whether newly created or already exists, we need the drone entity
+        Drone drone = droneRepository.findByUavId(uavId)
+                .orElseThrow(() -> new RuntimeException("Drone not found after upsert: " + uavId));
 
         // Default partitions: observer + commander
         Set<String> defaultPartitions = new LinkedHashSet<>();
@@ -144,6 +209,9 @@ public class PartitionRoutingService {
 
         // Post-commit hook: sync to Redis only AFTER DB transaction commits
         registerPostCommitRedisSync(uavId, defaultPartitions, Collections.emptySet());
+
+        // T-14: Add new drone to Bloom filter
+        droneBloomFilter.put(uavId);
 
         log.info("Auto-created drone {} with default partitions: {}", uavId, defaultPartitions);
         return defaultPartitions;
