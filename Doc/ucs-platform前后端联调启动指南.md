@@ -29,7 +29,7 @@
 
 | 软件 | 最低版本 | 用途 | 安装检查命令 |
 |------|---------|------|-------------|
-| **JDK** | 17 | 后端编译运行 | `java -version` |
+| **JDK** | 21 | 后端编译运行（需要虚拟线程支持） | `java -version` |
 | **Maven** | 3.9+ | 后端构建 | `mvn -version` |
 | **Node.js** | 18+ | 前端构建运行 | `node -v` |
 | **npm** | 9+ | 前端依赖管理 | `npm -v` |
@@ -37,7 +37,7 @@
 | **Docker Compose** | 2.20+ | 容器编排 | `docker compose version` |
 | **Python** | 3.10+ | DDS/MAVLink 网关（可选） | `python3 --version` |
 
-> **说明：** JDK 17 是最低要求。如果使用 JDK 21，`spring.threads.virtual.enabled=true` 将启用虚拟线程以提升吞吐量；JDK 17 下该配置会被 Spring Boot 安全忽略，不影响运行。详见[附录](#14-附录虚拟线程说明)。
+> **说明：** 本项目使用 JDK 21 虚拟线程（`Thread.ofVirtual()`）来提升并发性能，JDK 21 是硬性要求。详见[附录](#14-附录虚拟线程说明)。
 
 ---
 
@@ -74,21 +74,21 @@ cd ../frontend/ucs-dashboard && npm install && npm run dev   # :5173
 
 ## 3. 第一步：安装基础环境
 
-### 3.1 JDK 17
+### 3.1 JDK 21
 
 **macOS (Homebrew):**
 ```bash
-brew install openjdk@17
-export JAVA_HOME=$(brew --prefix openjdk@17)
+brew install openjdk@21
+export JAVA_HOME=$(brew --prefix openjdk@21)
 ```
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt update && sudo apt install -y openjdk-17-jdk
+sudo apt update && sudo apt install -y openjdk-21-jdk
 ```
 
 **Windows:**
-下载 [Eclipse Temurin JDK 17](https://adoptium.net/temurin/releases/?version=17) 并安装。
+下载 [Eclipse Temurin JDK 21](https://adoptium.net/temurin/releases/?version=21) 并安装。
 
 ### 3.2 Maven
 
@@ -238,7 +238,7 @@ mvn clean compile
 ```
 基础设施 (PostgreSQL + Kafka + Redis)  ← 必须先启动
     │
-    ├── [1] ucs-business (:8086)       ← 核心业务（用户/团队/分区/模拟器）
+    ├── [1] ucs-business (:8086)       ← 核心业务（用户/团队/分区）
     ├── [2] ucs-drone-state (:8085)    ← 无人机状态缓存
     ├── [3] ucs-telemetry-ingest (:8081) ← 遥测接入
     ├── [4] ucs-telemetry-store (:8082)  ← 遥测存储
@@ -254,7 +254,7 @@ mvn clean compile
 
 | 服务 | 说明 | 必须？ |
 |------|------|--------|
-| `ucs-business` | 登录、用户、团队、无人机列表、DDS模拟器 | **必须** |
+| `ucs-business` | 登录、用户、团队、无人机列表 | **必须** |
 | `ucs-api-gateway` | 前端所有请求的入口，路由到各微服务 | **必须** |
 | `ucs-realtime-push` | WebSocket/STOMP 实时推送（地图实时位置） | 建议 |
 | `ucs-drone-state` | 无人机状态缓存（无人机在线/离线状态） | 建议 |
@@ -337,17 +337,6 @@ curl -s http://localhost:8082/actuator/health | python3 -m json.tool
 
 预期返回：`{"status": "UP"}`
 
-### 6.4 DDS 模拟器（内置，无需额外启动）
-
-`ucs-business` 模块内置了 `DDSSimulatorService`，默认启用（`dds.simulator.enabled=true`）。
-
-- **作用**：为前端地图生成模拟无人机遥测数据（位置、速度、航向等）
-- **更新频率**：每 2 秒（`dds.simulator.interval-ms=2000`）
-- **数据来源**：从数据库读取已注册的无人机列表，为每架无人机生成模拟飞行轨迹
-- **关闭方式**：启动时加 `-Ddds.simulator.enabled=false`
-
-> **无需启动独立的 DDS 网关或 MAVLink 网关即可进行前端联调。**
-
 ---
 
 ## 7. 第五步：启动前端
@@ -426,9 +415,9 @@ curl -s http://localhost:8080/api/v1/screen/team/list \
 
 ### 8.4 地图数据测试
 
-如果 DDS 模拟器正常工作（数据库中有无人机记录），地图上应显示：
-- 无人机图标在北京区域附近
-- 位置每 2 秒更新一次
+如果已接入真实无人机网关（DDS 或 MAVLink），地图上应显示：
+- 无人机图标在对应位置
+- 位置实时更新
 - 点击无人机显示详细信息面板
 
 ---
@@ -491,7 +480,7 @@ curl -s http://localhost:8080/api/v1/screen/team/list \
 | `REDIS_PORT` | `6379` | Redis 端口 |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka Broker 地址 |
 | `JWT_SECRET` | `change-me-in-production` | JWT 签名密钥 |
-| `VIRTUAL_THREADS_ENABLED` | `true` | 虚拟线程开关（JDK 21+生效） |
+| `VIRTUAL_THREADS_ENABLED` | `true` | 虚拟线程开关（JDK 21 必须） |
 
 **自定义示例：**
 ```bash
@@ -521,7 +510,6 @@ ucs-platform/
 │   ├── 用户认证 & JWT 签发
 │   ├── 团队管理 & 权限控制
 │   ├── 无人机 CRUD & 分区路由
-│   ├── DDS 模拟器（开发测试用）
 │   ├── WebSocket 推送网关
 │   └── 遥测数据持久化
 │
@@ -579,8 +567,8 @@ docker start ucs-redis                             # 启动 Redis
 
 **可能原因：**
 1. 数据库中没有无人机数据 → 执行 `data.sql` 初始化
-2. DDS 模拟器未初始化 → 数据库中 `drones` 表的 `uav_id` 字段为空
-3. WebSocket 未连接 → 检查 `ucs-realtime-push` 是否启动
+2. WebSocket 未连接 → 检查 `ucs-realtime-push` 是否启动
+3. 未接入无人机网关 → 需要启动 DDS 网关或 MAVLink 网关发送遥测数据
 
 **排查：**
 ```bash
@@ -643,6 +631,8 @@ kill -9 <PID>
 
 ## 14. 附录：虚拟线程说明
 
+本项目**强制要求 JDK 21**，因为核心代码（如 `MultiLevelCacheService`）直接使用了 `Thread.ofVirtual()` API 来提升并发性能。
+
 所有微服务的 `application.yml` 中配置了：
 
 ```yaml
@@ -652,12 +642,15 @@ spring:
       enabled: ${VIRTUAL_THREADS_ENABLED:true}
 ```
 
-| JDK 版本 | 行为 | 说明 |
-|-----------|------|------|
-| JDK 17 | 配置被安全忽略 | 使用传统平台线程池，功能完全正常 |
-| JDK 21+ | 启用虚拟线程 | Tomcat 每个请求使用虚拟线程，IO 密集型吞吐量显著提升 |
+**虚拟线程的使用场景：**
 
-**结论：** 开发联调使用 JDK 17 完全没问题。生产环境推荐 JDK 21 以获得最佳性能。
+| 场景 | 实现方式 | 说明 |
+|------|---------|------|
+| HTTP 请求处理 | `spring.threads.virtual.enabled=true` | Tomcat 每个请求使用虚拟线程 |
+| 缓存异步刷新（T-24） | `Thread.ofVirtual().name("cache-refresh-" + key).start(...)` | 防止缓存击穿时的后台DB加载 |
+| IO 密集型操作 | 虚拟线程自动调度 | 数据库查询、Redis操作、Kafka消费等 |
+
+**结论：** JDK 21 是硬性要求，不可降级到 JDK 17。虚拟线程是本项目的核心并发策略。
 
 ---
 
