@@ -1,0 +1,384 @@
+##############################################
+# UCS 微服务多实例部署编排 (Pre-K8S 性能验证)
+#
+# 用途: 在真正迁移到 K8S 之前，使用 Docker Compose 验证多实例部署的:
+#   1. ShedLock 分布式锁 — 定时任务在多实例中只执行一次
+#   2. Redis Pub/Sub — WebSocket 消息跨实例广播
+#   3. Kafka Consumer Group — 消息在实例间自动负载均衡
+#   4. 服务无状态验证 — 任意实例宕机不影响整体可用性
+#
+# 架构:
+#   - ucs-business x2 (含WebSocket, ShedLock定时任务)
+#   - ucs-telemetry-ingest x2 (Kafka消费者负载均衡)
+#   - ucs-telemetry-store x2 (TimescaleDB写入负载均衡)
+#   - ucs-realtime-push x2 (WebSocket推送负载均衡)
+#   - ucs-command x2 (命令幂等性+熔断)
+#   - ucs-drone-state x2 (无人机状态缓存)
+#   - ucs-api-gateway x1 (单网关入口，路由到下游多实例)
+#   - Nginx 负载均衡器
+#
+# 前置条件:
+#   docker-compose -f docker-compose-microservices.yml up -d  (基础设施)
+#   docker-compose -f docker-compose-redis-sentinel.yml up -d (Sentinel)
+#
+# 启动:
+#   docker-compose -f docker-compose-multi-instance-microservices.yml up -d
+#
+# 验证多实例协调:
+#   1. ShedLock: 查看日志确认定时任务只在1个实例执行
+#      docker logs ucs-business-1 2>&1 | grep "ShedLock"
+#      docker logs ucs-business-2 2>&1 | grep "ShedLock"
+#   2. Kafka Consumer Group: 查看分区分配
+#      docker exec ucs-kafka-1 /opt/kafka/bin/kafka-consumer-groups.sh \
+#        --bootstrap-server kafka-1:29092 --describe --group ucs-telemetry-ingest
+#   3. WebSocket Pub/Sub: 连接不同实例的WebSocket，验证消息广播到所有实例
+#   4. 故障恢复: docker stop ucs-business-1 → 验证 business-2 接管全部任务
+##############################################
+version: '3.8'
+
+services:
+
+  # ================================================================
+  # Nginx 负载均衡器 — 微服务入口
+  # ================================================================
+  nginx-lb:
+    image: nginx:1.25-alpine
+    container_name: ucs-nginx-lb
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx-microservices.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ucs-api-gateway-1
+    networks:
+      - ucs-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ================================================================
+  # API Gateway (单实例 — 网关本身无状态，按需扩展)
+  # ================================================================
+  ucs-api-gateway-1:
+    build:
+      context: ./ucs-platform/ucs-api-gateway
+      dockerfile: Dockerfile
+    container_name: ucs-api-gateway-1
+    ports:
+      - "8080:8080"
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # 路由到 Nginx 内部负载均衡的下游服务
+      DRONE_STATE_URI: http://nginx-drone-state
+      COMMAND_URI: http://nginx-command
+      BUSINESS_URI: http://nginx-business
+      BUSINESS_WS_URI: ws://nginx-business
+      STORE_URI: http://nginx-store
+      INGEST_URI: http://nginx-ingest
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  # ================================================================
+  # ucs-business x2 (WebSocket + ShedLock + 定时任务)
+  # ================================================================
+  ucs-business-1:
+    build:
+      context: ./ucs-platform/ucs-business
+      dockerfile: Dockerfile
+    container_name: ucs-business-1
+    environment:
+      SERVER_PORT: 8086
+      INSTANCE_ID: business-1
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ucs
+      DB_USER: ucs
+      DB_PASS: ucs_password
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      DDS_GATEWAY_COMMAND_URL: ${DDS_GATEWAY_COMMAND_URL:-http://host.docker.internal:5050}
+      KAFKA_ENABLED: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  ucs-business-2:
+    build:
+      context: ./ucs-platform/ucs-business
+      dockerfile: Dockerfile
+    container_name: ucs-business-2
+    environment:
+      SERVER_PORT: 8086
+      INSTANCE_ID: business-2
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ucs
+      DB_USER: ucs
+      DB_PASS: ucs_password
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      DDS_GATEWAY_COMMAND_URL: ${DDS_GATEWAY_COMMAND_URL:-http://host.docker.internal:5050}
+      KAFKA_ENABLED: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  # ================================================================
+  # ucs-telemetry-ingest x2 (Kafka Consumer 负载均衡)
+  # ================================================================
+  ucs-telemetry-ingest-1:
+    build:
+      context: ./ucs-platform/ucs-telemetry-ingest
+      dockerfile: Dockerfile
+    container_name: ucs-telemetry-ingest-1
+    environment:
+      SERVER_PORT: 8081
+      INSTANCE_ID: ingest-1
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  ucs-telemetry-ingest-2:
+    build:
+      context: ./ucs-platform/ucs-telemetry-ingest
+      dockerfile: Dockerfile
+    container_name: ucs-telemetry-ingest-2
+    environment:
+      SERVER_PORT: 8081
+      INSTANCE_ID: ingest-2
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  # ================================================================
+  # ucs-telemetry-store x2 (TimescaleDB 写入负载均衡)
+  # ================================================================
+  ucs-telemetry-store-1:
+    build:
+      context: ./ucs-platform/ucs-telemetry-store
+      dockerfile: Dockerfile
+    container_name: ucs-telemetry-store-1
+    environment:
+      SERVER_PORT: 8082
+      INSTANCE_ID: store-1
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      TIMESCALEDB_HOST: timescaledb
+      TIMESCALEDB_PORT: 5432
+      TIMESCALEDB_DB: ucs_telemetry
+      TIMESCALEDB_USER: ucs
+      TIMESCALEDB_PASS: ucs_password
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  ucs-telemetry-store-2:
+    build:
+      context: ./ucs-platform/ucs-telemetry-store
+      dockerfile: Dockerfile
+    container_name: ucs-telemetry-store-2
+    environment:
+      SERVER_PORT: 8082
+      INSTANCE_ID: store-2
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      TIMESCALEDB_HOST: timescaledb
+      TIMESCALEDB_PORT: 5432
+      TIMESCALEDB_DB: ucs_telemetry
+      TIMESCALEDB_USER: ucs
+      TIMESCALEDB_PASS: ucs_password
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  # ================================================================
+  # ucs-realtime-push x2 (WebSocket 推送负载均衡)
+  # ================================================================
+  ucs-realtime-push-1:
+    build:
+      context: ./ucs-platform/ucs-realtime-push
+      dockerfile: Dockerfile
+    container_name: ucs-realtime-push-1
+    environment:
+      SERVER_PORT: 8083
+      INSTANCE_ID: push-1
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  ucs-realtime-push-2:
+    build:
+      context: ./ucs-platform/ucs-realtime-push
+      dockerfile: Dockerfile
+    container_name: ucs-realtime-push-2
+    environment:
+      SERVER_PORT: 8083
+      INSTANCE_ID: push-2
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  # ================================================================
+  # ucs-command x2 (命令幂等性 + 熔断)
+  # ================================================================
+  ucs-command-1:
+    build:
+      context: ./ucs-platform/ucs-command
+      dockerfile: Dockerfile
+    container_name: ucs-command-1
+    environment:
+      SERVER_PORT: 8084
+      INSTANCE_ID: command-1
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  ucs-command-2:
+    build:
+      context: ./ucs-platform/ucs-command
+      dockerfile: Dockerfile
+    container_name: ucs-command-2
+    environment:
+      SERVER_PORT: 8084
+      INSTANCE_ID: command-2
+      KAFKA_BOOTSTRAP: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  # ================================================================
+  # ucs-drone-state x2 (无人机状态缓存)
+  # ================================================================
+  ucs-drone-state-1:
+    build:
+      context: ./ucs-platform/ucs-drone-state
+      dockerfile: Dockerfile
+    container_name: ucs-drone-state-1
+    environment:
+      SERVER_PORT: 8085
+      INSTANCE_ID: drone-state-1
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ucs
+      DB_USER: ucs
+      DB_PASS: ucs_password
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  ucs-drone-state-2:
+    build:
+      context: ./ucs-platform/ucs-drone-state
+      dockerfile: Dockerfile
+    container_name: ucs-drone-state-2
+    environment:
+      SERVER_PORT: 8085
+      INSTANCE_ID: drone-state-2
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ucs
+      DB_USER: ucs
+      DB_PASS: ucs_password
+    networks:
+      - ucs-net
+    restart: on-failure
+
+  # ================================================================
+  # 内部负载均衡 (Nginx upstream 代理各微服务实例)
+  # ================================================================
+  nginx-business:
+    image: nginx:1.25-alpine
+    container_name: nginx-business
+    volumes:
+      - ./nginx/upstream-business.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ucs-business-1
+      - ucs-business-2
+    networks:
+      - ucs-net
+
+  nginx-ingest:
+    image: nginx:1.25-alpine
+    container_name: nginx-ingest
+    volumes:
+      - ./nginx/upstream-ingest.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ucs-telemetry-ingest-1
+      - ucs-telemetry-ingest-2
+    networks:
+      - ucs-net
+
+  nginx-store:
+    image: nginx:1.25-alpine
+    container_name: nginx-store
+    volumes:
+      - ./nginx/upstream-store.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ucs-telemetry-store-1
+      - ucs-telemetry-store-2
+    networks:
+      - ucs-net
+
+  nginx-command:
+    image: nginx:1.25-alpine
+    container_name: nginx-command
+    volumes:
+      - ./nginx/upstream-command.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ucs-command-1
+      - ucs-command-2
+    networks:
+      - ucs-net
+
+  nginx-drone-state:
+    image: nginx:1.25-alpine
+    container_name: nginx-drone-state
+    volumes:
+      - ./nginx/upstream-drone-state.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ucs-drone-state-1
+      - ucs-drone-state-2
+    networks:
+      - ucs-net
+
+networks:
+  ucs-net:
+    external: true
+    name: ucs_dev_ucs-net

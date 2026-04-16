@@ -19,15 +19,64 @@ alerting:
 
 # 数据采集目标
 scrape_configs:
-  # ---- T-42: Spring Boot Actuator 指标（后端多实例） ----
-  - job_name: 'ucs-backend'
+  # ---- 微服务 Actuator 指标 (各服务多实例) ----
+  - job_name: 'ucs-api-gateway'
     metrics_path: '/actuator/prometheus'
     scrape_interval: 10s
     static_configs:
-      - targets: ['backend:8080']
+      - targets: ['ucs-api-gateway-1:8080']
         labels:
-          service: 'ucs-backend'
-    # K8s环境使用Pod服务发现:
+          service: 'ucs-api-gateway'
+
+  - job_name: 'ucs-business'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['ucs-business-1:8086', 'ucs-business-2:8086']
+        labels:
+          service: 'ucs-business'
+
+  - job_name: 'ucs-telemetry-ingest'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['ucs-telemetry-ingest-1:8081', 'ucs-telemetry-ingest-2:8081']
+        labels:
+          service: 'ucs-telemetry-ingest'
+
+  - job_name: 'ucs-telemetry-store'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['ucs-telemetry-store-1:8082', 'ucs-telemetry-store-2:8082']
+        labels:
+          service: 'ucs-telemetry-store'
+
+  - job_name: 'ucs-realtime-push'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['ucs-realtime-push-1:8083', 'ucs-realtime-push-2:8083']
+        labels:
+          service: 'ucs-realtime-push'
+
+  - job_name: 'ucs-command'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['ucs-command-1:8084', 'ucs-command-2:8084']
+        labels:
+          service: 'ucs-command'
+
+  - job_name: 'ucs-drone-state'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['ucs-drone-state-1:8085', 'ucs-drone-state-2:8085']
+        labels:
+          service: 'ucs-drone-state'
+
+    # K8s环境使用Pod服务发现 (替代上方static_configs):
     # kubernetes_sd_configs:
     #   - role: pod
     #     namespaces: { names: ['ucs'] }

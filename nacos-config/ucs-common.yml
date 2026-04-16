@@ -1,0 +1,104 @@
+# ============================================================
+# UCS 公共配置 — Nacos 共享配置 (data-id: ucs-common.yml)
+#
+# 所有微服务通过 bootstrap.yml 的 shared-configs 引用此文件。
+# 修改此文件后，Nacos 自动推送配置变更到所有微服务实例（无需重启）。
+#
+# 导入方式:
+#   1. 启动 Nacos: docker-compose -f docker-compose-monitoring.yml up -d nacos
+#   2. 访问 http://localhost:8848/nacos (nacos/nacos)
+#   3. 配置管理 → 配置列表 → 创建配置:
+#      - Data ID: ucs-common.yml
+#      - Group: UCS_GROUP
+#      - 配置格式: YAML
+#      - 配置内容: 粘贴本文件内容
+#
+# 或使用 API 导入:
+#   curl -X POST "http://localhost:8848/nacos/v1/cs/configs" \
+#     -d "dataId=ucs-common.yml&group=UCS_GROUP&type=yaml&content=$(cat nacos-config/ucs-common.yml)"
+# ============================================================
+
+# ── 公共 Redis 配置 ──
+spring:
+  data:
+    redis:
+      # 单节点模式 (开发环境)
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # Redis Cluster 模式 (生产环境，取消注释以下配置并注释上方 host/port)
+      # cluster:
+      #   nodes:
+      #     - redis-node-1:6371
+      #     - redis-node-2:6372
+      #     - redis-node-3:6373
+      #     - redis-node-4:6374
+      #     - redis-node-5:6375
+      #     - redis-node-6:6376
+      #   max-redirects: 3
+      lettuce:
+        pool:
+          max-active: ${REDIS_POOL_MAX_ACTIVE:16}
+          max-idle: ${REDIS_POOL_MAX_IDLE:8}
+          min-idle: ${REDIS_POOL_MIN_IDLE:2}
+
+# ── 公共 Kafka 配置 ──
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: ${KAFKA_PRODUCER_ACKS:1}
+      retries: 3
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        session.timeout.ms: 45000
+        heartbeat.interval.ms: 15000
+        max.poll.interval.ms: 600000
+    listener:
+      missing-topics-fatal: false
+
+# ── 公共 JWT 配置 ──
+jwt:
+  secret: ${JWT_SECRET:change-me-in-production}
+  access-token-expiration: ${JWT_ACCESS_EXPIRATION:1800000}
+  refresh-token-expiration: ${JWT_REFRESH_EXPIRATION:604800000}
+
+# ── 公共 Kafka Topic 名称 ──
+kafka:
+  enabled: ${KAFKA_ENABLED:true}
+  topic:
+    telemetry-raw: telemetry.raw
+    telemetry-processed: telemetry.processed
+    events-drone: events.drone
+    commands-down: commands.down
+    commands-ack: commands.ack
+
+# ── 公共 Actuator 配置 ──
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE_RATE:0.1}
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
+
+# ── 公共限流配置 ──
+ucs:
+  rate-limit:
+    default-qps: ${RATE_LIMIT_DEFAULT_QPS:100}
+    command-qps: ${RATE_LIMIT_COMMAND_QPS:10}

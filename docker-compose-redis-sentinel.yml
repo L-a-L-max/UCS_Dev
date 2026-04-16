@@ -1,0 +1,108 @@
+##############################################
+# Redis Sentinel 集群 — 自动故障转移与通知
+#
+# 架构: 3 Master + 3 Slave (Redis Cluster) + 3 Sentinel
+# Sentinel 职责:
+#   1. 监控: 持续检测 Master/Slave 是否正常运行
+#   2. 自动故障转移: Master 宕机时自动将 Slave 提升为新 Master
+#   3. 通知: 通过 Pub/Sub 通知客户端新 Master 地址
+#   4. 配置提供: 客户端连接 Sentinel 获取当前 Master 地址
+#
+# 注意: Redis Cluster 模式下，每个 Master 分片都有自己的 Slave，
+# Cluster 本身已内置故障转移(cluster-node-timeout)。
+# Sentinel 在此作为额外的监控和通知层，适用于:
+#   - 需要更快速的故障检测 (down-after-milliseconds < cluster-node-timeout)
+#   - 需要外部告警通知 (sentinel notification-script)
+#   - 客户端需要通过 Sentinel 协议发现 Master
+#
+# 启动顺序:
+#   1. 先启动 Redis Cluster: docker-compose -f docker-compose-redis-cluster.yml up -d
+#   2. 等待集群初始化完成 (约10秒)
+#   3. 再启动 Sentinel: docker-compose -f docker-compose-redis-sentinel.yml up -d
+#
+# 使用方式:
+#   docker-compose -f docker-compose-redis-sentinel.yml up -d
+##############################################
+version: '3.8'
+
+services:
+  # ================================================================
+  # Sentinel 节点 (3个，满足多数派投票要求)
+  # quorum=2: 至少2个Sentinel同意Master已下线才触发故障转移
+  # ================================================================
+
+  redis-sentinel-1:
+    image: redis:7.2-alpine
+    container_name: redis-sentinel-1
+    ports:
+      - "26379:26379"
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./redis-sentinel/sentinel-1.conf:/etc/redis/sentinel.conf
+      - sentinel-1-data:/data
+    networks:
+      - redis-cluster-net
+    depends_on:
+      - redis-node-1
+      - redis-node-2
+      - redis-node-3
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 26379 ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis-sentinel-2:
+    image: redis:7.2-alpine
+    container_name: redis-sentinel-2
+    ports:
+      - "26380:26379"
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./redis-sentinel/sentinel-2.conf:/etc/redis/sentinel.conf
+      - sentinel-2-data:/data
+    networks:
+      - redis-cluster-net
+    depends_on:
+      - redis-node-1
+      - redis-node-2
+      - redis-node-3
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 26379 ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis-sentinel-3:
+    image: redis:7.2-alpine
+    container_name: redis-sentinel-3
+    ports:
+      - "26381:26379"
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./redis-sentinel/sentinel-3.conf:/etc/redis/sentinel.conf
+      - sentinel-3-data:/data
+    networks:
+      - redis-cluster-net
+    depends_on:
+      - redis-node-1
+      - redis-node-2
+      - redis-node-3
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 26379 ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  sentinel-1-data:
+  sentinel-2-data:
+  sentinel-3-data:
+
+networks:
+  redis-cluster-net:
+    external: true
+    name: ucs_dev_redis-cluster-net
