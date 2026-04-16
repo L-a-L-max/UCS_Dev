@@ -9,6 +9,8 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
@@ -63,6 +65,14 @@ public class MultiLevelCacheService {
 
     /** T-24: Per-key mutex locks to prevent cache stampede */
     private final ConcurrentMap<String, ReentrantLock> keyLocks = new ConcurrentHashMap<>();
+
+    /** T-24: Async refresh executor (daemon threads for background DB loads) */
+    private final ExecutorService asyncRefreshExecutor = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r);
+        t.setDaemon(true);
+        t.setName("cache-refresh");
+        return t;
+    });
 
     /** T-24: Logical expiration timestamps stored alongside L2 values */
     private static final String LOGICAL_EXPIRY_SUFFIX = ":logicalExpiry";
@@ -192,7 +202,7 @@ public class MultiLevelCacheService {
      */
     private void asyncRefresh(String region, String key, Supplier<String> dbLoader) {
         if (dbLoader == null) return;
-        Thread.ofVirtual().name("cache-refresh-" + key).start(() -> {
+        asyncRefreshExecutor.submit(() -> {
             try {
                 String freshValue = dbLoader.get();
                 if (freshValue != null) {

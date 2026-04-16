@@ -54,10 +54,28 @@
             <artifactId>geohash</artifactId>
         </dependency>
 
+        <!-- Spring Web (for @RestControllerAdvice, ResponseEntity, etc.) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Spring Scheduling (for @Scheduled) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+
         <!-- JWT shared -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
+        </dependency>
+
+        <!-- T-45: ShedLock (for distributed scheduling) -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
         </dependency>
 
         <!-- T-68: OpenFeign for cross-service communication -->
