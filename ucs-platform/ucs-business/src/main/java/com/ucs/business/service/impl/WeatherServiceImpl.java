@@ -6,6 +6,7 @@ import com.ucs.business.dto.WeatherDTO;
 import com.ucs.business.entity.WeatherSnapshot;
 import com.ucs.business.repository.WeatherSnapshotRepository;
 import com.ucs.business.service.IWeatherService;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -109,6 +110,7 @@ public class WeatherServiceImpl implements IWeatherService {
     }
     
     @Scheduled(fixedRate = 600000)
+    @SchedulerLock(name = "updateWeatherImpl", lockAtLeastFor = "8m", lockAtMostFor = "15m")
     public void updateWeather() {
         fetchRealWeather(BEIJING_LAT, BEIJING_LNG, "Beijing");
     }

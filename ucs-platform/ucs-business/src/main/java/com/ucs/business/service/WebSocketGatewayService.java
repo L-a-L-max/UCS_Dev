@@ -90,7 +90,8 @@ public class WebSocketGatewayService {
             messagingTemplate.convertAndSend(topic, message);
         }
 
-        log.info("[WebSocket] Notified {} partition(s) about drone '{}' removal: {}",
+        // T-73: Downgrade per-event log from INFO to DEBUG (can fire frequently during partition changes)
+        log.debug("[WebSocket] Notified {} partition(s) about drone '{}' removal: {}",
                 removedPartitions.size(), uavId, removedPartitions);
     }
 

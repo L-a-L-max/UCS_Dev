@@ -3,6 +3,7 @@ package com.ucs.business.service;
 import com.ucs.business.kafka.TelemetryKafkaConsumer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -40,6 +41,7 @@ public class DroneHeartbeatService {
      * 每秒扫描 Redis ZSet，检测超时无人机。
      */
     @Scheduled(fixedRate = 1000)
+    @SchedulerLock(name = "checkHeartbeats", lockAtLeastFor = "500ms", lockAtMostFor = "5s")
     public void checkHeartbeats() {
         try {
             Set<String> timedOut = redisService.getTimedOutDrones(TIMEOUT_MS);
@@ -48,7 +50,7 @@ public class DroneHeartbeatService {
             }
 
             for (String uavId : timedOut) {
-                log.info("[Heartbeat] Drone '{}' timed out (>{}ms no data) → marking OFFLINE", uavId, TIMEOUT_MS);
+                log.debug("[Heartbeat] Drone '{}' timed out (>{}ms no data) → marking OFFLINE", uavId, TIMEOUT_MS);
 
                 // 1. 清理 Redis
                 redisService.setDroneOffline(uavId);
@@ -61,7 +63,7 @@ public class DroneHeartbeatService {
                 notifyDroneOffline(uavId);
             }
 
-            log.info("[Heartbeat] Marked {} drone(s) as OFFLINE: {}", timedOut.size(), timedOut);
+            log.debug("[Heartbeat] Marked {} drone(s) as OFFLINE: {}", timedOut.size(), timedOut);
 
         } catch (Exception e) {
             log.warn("[Heartbeat] Check failed: {}", e.getMessage());

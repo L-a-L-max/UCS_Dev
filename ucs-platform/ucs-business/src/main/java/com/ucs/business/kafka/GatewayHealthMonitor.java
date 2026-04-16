@@ -4,6 +4,7 @@ import com.ucs.business.service.RedisService;
 import com.ucs.business.service.WebSocketGatewayService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -58,6 +59,7 @@ public class GatewayHealthMonitor {
      * 定时检查 Gateway 心跳状态（每 10 秒执行一次）。
      */
     @Scheduled(fixedRate = 10_000)
+    @SchedulerLock(name = "checkGatewayHealth", lockAtLeastFor = "8s", lockAtMostFor = "30s")
     public void checkGatewayHealth() {
         try {
             Set<String> onlineDrones = redisService.getAllOnlineDroneIds();

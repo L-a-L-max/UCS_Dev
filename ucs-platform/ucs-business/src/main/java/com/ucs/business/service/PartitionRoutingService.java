@@ -15,7 +15,6 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.stream.Collectors;
 
 /**
  * Partition routing service for drone-to-partition mapping.
@@ -83,10 +82,10 @@ public class PartitionRoutingService {
         // 1. Try Redis first
         Set<String> cached = redisService.getDronePartitions(uavId);
         if (!cached.isEmpty()) {
-            log.info("[PartitionRouting] Cache HIT for drone '{}': partitions={}", uavId, cached);
+            log.debug("[PartitionRouting] Cache HIT for drone '{}': partitions={}", uavId, cached);
             return cached;
         }
-        log.info("[PartitionRouting] Cache MISS for drone '{}', querying database...", uavId);
+        log.debug("[PartitionRouting] Cache MISS for drone '{}', querying database...", uavId);
 
         // 2. Fallback to database
         List<String> dbPartitions = dronePartitionMapRepository.findActivePartitionNamesByUavId(uavId);
@@ -94,11 +93,12 @@ public class PartitionRoutingService {
             Set<String> partitionSet = new LinkedHashSet<>(dbPartitions);
             // Write back to Redis for next lookup (cache-aside pattern)
             syncToRedis(uavId, partitionSet, Collections.emptySet());
-            log.info("Loaded partitions for drone {} from DB: {}", uavId, partitionSet);
+            log.debug("Loaded partitions for drone {} from DB: {}", uavId, partitionSet);
             return partitionSet;
         }
 
         // 3. New drone: auto-create with default partitions (observer + commander)
+        // T-73: auto-create is infrequent but keep as INFO for operational visibility
         log.info("[PartitionRouting] Drone '{}' not in DB, auto-creating with default partitions...", uavId);
         return autoCreateDroneWithDefaultPartitions(uavId);
     }
@@ -194,6 +194,7 @@ public class PartitionRoutingService {
         removedPartitions.removeAll(newPartitions);
         registerPostCommitRedisSync(uavId, newPartitions, removedPartitions);
 
+        // T-73: partition updates are operational events — keep INFO
         log.info("Updated drone {} partitions: {} -> {} (DB committed, Redis sync pending)",
                 uavId, oldPartitions, newPartitions);
     }
@@ -211,7 +212,7 @@ public class PartitionRoutingService {
                 public void afterCommit() {
                     try {
                         redisSync.run();
-                        log.info("[DualWrite] Post-commit Redis sync succeeded for drone '{}'", uavId);
+                        log.debug("[DualWrite] Post-commit Redis sync succeeded for drone '{}'", uavId);
                     } catch (Exception e) {
                         log.warn("[DualWrite] Post-commit Redis sync FAILED for drone '{}', queuing for retry: {}",
                                 uavId, e.getMessage());
@@ -256,7 +257,7 @@ public class PartitionRoutingService {
     public void retryPendingRedisSync() {
         int size = pendingRedisSyncQueue.size();
         if (size == 0) return;
-        log.info("[DualWrite] Retrying {} pending Redis sync operations...", size);
+        log.debug("[DualWrite] Retrying {} pending Redis sync operations...", size);
         int retried = 0;
         int failed = 0;
         for (int i = 0; i < size; i++) {
@@ -271,21 +272,24 @@ public class PartitionRoutingService {
                 log.warn("[DualWrite] Retry failed, re-queued: {}", e.getMessage());
             }
         }
-        log.info("[DualWrite] Retry complete: {} succeeded, {} re-queued", retried, failed);
+        log.debug("[DualWrite] Retry complete: {} succeeded, {} re-queued", retried, failed);
     }
 
     /**
+     * T-74: Optimized reconciliation using active-only DB query and Redis Pipeline.
      * Periodic reconciliation: detect and fix drift between DB and Redis.
      * Runs every 60 seconds. Compares DB state with Redis state and fixes discrepancies.
      * This is the safety net that guarantees eventual consistency even after Redis restarts.
+     * - Uses findByIsActiveTrue() instead of findAll().stream().filter()
+     * - Batches Redis reads via Pipeline to reduce N+1 round-trips
+     * - Only fixes drones with actual drift (DB is source of truth)
      */
     @Scheduled(fixedDelay = 60000, initialDelay = 30000)
     @SchedulerLock(name = "reconcileDbRedis", lockAtLeastFor = "50s", lockAtMostFor = "5m")
     public void reconcileDbRedis() {
         try {
-            List<DronePartitionMap> allActive = dronePartitionMapRepository.findAll().stream()
-                    .filter(dpm -> Boolean.TRUE.equals(dpm.getIsActive()))
-                    .collect(Collectors.toList());
+            // T-74: Use dedicated active-only query (avoids loading inactive rows)
+            List<DronePartitionMap> allActive = dronePartitionMapRepository.findByIsActiveTrue();
 
             Map<String, Set<String>> dbState = new LinkedHashMap<>();
             for (DronePartitionMap dpm : allActive) {
@@ -293,11 +297,19 @@ public class PartitionRoutingService {
                         .add(dpm.getPartitionName());
             }
 
+            if (dbState.isEmpty()) {
+                return;
+            }
+
+            // T-74: Batch Redis reads using Pipeline to avoid N+1 round-trips
+            List<String> uavIds = new ArrayList<>(dbState.keySet());
+            Map<String, Set<String>> redisStates = batchGetDronePartitions(uavIds);
+
             int fixCount = 0;
             for (Map.Entry<String, Set<String>> entry : dbState.entrySet()) {
                 String uavId = entry.getKey();
                 Set<String> dbPartitions = entry.getValue();
-                Set<String> redisPartitions = redisService.getDronePartitions(uavId);
+                Set<String> redisPartitions = redisStates.getOrDefault(uavId, Collections.emptySet());
 
                 if (!dbPartitions.equals(redisPartitions)) {
                     log.warn("[Reconcile] Drift detected for '{}': DB={} vs Redis={}. Fixing...",
@@ -316,6 +328,36 @@ public class PartitionRoutingService {
         } catch (Exception e) {
             log.error("[Reconcile] Reconciliation failed: {}", e.getMessage(), e);
         }
+    }
+
+    /**
+     * T-74: Batch-read drone partitions from Redis using Pipeline.
+     * Reduces N individual SMEMBERS calls to a single pipelined round-trip.
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Set<String>> batchGetDronePartitions(List<String> uavIds) {
+        Map<String, Set<String>> result = new LinkedHashMap<>();
+        try {
+            List<Object> pipelineResults = redisService.executePipelined(uavIds);
+            for (int i = 0; i < uavIds.size(); i++) {
+                Object raw = pipelineResults.get(i);
+                Set<String> partitions;
+                if (raw instanceof Set) {
+                    partitions = (Set<String>) raw;
+                } else if (raw instanceof Collection) {
+                    partitions = new LinkedHashSet<>((Collection<String>) raw);
+                } else {
+                    partitions = Collections.emptySet();
+                }
+                result.put(uavIds.get(i), partitions);
+            }
+        } catch (Exception e) {
+            log.warn("[Reconcile] Pipeline batch read failed, falling back to individual reads", e);
+            for (String uavId : uavIds) {
+                result.put(uavId, redisService.getDronePartitions(uavId));
+            }
+        }
+        return result;
     }
 
     /**
@@ -339,9 +381,8 @@ public class PartitionRoutingService {
      */
     public void warmUpCache() {
         log.info("Warming up partition cache from database...");
-        List<DronePartitionMap> allMaps = dronePartitionMapRepository.findAll().stream()
-                .filter(dpm -> Boolean.TRUE.equals(dpm.getIsActive()))
-                .collect(Collectors.toList());
+        // T-74: Use dedicated active-only query (avoids loading inactive rows)
+        List<DronePartitionMap> allMaps = dronePartitionMapRepository.findByIsActiveTrue();
 
         // Group by uavId
         Map<String, Set<String>> dronePartitions = new LinkedHashMap<>();

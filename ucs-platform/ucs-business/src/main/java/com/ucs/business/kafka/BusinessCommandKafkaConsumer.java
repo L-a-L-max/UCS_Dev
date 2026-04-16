@@ -2,6 +2,7 @@ package com.ucs.business.kafka;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ucs.common.service.EpochValidationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -29,7 +30,8 @@ public class BusinessCommandKafkaConsumer {
 
     private final ObjectMapper objectMapper;
     private final SimpMessagingTemplate messagingTemplate;
-    private final EpochManager epochManager;
+    // T-63/T-65: Use shared EpochValidationService from ucs-common instead of local EpochManager
+    private final EpochValidationService epochValidationService;
 
     @KafkaListener(
             topics = "${kafka.topic.commands-ack:commands.ack}",
@@ -49,14 +51,15 @@ public class BusinessCommandKafkaConsumer {
             Object epochObj = payload.get("epoch");
             if (epochObj != null) {
                 long msgEpoch = ((Number) epochObj).longValue();
-                if (!epochManager.validateEpoch(uavId, msgEpoch)) {
+                if (!epochValidationService.validate(uavId, msgEpoch)) {
                     log.warn("[CommandAckConsumer] Stale ack discarded: uavId={}, epoch={}",
                             uavId, msgEpoch);
                     return;
                 }
             }
 
-            log.info("[CommandAckConsumer] uavId={}, command={}, result={}", uavId, command, result);
+            // T-73: Downgrade per-ack log from INFO to DEBUG
+            log.debug("[CommandAckConsumer] uavId={}, command={}, result={}", uavId, command, result);
 
             // 构建 WebSocket 推送消息
             Map<String, Object> ackMessage = new LinkedHashMap<>();

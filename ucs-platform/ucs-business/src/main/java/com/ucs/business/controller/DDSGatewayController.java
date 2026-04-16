@@ -2,7 +2,6 @@ package com.ucs.business.controller;
 
 import com.ucs.business.service.PartitionRoutingService;
 import com.ucs.business.service.RedisService;
-import com.ucs.business.service.TelemetryPersistenceService;
 import com.ucs.business.service.WebSocketGatewayService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -40,7 +39,7 @@ import java.util.*;
 public class DDSGatewayController {
 
     private final PartitionRoutingService partitionRoutingService;
-    private final TelemetryPersistenceService telemetryPersistenceService;  // Gateway 2: Persistence
+    // T-63: TelemetryPersistenceService removed — persistence handled by ucs-telemetry-store
     private final WebSocketGatewayService webSocketGatewayService;          // Gateway 3: WebSocket
     private final RedisService redisService;
     private final SimpMessagingTemplate messagingTemplate;
@@ -111,8 +110,7 @@ public class DDSGatewayController {
                 droneData.put("isActive", armed != null && Boolean.TRUE.equals(armed));
                 allTelemetry.add(droneData);
 
-                // === Gateway 2: Persistence Gateway ===
-                telemetryPersistenceService.persistFromMap(droneData);
+                // T-63: Persistence removed — handled by ucs-telemetry-store via Kafka
 
                 // === Gateway 1: Partition Routing ===
                 Set<String> partitions = partitionRoutingService.getPartitionsForDrone(uavId);
@@ -128,18 +126,20 @@ public class DDSGatewayController {
             // Commander/Leader 使用分区 topic，Observer 在 App.tsx 中单独处理
             webSocketGatewayService.broadcastToPartitions(partitionData, timestamp);
 
-            // Detailed logging for debugging data flow
-            log.info("[DDSGateway] Received {} drone(s), routed to {} partition(s)",
+            // T-73: Downgrade per-request telemetry logs from INFO to DEBUG
+            log.debug("[DDSGateway] Received {} drone(s), routed to {} partition(s)",
                     drones.size(), partitionData.size());
-            for (Map.Entry<String, List<Map<String, Object>>> pEntry : partitionData.entrySet()) {
-                log.info("[DDSGateway]   Partition '{}' -> {} drone(s)",
-                        pEntry.getKey(), pEntry.getValue().size());
-            }
-            for (Map<String, Object> droneData : drones) {
-                String droneId = String.valueOf(droneData.get("uavId"));
-                log.info("[DDSGateway]   Drone '{}': lat={}, lon={}, alt={}, armed={}, mode={}",
-                        droneId, droneData.get("lat"), droneData.get("lon"),
-                        droneData.get("alt"), droneData.get("armed"), droneData.get("flightMode"));
+            if (log.isDebugEnabled()) {
+                for (Map.Entry<String, List<Map<String, Object>>> pEntry : partitionData.entrySet()) {
+                    log.debug("[DDSGateway]   Partition '{}' -> {} drone(s)",
+                            pEntry.getKey(), pEntry.getValue().size());
+                }
+                for (Map<String, Object> droneData : drones) {
+                    String droneId = String.valueOf(droneData.get("uavId"));
+                    log.debug("[DDSGateway]   Drone '{}': lat={}, lon={}, alt={}, armed={}, mode={}",
+                            droneId, droneData.get("lat"), droneData.get("lon"),
+                            droneData.get("alt"), droneData.get("armed"), droneData.get("flightMode"));
+                }
             }
 
             return ResponseEntity.ok(Map.of(
@@ -186,7 +186,8 @@ public class DDSGatewayController {
             int command = ((Number) payload.getOrDefault("command", 0)).intValue();
             int result = ((Number) payload.getOrDefault("result", -1)).intValue();
 
-            log.info("[CommandAck] uavId={}, command={}, result={}", uavId, command, result);
+            // T-73: Downgrade per-ack log from INFO to DEBUG
+            log.debug("[CommandAck] uavId={}, command={}, result={}", uavId, command, result);
 
             // Broadcast command ack to frontend via WebSocket
             Map<String, Object> ackMessage = new LinkedHashMap<>();

@@ -51,7 +51,8 @@ public class EventKafkaConsumer {
             String detail = String.valueOf(payload.getOrDefault("detail", ""));
             String level = String.valueOf(payload.getOrDefault("level", "INFO"));
 
-            log.info("[EventConsumer] type={}, uavId={}, level={}, detail={}",
+            // T-73: Downgrade per-message log from INFO to DEBUG
+            log.debug("[EventConsumer] type={}, uavId={}, level={}, detail={}",
                     eventType, uavId, level, detail);
 
             // 持久化事件

@@ -251,6 +251,31 @@ public class RedisService {
         stringRedisTemplate.delete(key);
     }
     
+    // ========== Redis Pipeline (T-74) ==========
+
+    /**
+     * T-74: Execute pipelined SMEMBERS commands for batch partition reads.
+     * Reduces N round-trips to a single pipelined call.
+     *
+     * @param uavIds List of drone IDs to fetch partitions for
+     * @return List of results (each is a Set<String> of partition names)
+     */
+    public List<Object> executePipelined(List<String> uavIds) {
+        return stringRedisTemplate.executePipelined(
+                new org.springframework.data.redis.core.SessionCallback<Object>() {
+                    @Override
+                    @SuppressWarnings("unchecked")
+                    public Object execute(org.springframework.data.redis.core.RedisOperations operations) {
+                        for (String uavId : uavIds) {
+                            String key = String.format(DRONE_PARTITIONS_PREFIX, uavId);
+                            operations.opsForSet().members(key);
+                        }
+                        return null; // Pipeline results are collected by executePipelined
+                    }
+                }
+        );
+    }
+
     // ========== Distributed Lock ==========
     
     /**

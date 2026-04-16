@@ -21,4 +21,9 @@ public interface DronePartitionMapRepository extends JpaRepository<DronePartitio
     
     @Query("SELECT DISTINCT d.uavId FROM DronePartitionMap d WHERE d.partitionName = :partitionName AND d.isActive = true")
     List<String> findActiveUavIdsByPartitionName(String partitionName);
+
+    /**
+     * T-74: Fetch only active partition mappings directly from DB (avoids findAll + stream filter).
+     */
+    List<DronePartitionMap> findByIsActiveTrue();
 }

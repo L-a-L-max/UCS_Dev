@@ -6,6 +6,7 @@ import com.ucs.business.repository.UavLatestStateRepository;
 import com.ucs.business.repository.UavTelemetryRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -101,6 +102,7 @@ public class TelemetryPersistenceService {
      * Batch persist buffered telemetry data every 5 seconds.
      */
     @Scheduled(fixedDelay = 5000)
+    @SchedulerLock(name = "flushTelemetryBuffer", lockAtLeastFor = "3s", lockAtMostFor = "15s")
     @Transactional
     public void flushBuffer() {
         if (buffer.isEmpty()) return;
@@ -163,13 +165,9 @@ public class TelemetryPersistenceService {
             latestStateRepository.saveAll(latestStates);
         }
 
-        log.info("[Persistence] Flushed buffer: {} telemetry records, {} latest states", 
+        // T-73: Downgrade high-frequency persistence log from INFO to DEBUG
+        log.debug("[Persistence] Flushed buffer: {} telemetry records, {} latest states", 
                 telemetryList.size(), latestStates.size());
-        for (Map.Entry<String, TelemetryRecord> logEntry : latestByUav.entrySet()) {
-            TelemetryRecord lr = logEntry.getValue();
-            log.info("[Persistence]   Drone '{}': lat={}, lon={}, alt={}",
-                    lr.uavId, lr.lat, lr.lon, lr.alt);
-        }
     }
 
     /**

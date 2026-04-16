@@ -3,8 +3,6 @@ package com.ucs.business.kafka;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ucs.business.service.PartitionRoutingService;
-import com.ucs.business.service.RedisService;
-import com.ucs.business.service.TelemetryPersistenceService;
 import com.ucs.business.service.WebSocketGatewayService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,14 +15,16 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Kafka 遥测数据消费者（业务服务）— 实时模式。
+ * T-63: Kafka 遥测数据消费者（业务服务）— 仅负责业务逻辑。
  *
  * 消费 telemetry.processed topic（由 ucs-telemetry-ingest 校验/清洗后转发）。
- * 本消费者职责：
- *   1. 自动注册未知无人机（含分区映射）
- *   2. 更新 Redis ZSet 心跳时间戳（用于离线检测）
- *   3. 持久化遥测数据到 uav_latest_state 表
- *   4. **实时** 分区路由 + WebSocket 推送（每条消息立即推送，无缓冲）
+ *
+ * 职责划分（T-63 清理后）：
+ *   - 本服务仅负责：自动注册未知无人机（含分区映射）+ 实时分区路由 + WebSocket 推送
+ *   - Epoch校验：由 ucs-telemetry-ingest 负责（EpochValidationService）
+ *   - Redis心跳：由 ucs-telemetry-ingest 负责（RedisClusterService.setDroneOnline）
+ *   - 遥测持久化：由 ucs-telemetry-store 负责（TelemetryBatchConsumer）
+ *   - WebSocket全量广播：由 ucs-realtime-push 负责（TelemetryPushConsumer）
  *
  * 实时性设计（10Hz 目标）：
  *   - 每条 Kafka 消息到达后立即处理并推送到 WebSocket，无 @Scheduled 缓冲
@@ -40,10 +40,7 @@ public class TelemetryKafkaConsumer {
 
     private final ObjectMapper objectMapper;
     private final PartitionRoutingService partitionRoutingService;
-    private final TelemetryPersistenceService telemetryPersistenceService;
     private final WebSocketGatewayService webSocketGatewayService;
-    private final RedisService redisService;
-    private final EpochManager epochManager;
 
     /** 已知无人机缓存，避免每条消息都查库 */
     private final Set<String> knownDrones = ConcurrentHashMap.newKeySet();
@@ -70,44 +67,21 @@ public class TelemetryKafkaConsumer {
                 return;
             }
 
-            // --- 自动注册未知无人机（含分区映射 observer+commander）---
+            // --- T-63: 仅负责自动注册 + 分区路由 + WebSocket推送 ---
+            // Epoch校验、Redis心跳、持久化均由专职微服务负责，此处不再重复
+
+            // 自动注册未知无人机（含分区映射 observer+commander）
             if (!knownDrones.contains(uavId)) {
                 try {
                     partitionRoutingService.getPartitionsForDrone(uavId);
                     knownDrones.add(uavId);
-                    log.info("[BusinessConsumer] Drone '{}' registered/confirmed with partitions", uavId);
+                    log.debug("[BusinessConsumer] Drone '{}' registered/confirmed with partitions", uavId);
                 } catch (Exception regEx) {
                     log.warn("[BusinessConsumer] Drone registration failed for {}: {}", uavId, regEx.getMessage());
                 }
             }
 
-            // --- 同步 Epoch ---
-            try {
-                Object epochObj = payload.get("epoch");
-                if (epochObj instanceof Number) {
-                    long msgEpoch = ((Number) epochObj).longValue();
-                    epochManager.validateEpoch(uavId, msgEpoch);
-                }
-            } catch (Exception epochEx) {
-                log.debug("[BusinessConsumer] Epoch sync failed for {}: {}", uavId, epochEx.getMessage());
-            }
-
-            // --- 更新 Redis 心跳（ZSet 时间戳 + online key）---
-            try {
-                redisService.updateDroneHeartbeat(uavId);
-                redisService.setDroneOnline(uavId);
-            } catch (Exception redisEx) {
-                log.debug("[BusinessConsumer] Redis heartbeat failed for {}: {}", uavId, redisEx.getMessage());
-            }
-
-            // --- 持久化到 uav_latest_state 表 ---
-            try {
-                telemetryPersistenceService.persistFromMap(payload);
-            } catch (Exception persistEx) {
-                log.error("[BusinessConsumer] Persistence failed for {}: {}", uavId, persistEx.getMessage());
-            }
-
-            // --- 实时更新快照并立即推送到 WebSocket 分区 topic ---
+            // 实时更新快照并立即推送到 WebSocket 分区 topic
             allDroneSnapshot.put(uavId, payload);
             broadcastToPartitionsNow();
 
@@ -149,7 +123,8 @@ public class TelemetryKafkaConsumer {
     public void removeDroneFromSnapshot(String uavId) {
         allDroneSnapshot.remove(uavId);
         knownDrones.remove(uavId);
-        log.info("[BusinessConsumer] Removed offline drone '{}' from snapshot", uavId);
+        // T-73: Downgrade per-drone removal log from INFO to DEBUG
+        log.debug("[BusinessConsumer] Removed offline drone '{}' from snapshot", uavId);
     }
 
     /**

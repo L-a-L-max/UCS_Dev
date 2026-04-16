@@ -1,6 +1,7 @@
 package com.ucs.business.kafka;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ucs.common.service.EpochValidationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -26,7 +27,8 @@ public class CommandKafkaProducer {
 
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
-    private final EpochManager epochManager;
+    // T-63/T-65: Use shared EpochValidationService from ucs-common instead of local EpochManager
+    private final EpochValidationService epochValidationService;
 
     @Value("${kafka.topic.commands-down:commands.down}")
     private String commandsDownTopic;
@@ -49,7 +51,7 @@ public class CommandKafkaProducer {
         payload.put("timestamp", Instant.now().toString());
         payload.put("userId", userId);
         payload.put("commandLogId", commandLogId);
-        payload.put("epoch", epochManager.getCurrentEpoch(uavId));
+        payload.put("epoch", epochValidationService.getCurrentEpoch(uavId));
 
         String json = objectMapper.writeValueAsString(payload);
 
@@ -57,7 +59,8 @@ public class CommandKafkaProducer {
         // 失败时抛出异常，由 ControlService 捕获并降级到 HTTP
         var sendResult = kafkaTemplate.send(commandsDownTopic, uavId, json)
                 .get(5, TimeUnit.SECONDS);
-        log.info("[CommandProducer] Command {} -> {} sent to partition {} offset {} epoch {}",
+        // T-73: Downgrade per-command log from INFO to DEBUG
+        log.debug("[CommandProducer] Command {} -> {} sent to partition {} offset {} epoch {}",
                 commandType, uavId,
                 sendResult.getRecordMetadata().partition(),
                 sendResult.getRecordMetadata().offset(),
