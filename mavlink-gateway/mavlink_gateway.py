@@ -1540,13 +1540,18 @@ class MavlinkGateway:
             if lat != 0 and lon != 0:
                 logger.info("[LAND] >>> uav=%s cmd=MAV_CMD_NAV_LAND(21) "
                             "lat=%.6f lon=%.6f alt=%.2f", uav_id, lat, lon, alt)
-                ok = self._send_mavlink_command_long(
+                land_result = self._send_command_and_wait_ack(
                     uav_id, MAV_CMD_NAV_LAND,
-                    param5=lat, param6=lon, param7=alt)
+                    param5=lat, param6=lon, param7=alt, timeout=3.0)
             else:
                 logger.info("[LAND] >>> uav=%s cmd=MAV_CMD_NAV_LAND(21) at current position", uav_id)
-                ok = self._send_mavlink_command_long(uav_id, MAV_CMD_NAV_LAND)
-            logger.info("[LAND] send_result=%s for %s", ok, uav_id)
+                land_result = self._send_command_and_wait_ack(
+                    uav_id, MAV_CMD_NAV_LAND, timeout=3.0)
+            if land_result is not None and land_result != 0:
+                logger.error("[LAND] FAILED: ACK result=%d for %s", land_result, uav_id)
+            else:
+                ok = True
+                logger.info("[LAND] ACK=%s for %s", land_result, uav_id)
 
         elif command_type == 'RTL':
             lat = float(params.get('lat', 0))
@@ -1555,29 +1560,45 @@ class MavlinkGateway:
                 alt = float(params.get('alt', 0))
                 logger.info("[RTL] >>> uav=%s STEP1: SET_HOME lat=%.6f lon=%.6f alt=%.2f",
                             uav_id, lat, lon, alt)
-                self._send_mavlink_command_long(
+                home_result = self._send_command_and_wait_ack(
                     uav_id, MAV_CMD_DO_SET_HOME, param1=0.0,
-                    param5=lat, param6=lon, param7=alt)
+                    param5=lat, param6=lon, param7=alt, timeout=3.0)
+                logger.info("[RTL] SET_HOME ACK=%s for %s", home_result, uav_id)
                 time.sleep(0.3)
             logger.info("[RTL] >>> uav=%s cmd=MAV_CMD_NAV_RETURN_TO_LAUNCH(20)", uav_id)
-            ok = self._send_mavlink_command_long(
-                uav_id, MAV_CMD_NAV_RETURN_TO_LAUNCH)
-            logger.info("[RTL] send_result=%s for %s", ok, uav_id)
+            rtl_result = self._send_command_and_wait_ack(
+                uav_id, MAV_CMD_NAV_RETURN_TO_LAUNCH, timeout=3.0)
+            if rtl_result is not None and rtl_result != 0:
+                logger.error("[RTL] FAILED: ACK result=%d for %s", rtl_result, uav_id)
+            else:
+                ok = True
+                logger.info("[RTL] ACK=%s for %s", rtl_result, uav_id)
 
         elif command_type == 'HOLD':
             # Switch to AUTO_LOITER — drone holds current position
-            custom_mode = (PX4_CUSTOM_MAIN_MODE_AUTO << 16) | \
-                          (PX4_CUSTOM_SUB_MODE_AUTO_LOITER << 24)
+            # PX4 MAV_CMD_DO_SET_MODE: param2 = main_mode (uint8), param3 = sub_mode (uint8)
+            # PX4 Commander does (uint8_t)cmd.param2 for main_mode, so we MUST pass
+            # the raw mode numbers, NOT the packed 32-bit custom_mode value.
             logger.info("[HOLD] >>> uav=%s cmd=MAV_CMD_DO_SET_MODE(176) "
-                        "param1=1.0(CUSTOM_MODE_ENABLED) param2=%d(AUTO_LOITER) "
-                        "main_mode=%d sub_mode=%d",
-                        uav_id, custom_mode,
-                        PX4_CUSTOM_MAIN_MODE_AUTO, PX4_CUSTOM_SUB_MODE_AUTO_LOITER)
-            ok = self._send_mavlink_command_long(
+                        "param1=1.0(CUSTOM_MODE_ENABLED) "
+                        "param2=%.0f(AUTO) param3=%.0f(LOITER)",
+                        uav_id,
+                        float(PX4_CUSTOM_MAIN_MODE_AUTO),
+                        float(PX4_CUSTOM_SUB_MODE_AUTO_LOITER))
+            hold_result = self._send_command_and_wait_ack(
                 uav_id, MAV_CMD_DO_SET_MODE,
-                param1=1.0,  # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
-                param2=float(custom_mode))
-            logger.info("[HOLD] send_result=%s for %s", ok, uav_id)
+                param1=1.0,   # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+                param2=float(PX4_CUSTOM_MAIN_MODE_AUTO),       # 4 = AUTO
+                param3=float(PX4_CUSTOM_SUB_MODE_AUTO_LOITER), # 3 = LOITER
+                timeout=3.0)
+            if hold_result is not None and hold_result != 0:
+                logger.error("[HOLD] FAILED: ACK result=%d for %s "
+                             "(0=ACCEPTED 1=TEMP_REJECTED 2=DENIED 3=UNSUPPORTED 4=FAILED)",
+                             hold_result, uav_id)
+            else:
+                ok = True
+                logger.info("[HOLD] ACK=%s for %s — mode should be AUTO_LOITER",
+                            hold_result, uav_id)
 
         elif command_type == 'GOTO':
             lat = float(params.get('lat', 0))
@@ -1589,13 +1610,22 @@ class MavlinkGateway:
                 logger.warning("[GOTO] REJECTED: lat=0 lon=0 for %s", uav_id)
                 return {'success': False, 'message': 'GOTO requires lat and lon'}
 
-            # Compute AMSL altitude = home_alt + relative_alt
+            # Compute AMSL altitude for DO_REPOSITION
+            # The frontend may send relative altitude or current AMSL altitude.
+            # Strategy: if alt > home_alt, treat as AMSL already; otherwise treat as relative.
             with self._lock:
                 state = self.drone_states.get(uav_id)
             if state and state.home_alt > 0:
-                amsl_alt = state.home_alt + alt
-                logger.info("[GOTO] %s alt_calc: home_alt=%.2f + rel_alt=%.2f = amsl=%.2f",
-                            uav_id, state.home_alt, alt, amsl_alt)
+                if alt > state.home_alt:
+                    # Frontend sent AMSL (e.g., map click passes drone's current AMSL alt)
+                    amsl_alt = alt
+                    logger.info("[GOTO] %s alt_calc: alt=%.2f > home=%.2f, treating as AMSL",
+                                uav_id, alt, state.home_alt)
+                else:
+                    # Frontend sent relative altitude (e.g., 5m, 50m)
+                    amsl_alt = state.home_alt + alt
+                    logger.info("[GOTO] %s alt_calc: home_alt=%.2f + rel_alt=%.2f = amsl=%.2f",
+                                uav_id, state.home_alt, alt, amsl_alt)
             elif state:
                 amsl_alt = state.alt  # Fallback: current AMSL altitude
                 logger.info("[GOTO] %s alt_calc: no home_alt, using current AMSL=%.2f",
@@ -1605,18 +1635,25 @@ class MavlinkGateway:
                 logger.warning("[GOTO] %s alt_calc: no state, using raw alt=%.2f", uav_id, amsl_alt)
 
             logger.info("[GOTO] >>> uav=%s cmd=MAV_CMD_DO_REPOSITION(192) "
-                        "lat=%.6f lon=%.6f alt_rel=%.1f amsl=%.1f speed=%.1f "
+                        "lat=%.6f lon=%.6f input_alt=%.1f amsl=%.1f speed=%.1f "
                         "param2=1.0(CHANGE_MODE) param4=NaN(yaw=current)",
                         uav_id, lat, lon, alt, amsl_alt, speed)
-            ok = self._send_mavlink_command_long(
+            goto_result = self._send_command_and_wait_ack(
                 uav_id, MAV_CMD_DO_REPOSITION,
                 param1=speed,           # Ground speed (-1 for default)
                 param2=1.0,             # MAV_DO_REPOSITION_FLAGS_CHANGE_MODE
                 param4=float('nan'),    # Yaw: NaN = current heading
                 param5=lat,
                 param6=lon,
-                param7=amsl_alt)
-            logger.info("[GOTO] send_result=%s for %s", ok, uav_id)
+                param7=amsl_alt,
+                timeout=3.0)
+            if goto_result is not None and goto_result != 0:
+                logger.error("[GOTO] FAILED: ACK result=%d for %s "
+                             "(0=ACCEPTED 1=TEMP_REJECTED 2=DENIED 3=UNSUPPORTED 4=FAILED)",
+                             goto_result, uav_id)
+            else:
+                ok = True
+                logger.info("[GOTO] ACK=%s for %s", goto_result, uav_id)
 
         elif command_type == 'MARK_HOME':
             lat = float(params.get('lat', 0))
@@ -1647,9 +1684,14 @@ class MavlinkGateway:
 
         elif command_type == 'DISARM':
             logger.info("[DISARM] >>> uav=%s cmd=MAV_CMD_COMPONENT_ARM_DISARM(400) param1=0.0(DISARM)", uav_id)
-            ok = self._send_mavlink_command_long(
-                uav_id, MAV_CMD_COMPONENT_ARM_DISARM, param1=0.0)
-            logger.info("[DISARM] send_result=%s for %s", ok, uav_id)
+            disarm_result = self._send_command_and_wait_ack(
+                uav_id, MAV_CMD_COMPONENT_ARM_DISARM,
+                param1=0.0, timeout=3.0)
+            if disarm_result is not None and disarm_result != 0:
+                logger.error("[DISARM] FAILED: ACK result=%d for %s", disarm_result, uav_id)
+            else:
+                ok = True
+                logger.info("[DISARM] ACK=%s for %s", disarm_result, uav_id)
 
         elif command_type == 'ORBIT':
             lat = float(params.get('lat', 0))
@@ -1670,15 +1712,25 @@ class MavlinkGateway:
                         "center=(%.6f,%.6f) radius=%.1fm velocity=%.1fm/s alt=%.1f(AMSL) "
                         "param3=0.0(yaw=orbit_dir)",
                         uav_id, lat, lon, radius, velocity, orbit_alt)
-            ok = self._send_mavlink_command_long(
+            orbit_result = self._send_command_and_wait_ack(
                 uav_id, MAV_CMD_DO_ORBIT,
                 param1=radius,          # Radius (positive=CW)
                 param2=velocity,        # Velocity
                 param3=0.0,             # Yaw behavior: 0=vehicle front to orbit direction
                 param5=lat,
                 param6=lon,
-                param7=orbit_alt)
-            logger.info("[ORBIT] send_result=%s for %s", ok, uav_id)
+                param7=orbit_alt,
+                timeout=3.0)
+            if orbit_result is not None and orbit_result != 0:
+                logger.error("[ORBIT] FAILED: ACK result=%d for %s "
+                             "(0=ACCEPTED 1=TEMP_REJECTED 2=DENIED 3=UNSUPPORTED 4=FAILED)",
+                             orbit_result, uav_id)
+                # DO_ORBIT may be unsupported in PX4 SITL, log hint
+                if orbit_result == 3:
+                    logger.warning("[ORBIT] DO_ORBIT UNSUPPORTED — PX4 SITL may not support this command")
+            else:
+                ok = True
+                logger.info("[ORBIT] ACK=%s for %s", orbit_result, uav_id)
 
         elif command_type == 'SET_ROI':
             lat = float(params.get('lat', 0))
