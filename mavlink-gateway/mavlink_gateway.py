@@ -1509,11 +1509,14 @@ class MavlinkGateway:
 
                 # Step 2: MAV_CMD_NAV_TAKEOFF
                 logger.info("[TAKEOFF] === STEP 2/2: NAV_TAKEOFF === uav=%s "
-                            "cmd=MAV_CMD_NAV_TAKEOFF(22) param4=NaN(yaw=current) param7=%.1f(alt_rel_m)",
+                            "cmd=MAV_CMD_NAV_TAKEOFF(22) param4=NaN(yaw=current) "
+                            "param5=NaN(lat) param6=NaN(lon) param7=%.1f(alt_rel_m)",
                             uav_id, relative_alt)
                 takeoff_result = self._send_command_and_wait_ack(
                     uav_id, MAV_CMD_NAV_TAKEOFF,
                     param4=float('nan'),    # Yaw: NaN = current heading
+                    param5=float('nan'),    # Lat: NaN = current position
+                    param6=float('nan'),    # Lon: NaN = current position
                     param7=relative_alt,    # Altitude relative to home (meters)
                     timeout=3.0)
 
