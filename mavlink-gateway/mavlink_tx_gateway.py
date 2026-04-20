@@ -80,6 +80,9 @@ MAV_CMD_DO_SET_MODE = 176
 MAV_CMD_DO_SET_HOME = 179
 MAV_CMD_DO_SET_ROI_LOCATION = 195
 MAV_CMD_DO_SET_ROI_NONE = 197
+MAV_CMD_NAV_TAKEOFF = 22
+MAV_CMD_DO_ORBIT = 34
+MAV_CMD_DO_REPOSITION = 192
 MAV_CMD_COMPONENT_ARM_DISARM = 400
 
 # T-05: 紧急命令列表
@@ -804,82 +807,50 @@ class MavlinkTxGateway:
 
         if command_type == 'TAKEOFF':
             relative_alt = float(params.get('altitude', params.get('defaultAltitude', 5.0)))
-            target_z = -relative_alt
             self._save_home_position(uav_id)
 
-            cur_x, cur_y = 0.0, 0.0
             with self._lock:
                 state = self.drone_states.get(uav_id)
             if state:
-                cur_x = state.ned_x
-                cur_y = state.ned_y
+                logger.info("[TAKEOFF] %s current: mode=%s armed=%s alt=%.2f",
+                            uav_id, state.flight_mode, state.armed, state.alt)
 
-            # Start OFFBOARD heartbeat at 10Hz
-            self.start_offboard_heartbeat(
-                uav_id, target_z=target_z, target_x=cur_x, target_y=cur_y,
-                interval=0.1)
+            # Step 1: ARM
+            logger.info("[TAKEOFF] Step 1: ARM for %s", uav_id)
+            arm_result = self._send_command_and_wait_ack(
+                uav_id, MAV_CMD_COMPONENT_ARM_DISARM,
+                param1=1.0, timeout=3.0)
 
-            # Pre-mode-switch setpoints
-            for i in range(30):
-                self._send_mavlink_set_position_target(uav_id, cur_x, cur_y, target_z)
-                time.sleep(0.1)
-
-            # Switch to OFFBOARD
-            mode_event = threading.Event()
-            self._mode_change_events[uav_id] = mode_event
-            custom_mode = PX4_CUSTOM_MAIN_MODE_OFFBOARD << 16
-            offboard_ok = False
-
-            for attempt in range(3):
-                for _ in range(5):
-                    self._send_mavlink_set_position_target(uav_id, cur_x, cur_y, target_z)
-                    time.sleep(0.02)
-
-                ack_result = self._send_command_and_wait_ack(
-                    uav_id, MAV_CMD_DO_SET_MODE,
-                    param1=1.0, param2=float(custom_mode), timeout=2.0)
-
-                if ack_result == 0:
-                    for _ in range(10):
-                        self._send_mavlink_set_position_target(uav_id, cur_x, cur_y, target_z)
-                        time.sleep(0.05)
-
-                    for poll in range(20):
-                        with self._lock:
-                            st = self.drone_states.get(uav_id)
-                        if st and st.flight_mode == 'OFFBOARD':
-                            offboard_ok = True
-                            break
-                        self._send_mavlink_set_position_target(uav_id, cur_x, cur_y, target_z)
-                        time.sleep(0.1)
-
-                    if offboard_ok:
-                        break
-                time.sleep(0.5)
-
-            self._mode_change_events.pop(uav_id, None)
-
-            if not offboard_ok:
-                self.stop_offboard_heartbeat(uav_id)
+            if arm_result is not None and arm_result != 0:
+                logger.error("[TAKEOFF] ARM rejected: result=%d for %s", arm_result, uav_id)
                 ok = False
             else:
-                # ARM
-                for _ in range(5):
-                    self._send_mavlink_set_position_target(uav_id, cur_x, cur_y, target_z)
-                    time.sleep(0.02)
+                if arm_result == 0:
+                    logger.info("[TAKEOFF] ARM accepted for %s", uav_id)
+                else:
+                    logger.warning("[TAKEOFF] ARM no ACK (timeout) for %s, proceeding", uav_id)
 
-                arm_result = self._send_command_and_wait_ack(
-                    uav_id, MAV_CMD_COMPONENT_ARM_DISARM,
-                    param1=1.0, timeout=3.0)
+                time.sleep(0.5)
 
-                for _ in range(10):
-                    self._send_mavlink_set_position_target(uav_id, cur_x, cur_y, target_z)
-                    time.sleep(0.05)
+                # Step 2: MAV_CMD_NAV_TAKEOFF
+                logger.info("[TAKEOFF] Step 2: NAV_TAKEOFF alt=%.1fm for %s",
+                            relative_alt, uav_id)
+                takeoff_result = self._send_command_and_wait_ack(
+                    uav_id, MAV_CMD_NAV_TAKEOFF,
+                    param4=float('nan'),    # Yaw: NaN = current heading
+                    param7=relative_alt,    # Altitude relative to home (meters)
+                    timeout=3.0)
 
-                ok = arm_result == 0 or arm_result is None
+                if takeoff_result is not None and takeoff_result != 0:
+                    logger.error("[TAKEOFF] NAV_TAKEOFF rejected: result=%d for %s",
+                                 takeoff_result, uav_id)
+                    ok = False
+                else:
+                    logger.info("[TAKEOFF] NAV_TAKEOFF sent for %s (result=%s)",
+                                uav_id, takeoff_result)
+                    ok = True
 
         elif command_type == 'LAND':
-            self.stop_offboard_heartbeat(uav_id)
             lat = float(params.get('lat', 0))
             lon = float(params.get('lon', 0))
             alt = float(params.get('alt', 0))
@@ -890,7 +861,6 @@ class MavlinkTxGateway:
                 ok = self._send_mavlink_command_long(uav_id, MAV_CMD_NAV_LAND)
 
         elif command_type == 'RTL':
-            self.stop_offboard_heartbeat(uav_id)
             lat = float(params.get('lat', 0))
             lon = float(params.get('lon', 0))
             if lat != 0 and lon != 0:
@@ -902,58 +872,44 @@ class MavlinkTxGateway:
             ok = self._send_mavlink_command_long(uav_id, MAV_CMD_NAV_RETURN_TO_LAUNCH)
 
         elif command_type == 'HOLD':
-            self.stop_orbit_heartbeat(uav_id)
-            with self._lock:
-                state = self.drone_states.get(uav_id)
-            if state:
-                hold_x = state.ned_x
-                hold_y = state.ned_y
-                hold_z = state.ned_z if state.ned_z != 0.0 else -5.0
-                self.start_offboard_heartbeat(
-                    uav_id, target_z=hold_z, target_x=hold_x, target_y=hold_y)
-                custom_mode = PX4_CUSTOM_MAIN_MODE_OFFBOARD << 16
-                ok = self._send_mavlink_command_long(
-                    uav_id, MAV_CMD_DO_SET_MODE,
-                    param1=209.0, param2=float(custom_mode))
-            else:
-                ok = self._send_mavlink_command_long(uav_id, MAV_CMD_NAV_LOITER_UNLIM)
+            # Switch to AUTO_LOITER — drone holds current position
+            custom_mode = (PX4_CUSTOM_MAIN_MODE_AUTO << 16) | \
+                          (PX4_CUSTOM_SUB_MODE_AUTO_LOITER << 24)
+            logger.info("[HOLD] %s switching to AUTO_LOITER", uav_id)
+            ok = self._send_mavlink_command_long(
+                uav_id, MAV_CMD_DO_SET_MODE,
+                param1=1.0,  # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+                param2=float(custom_mode))
 
         elif command_type == 'GOTO':
-            self.stop_orbit_heartbeat(uav_id)
             lat = float(params.get('lat', 0))
             lon = float(params.get('lon', 0))
             alt = float(params.get('alt', 5.0))
+            speed = float(params.get('speed', -1.0))  # -1 = default speed
 
-            home = self._get_home_position(uav_id)
-            if home:
-                home_lat, home_lon, home_alt = home
-                target_n, target_e, _ = _latlon_to_ned(
-                    lat, lon, home_alt + alt, home_lat, home_lon, home_alt)
-                target_z = -alt
-                with self._lock:
-                    state = self.drone_states.get(uav_id)
-                cur_n = state.ned_x if state else 0.0
-                cur_e = state.ned_y if state else 0.0
-                delta_n = target_n - cur_n
-                delta_e = target_e - cur_e
-                dist = math.sqrt(delta_n ** 2 + delta_e ** 2)
-                target_yaw = math.atan2(delta_e, delta_n) if dist > 0.5 else float('nan')
+            if lat == 0 and lon == 0:
+                return {'success': False, 'message': 'GOTO requires lat and lon'}
 
-                self.start_offboard_heartbeat(
-                    uav_id, target_z=target_z,
-                    target_x=target_n, target_y=target_e,
-                    target_yaw=target_yaw)
-                custom_mode = PX4_CUSTOM_MAIN_MODE_OFFBOARD << 16
-                ok = self._send_mavlink_command_long(
-                    uav_id, MAV_CMD_DO_SET_MODE,
-                    param1=209.0, param2=float(custom_mode))
+            # Compute AMSL altitude = home_alt + relative_alt
+            with self._lock:
+                state = self.drone_states.get(uav_id)
+            if state and state.home_alt > 0:
+                amsl_alt = state.home_alt + alt
+            elif state:
+                amsl_alt = state.alt  # Fallback: current AMSL altitude
             else:
-                target_z = -alt
-                self.start_offboard_heartbeat(uav_id, target_z=target_z)
-                custom_mode = PX4_CUSTOM_MAIN_MODE_OFFBOARD << 16
-                ok = self._send_mavlink_command_long(
-                    uav_id, MAV_CMD_DO_SET_MODE,
-                    param1=209.0, param2=float(custom_mode))
+                amsl_alt = alt
+
+            logger.info("[GOTO] %s -> lat=%.6f lon=%.6f alt=%.1f(rel) amsl=%.1f",
+                        uav_id, lat, lon, alt, amsl_alt)
+            ok = self._send_mavlink_command_long(
+                uav_id, MAV_CMD_DO_REPOSITION,
+                param1=speed,           # Ground speed (-1 for default)
+                param2=1.0,             # MAV_DO_REPOSITION_FLAGS_CHANGE_MODE
+                param4=float('nan'),    # Yaw: NaN = current heading
+                param5=lat,
+                param6=lon,
+                param7=amsl_alt)
 
         elif command_type == 'MARK_HOME':
             lat = float(params.get('lat', 0))
@@ -977,17 +933,8 @@ class MavlinkTxGateway:
                     self._save_home_position(uav_id)
 
         elif command_type == 'DISARM':
-            self.stop_offboard_heartbeat(uav_id)
             ok = self._send_mavlink_command_long(
                 uav_id, MAV_CMD_COMPONENT_ARM_DISARM, param1=0.0)
-
-        elif command_type == 'OFFBOARD':
-            self.start_offboard_heartbeat(uav_id)
-            time.sleep(0.3)
-            custom_mode = PX4_CUSTOM_MAIN_MODE_OFFBOARD << 16
-            ok = self._send_mavlink_command_long(
-                uav_id, MAV_CMD_DO_SET_MODE,
-                param1=209.0, param2=float(custom_mode))
 
         elif command_type == 'ORBIT':
             lat = float(params.get('lat', 0))
@@ -999,26 +946,21 @@ class MavlinkTxGateway:
                 state = self.drone_states.get(uav_id)
                 if not state:
                     return {'success': False, 'message': f'No state for {uav_id}'}
-                home_lat = state.home_lat or state.lat
-                home_lon = state.home_lon or state.lon
-                home_alt = state.home_alt or state.alt
-                current_alt_ned = -(state.alt - home_alt) if home_alt else -5.0
+                if lat == 0 and lon == 0:
+                    lat = state.lat
+                    lon = state.lon
+                orbit_alt = state.alt  # Current AMSL altitude
 
-            if lat != 0 and lon != 0:
-                center_n, center_e, _ = _latlon_to_ned(
-                    lat, lon, home_alt, home_lat, home_lon, home_alt)
-            else:
-                center_n, center_e, _ = _latlon_to_ned(
-                    state.lat, state.lon, home_alt, home_lat, home_lon, home_alt)
-
-            self.start_orbit_heartbeat(
-                uav_id, center_n, center_e, current_alt_ned, radius, velocity)
-            time.sleep(0.3)
-            custom_mode = PX4_CUSTOM_MAIN_MODE_OFFBOARD << 16
-            self._send_mavlink_command_long(
-                uav_id, MAV_CMD_DO_SET_MODE,
-                param1=209.0, param2=float(custom_mode))
-            ok = True
+            logger.info("[ORBIT] %s center=(%.6f,%.6f) r=%.1fm v=%.1fm/s alt=%.1f",
+                        uav_id, lat, lon, radius, velocity, orbit_alt)
+            ok = self._send_mavlink_command_long(
+                uav_id, MAV_CMD_DO_ORBIT,
+                param1=radius,          # Radius (positive=CW)
+                param2=velocity,        # Velocity
+                param3=0.0,             # Yaw behavior: 0=vehicle front to orbit direction
+                param5=lat,
+                param6=lon,
+                param7=orbit_alt)
 
         elif command_type == 'SET_ROI':
             lat = float(params.get('lat', 0))
@@ -1057,7 +999,6 @@ class MavlinkTxGateway:
             return {'success': False, 'message': f'No home for {uav_id}'}
 
         elif command_type == 'EMERGENCY_STOP':
-            self.stop_offboard_heartbeat(uav_id)
             ok = self._send_mavlink_command_long(
                 uav_id, MAV_CMD_COMPONENT_ARM_DISARM,
                 param1=0.0, param2=21196.0)
