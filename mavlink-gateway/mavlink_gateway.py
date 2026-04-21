@@ -612,13 +612,14 @@ class MavlinkGateway:
                                 command_log_id = data.get('commandLogId', 0)
                                 epoch = data.get('epoch', 0)
 
-                                # Dispatch command
-                                result = self.handle_command(uav_id, command_type, params)
-
-                                # Send ACK
-                                self._send_command_ack(
-                                    uav_id, command_type, result,
-                                    epoch, command_log_id)
+                                # Dispatch command to thread pool for concurrent execution.
+                                # This is critical for batch commands (e.g., multi-drone TAKEOFF)
+                                # where each command takes ~7s (ARM wait + NAV_TAKEOFF wait).
+                                # Without concurrent dispatch, the 2nd drone's command is delayed
+                                # by the 1st drone's full execution time.
+                                self._command_executor.submit(
+                                    self._dispatch_kafka_command,
+                                    uav_id, command_type, params, epoch, command_log_id)
 
                             except Exception as e:
                                 logger.error("[KafkaCmd] Error processing message: %s", e)
@@ -630,6 +631,19 @@ class MavlinkGateway:
 
         t = threading.Thread(target=_consume_loop, daemon=True, name='kafka-cmd-consumer')
         t.start()
+
+    def _dispatch_kafka_command(self, uav_id: str, command_type: str, params: dict,
+                                 epoch: int, command_log_id: int):
+        """Execute a command in the thread pool and send ACK when done."""
+        try:
+            result = self.handle_command(uav_id, command_type, params)
+            self._send_command_ack(uav_id, command_type, result, epoch, command_log_id)
+        except Exception as e:
+            logger.error("[KafkaCmd] Dispatch error for %s -> %s: %s", command_type, uav_id, e)
+            self._send_command_ack(
+                uav_id, command_type,
+                {'success': False, 'message': str(e)},
+                epoch, command_log_id)
 
     def _send_command_ack(self, uav_id: str, command_type: str, result: dict,
                           epoch: int, command_log_id: int):
@@ -1488,26 +1502,43 @@ class MavlinkGateway:
             else:
                 logger.warning("[TAKEOFF] %s NO DRONE STATE - drone not connected?", uav_id)
 
-            logger.info("[TAKEOFF] === STEP 1/2: ARM === uav=%s cmd=MAV_CMD_COMPONENT_ARM_DISARM(400) param1=1.0", uav_id)
-            # Step 1: ARM
-            arm_result = self._send_command_and_wait_ack(
-                uav_id, MAV_CMD_COMPONENT_ARM_DISARM,
-                param1=1.0, timeout=3.0)
+            # Step 1: ARM with retry (up to 3 attempts)
+            # After landing, PX4 may still be in AUTO_LAND mode or processing
+            # auto-disarm. Retrying ARM handles this transient state.
+            arm_ok = False
+            for attempt in range(1, 4):
+                logger.info("[TAKEOFF] === STEP 1/2: ARM (attempt %d/3) === uav=%s "
+                            "cmd=MAV_CMD_COMPONENT_ARM_DISARM(400) param1=1.0",
+                            attempt, uav_id)
+                arm_result = self._send_command_and_wait_ack(
+                    uav_id, MAV_CMD_COMPONENT_ARM_DISARM,
+                    param1=1.0, timeout=3.0)
 
-            if arm_result is not None and arm_result != 0:
-                logger.error("[TAKEOFF] ARM FAILED: ACK result=%d for %s "
-                             "(0=ACCEPTED 1=TEMP_REJECTED 2=DENIED 3=UNSUPPORTED 4=FAILED)",
-                             arm_result, uav_id)
+                if arm_result == 0:
+                    logger.info("[TAKEOFF] ARM ACK=ACCEPTED(0) for %s (attempt %d)",
+                                uav_id, attempt)
+                    arm_ok = True
+                    break
+                elif arm_result is None:
+                    logger.warning("[TAKEOFF] ARM NO ACK (timeout 3s) for %s (attempt %d), "
+                                   "proceeding anyway", uav_id, attempt)
+                    arm_ok = True  # Timeout = no explicit rejection, proceed
+                    break
+                else:
+                    logger.warning("[TAKEOFF] ARM REJECTED: ACK result=%d for %s (attempt %d/3) "
+                                   "(0=ACCEPTED 1=TEMP_REJECTED 2=DENIED 3=UNSUPPORTED 4=FAILED)",
+                                   arm_result, uav_id, attempt)
+                    if attempt < 3:
+                        logger.info("[TAKEOFF] Retrying ARM in 1s for %s...", uav_id)
+                        time.sleep(1.0)
+
+            if not arm_ok:
+                logger.error("[TAKEOFF] ARM FAILED after 3 attempts for %s", uav_id)
                 ok = False
             else:
-                if arm_result == 0:
-                    logger.info("[TAKEOFF] ARM ACK=ACCEPTED(0) for %s", uav_id)
-                else:
-                    logger.warning("[TAKEOFF] ARM NO ACK (timeout 3s) for %s, proceeding anyway", uav_id)
-
                 time.sleep(0.5)
 
-                # Step 2: MAV_CMD_NAV_TAKEOFF
+                # Step 2: MAV_CMD_NAV_TAKEOFF (always uses NaN for lat/lon/yaw)
                 logger.info("[TAKEOFF] === STEP 2/2: NAV_TAKEOFF === uav=%s "
                             "cmd=MAV_CMD_NAV_TAKEOFF(22) param4=NaN(yaw=current) "
                             "param5=NaN(lat) param6=NaN(lon) param7=%.1f(alt_rel_m)",
