@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS operation_log (
     username VARCHAR(50),
     operation_type VARCHAR(50) NOT NULL,
     target_drone_id BIGINT,
-    target_uav_id VARCHAR(50),
+    target_uav_id VARCHAR(500),
     target_user_id BIGINT,
     detail VARCHAR(2000),
     result VARCHAR(20),

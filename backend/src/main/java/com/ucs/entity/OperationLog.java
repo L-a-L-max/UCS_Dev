@@ -44,7 +44,7 @@ public class OperationLog {
     @Column(name = "target_drone_id")
     private Long targetDroneId;
     
-    @Column(name = "target_uav_id", length = 50)
+    @Column(name = "target_uav_id", length = 500)
     private String targetUavId;
     
     @Column(name = "target_user_id")
