@@ -48,6 +48,8 @@ from typing import Dict, List, Optional, Set
 import redis
 import requests
 
+from shard_coordinator import ShardCoordinator, maybe_create_from_env
+
 # rclpy QoS imports
 try:
     from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -127,8 +129,10 @@ class DdsRxGateway:
         self.backend_url = backend_url.rstrip('/')
         self.api_key = api_key
         self.poll_interval = poll_interval
+        # Legacy static partitioning — only used when DDS_DYNAMIC_SHARDING=false.
         self.instance_id = instance_id
         self.total_instances = total_instances
+        self._shard: Optional[ShardCoordinator] = None
 
         # Drone states
         self.drone_states: Dict[str, DroneState] = {}
@@ -178,6 +182,16 @@ class DdsRxGateway:
         except Exception as e:
             logger.warning("[Redis] Connection failed (%s), epoch will use memory-only", e)
             self._redis = None
+
+        # Dynamic sharding coordinator (see shard_coordinator.py).
+        self._shard = maybe_create_from_env(
+            redis_client=self._redis,
+            gateway_type="rx",
+            legacy_total_instances=self.total_instances,
+        )
+        self._instance_tag: str = (
+            self._shard.instance_uuid[:8] if self._shard is not None else str(self.instance_id)
+        )
 
         # Kafka Producer — T-04 优化配置
         self._kafka_producer = None
@@ -232,12 +246,18 @@ class DdsRxGateway:
     # ============================================================
 
     def _owns_drone(self, uav_id: str) -> bool:
-        """Check if this instance owns a drone (hash-based partitioning)."""
+        """Check if this instance owns a drone.
+
+        Dynamic mode (ShardCoordinator) is checked first; static mode falls
+        back to the original ``hash(uav_id) % total_instances == instance_id``
+        formula for full backward compatibility.
+        """
+        if self._shard is not None:
+            return self._shard.owns_drone(uav_id)
         if self.total_instances <= 1:
             return True
         h = int(hashlib.md5(uav_id.encode('utf-8')).hexdigest(), 16)
-        owner = h % self.total_instances
-        return owner == self.instance_id
+        return (h % self.total_instances) == self.instance_id
 
     # ============================================================
     # Epoch Management (persisted in Redis)
@@ -368,7 +388,7 @@ class DdsRxGateway:
             if not rclpy.ok():
                 rclpy.init()
             self._node = rclpy.create_node(
-                f'dds_rx_gateway_{self.instance_id}',
+                f'dds_rx_gateway_{self._instance_tag}',
                 allow_undeclared_parameters=True,
                 automatically_declare_parameters_from_overrides=True
             )
@@ -744,9 +764,16 @@ class DdsRxGateway:
     def run(self):
         """Main loop: discover drones, aggregate telemetry, flush to Kafka."""
         self.running = True
+        if self._shard is not None:
+            self._shard.start()
         logger.info("=" * 60)
-        logger.info("[Startup] DDS Rx Gateway (Instance %d/%d)",
-                    self.instance_id, self.total_instances)
+        if self._shard is not None:
+            layout = self._shard.layout()
+            logger.info("[Startup] DDS Rx Gateway (dynamic shard rank=%d/%d uuid=%s)",
+                        layout.rank, layout.total, self._shard.instance_uuid[:8])
+        else:
+            logger.info("[Startup] DDS Rx Gateway (static instance %d/%d)",
+                        self.instance_id, self.total_instances)
         logger.info("[Startup] Backend: %s", self.backend_url)
         logger.info("[Startup] Kafka: %s", self._kafka_bootstrap)
         logger.info("[Startup] Buffer flush: 100ms | Compression: LZ4")
@@ -889,6 +916,11 @@ class DdsRxGateway:
 
     def stop(self):
         self.running = False
+        if self._shard is not None:
+            try:
+                self._shard.close()
+            except Exception as e:
+                logger.warning("[Shutdown] ShardCoordinator.close failed: %s", e)
 
 
 # ============================================================

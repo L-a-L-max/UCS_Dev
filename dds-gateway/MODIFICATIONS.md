@@ -202,9 +202,101 @@ python dds_gateway.py
 
 | 文件 | 修改类型 | 说明 |
 |------|----------|------|
-| `dds_gateway.py` | 修改 | 主网关代码（两个问题的全部修复） |
+| `dds_gateway.py` | 修改 | 主网关代码（两个问题的全部修复 + 动态分片接入） |
+| `dds_rx_gateway.py` | 修改 | 接入动态分片协调器 |
+| `dds_tx_gateway.py` | 修改 | 接入动态分片协调器 |
+| `shard_coordinator.py` | 新增 | 基于 Redis 的动态分片协调器（见下节） |
+| `test_shard_coordinator.py` | 新增 | 动态分片协调器单元测试（11 用例，无外部依赖） |
 | `README.md` | 修改 | 更新文档，增加多实例说明和故障排查 |
 | `MODIFICATIONS.md` | 新增 | 本修改说明文档 |
+
+---
+
+## 动态分片（Dynamic Sharding）
+
+### 背景
+
+初版的多实例分片要求运维在启动时为每个实例**手工指定** `--instance-id` 和
+`--total-instances`。这带来三个硬问题：
+1. **扩容/缩容需要全员重启**：加一个实例必须同时把现有每个实例的
+   `total_instances` 改成新值，否则分片函数得到的结果不一致，同一架无人机会
+   被多个实例/零个实例订阅。
+2. **崩溃的实例不会被接管**：一个实例挂掉后，它那一片无人机会停留在"无人订阅"
+   状态，直到人工拉起同 id 的替换实例。
+3. **自动编排不可能**：K8s/Nomad/Docker Swarm 的调度器无法给 Pod 预分配稳定
+   的、连续的 `instance_id`，HPA 自动扩缩更无从谈起。
+
+### 方案概述
+
+新增模块 `shard_coordinator.ShardCoordinator`，用**已有的 Redis**（所有网关
+都依赖它做 `dds:epoch:*`）作为唯一协调点，实现完全动态的分片：
+
+| 步骤 | 行为 |
+|------|------|
+| 启动时 | 随机生成一个 `instance_uuid`（进程生命周期内不变） |
+| 每 5 秒 | `SET dds:shards:{gateway_type}:{instance_uuid} <json> EX 15` |
+| 同一周期 | `SCAN dds:shards:{gateway_type}:*` 列出所有存活 peer |
+| 同一周期 | 把 UUID 按字典序排序，自己在列表里的位置 = `rank`，列表长度 = `total` |
+| 进程退出 | `DELETE` 自己的 key，让其他节点立即重均衡 |
+
+`_owns_drone(uav_id)` 仍用 `md5(uav_id) % total == rank` 的旧公式——计算式
+没变，但 `rank/total` 是每心跳重新计算的。
+
+### 关键设计点
+
+- **无需新基础设施**：复用 Redis，不引入 Nacos/ZK/etcd。一个 `SET EX` + 一个
+  `SCAN` 就够了。
+- **崩溃检测 = TTL**：Redis key 的 TTL 是心跳周期的 3 倍（15s vs 5s），单次
+  心跳丢失不触发重均衡，连续两次丢失才把该实例从 peer 集合里剔除。
+- **无需 Leader 选举**：按 UUID 排序是纯函数，所有 peer 看到同一个排序后的
+  列表，就自动得到一致的 rank 赋值——不需要协调一个"谁是 0 号"的中心节点。
+- **Redis 宕机时保守降级**：`owns_drone()` 在 Redis 不可用时返回 `True`（即
+  单实例模式），保证"某一架无人机暂时被多收"而不是"某一架无人机再也没人
+  收"——后者会直接触发数据缺失告警。
+- **回调式重均衡**：`on_layout_change(old, new)` 回调让网关在 rank 变化时可
+  以取消不再归属自己的 DDS 订阅（可选扩展点，当前实现中 `_owns_drone` 的
+  命中检查已足够兜底）。
+
+### 启用方式（环境变量）
+
+| 变量 | 默认值 | 语义 |
+|------|--------|------|
+| `DDS_DYNAMIC_SHARDING` | `true` | 动态分片开关。设为 `false` 回到旧的静态模式 |
+| `DDS_SHARD_HEARTBEAT_SEC` | `5` | 心跳 / peer 扫描周期（秒） |
+| `DDS_SHARD_TTL_SEC` | `15` | Redis key TTL（必须 ≥ `2 × 心跳周期`） |
+
+**向后兼容规则**：
+- 未设置 `DDS_DYNAMIC_SHARDING` 且 `--total-instances > 1` ⇒ 沿用旧的静态分片
+  （保证老脚本不被新行为打破）。
+- 设置 `DDS_DYNAMIC_SHARDING=true` 时，`--total-instances` / `--instance-id`
+  参数被忽略（日志里会 warning 一次），用动态分片接管。
+- Redis 不可用 ⇒ 静默降级为 `rank=0, total=1`（单实例模式）。
+
+### 使用示例
+
+**3 个实例，全自动分片，任意先后启动**：
+```bash
+# 任意机器上跑任意数量，无需配 instance-id / total-instances
+export DDS_DYNAMIC_SHARDING=true
+export REDIS_HOST=10.0.0.5
+python dds_gateway.py &
+python dds_gateway.py &
+python dds_gateway.py &
+# 日志会打印:
+#   [Shard/routing] Dynamic shard coordinator started uuid=3f2a... peers=3 rank=2/3
+```
+
+**任一实例崩溃** ⇒ 15s 内（1×TTL）其余实例自动把失联实例的无人机分片接管。
+
+### 测试
+
+`python -m unittest dds-gateway/test_shard_coordinator.py` —— 11 个用例，
+使用内置的 `FakeRedis` 覆盖：
+- 单实例 & 多实例分片正确性（每架无人机恰好被 1 个实例拥有）
+- 实例崩溃后另一实例接管全部无人机
+- Redis 宕机时降级为单实例
+- `DDS_DYNAMIC_SHARDING=true/false` 环境变量解析
+- `on_layout_change` 回调时序
 
 ### `dds_gateway.py` 具体改动
 
