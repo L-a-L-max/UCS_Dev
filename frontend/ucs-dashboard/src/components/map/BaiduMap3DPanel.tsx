@@ -1,14 +1,16 @@
 /**
  * Baidu Map 3D Real-Scene Panel
  *
- * Uses Baidu Maps JSAPI GL (BMapGL) for immersive 3D real-scene map rendering.
- * Supports drone markers, click-to-show-coordinates, real-time position sync,
- * drone focus/locate/follow, and map-click command menu (GOTO, ORBIT, RTH, MARK_HOME).
+ * Uses Baidu Maps JSAPI Three (mapvthree) for immersive 3D real-scene map rendering
+ * with satellite imagery and 3D vector buildings.
+ * Supports drone markers via DOMOverlay, click-to-show-coordinates,
+ * real-time position sync, drone focus/locate/follow, and map-click
+ * command menu (GOTO, ORBIT, RTH, MARK_HOME).
  */
 import { useEffect, useRef, useCallback, useState, useImperativeHandle, forwardRef } from 'react';
 import type { MapDrone } from '../MapPanel';
+import * as mapvthree from '@baidumap/mapv-three';
 
-/** Public handle exposed via ref for parent components */
 export interface BaiduMap3DPanelHandle {
   focusOnDrones: () => void;
 }
@@ -46,43 +48,15 @@ function getDroneMarkerColor(drone: MapDrone, isSelected: boolean): string {
   return '#3b82f6';
 }
 
-/** Dynamically load Baidu Maps GL script */
-function loadBMapGL(ak: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if ((window as any).BMapGL) {
-      resolve();
-      return;
-    }
-    // Set global callback
-    const cbName = '__bmap_gl_init_' + Date.now();
-    (window as any)[cbName] = () => {
-      delete (window as any)[cbName];
-      resolve();
-    };
-    const script = document.createElement('script');
-    script.src = `https://api.map.baidu.com/api?type=webgl&v=1.0&ak=${ak}&callback=${cbName}`;
-    script.onerror = () => reject(new Error('百度地图GL脚本加载失败'));
-    document.head.appendChild(script);
-  });
-}
-
-/** Create an SVG drone icon as a data-URI */
-function createDroneSvgUri(color: string, heading: number = 0): string {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
-    <g transform="rotate(${heading} 18 18)">
-      <circle cx="18" cy="18" r="3" fill="${color}"/>
-      <line x1="18" y1="18" x2="8" y2="8" stroke="${color}" stroke-width="1.5"/>
-      <circle cx="8" cy="8" r="4" fill="none" stroke="${color}" stroke-width="1.5"/>
-      <line x1="18" y1="18" x2="28" y2="8" stroke="${color}" stroke-width="1.5"/>
-      <circle cx="28" cy="8" r="4" fill="none" stroke="${color}" stroke-width="1.5"/>
-      <line x1="18" y1="18" x2="8" y2="28" stroke="${color}" stroke-width="1.5"/>
-      <circle cx="8" cy="28" r="4" fill="none" stroke="${color}" stroke-width="1.5"/>
-      <line x1="18" y1="18" x2="28" y2="28" stroke="${color}" stroke-width="1.5"/>
-      <circle cx="28" cy="28" r="4" fill="none" stroke="${color}" stroke-width="1.5"/>
-      <polygon points="18,4 15,11 21,11" fill="${color}"/>
-    </g>
-  </svg>`;
-  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+function createDroneMarkerHTML(drone: MapDrone, color: string, heading: number): string {
+  return `<div style="display:flex;flex-direction:column;align-items:center;cursor:pointer;pointer-events:auto;" data-drone-id="${drone.uavId}">
+    <svg width="36" height="36" viewBox="0 0 36 36" style="transform:rotate(${heading}deg);filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5));">
+      <polygon points="18,2 28,30 18,24 8,30" fill="${color}" stroke="white" stroke-width="1.5" opacity="0.95"/>
+    </svg>
+    <div style="background:rgba(15,23,42,0.85);color:white;font-size:10px;padding:1px 6px;border-radius:3px;margin-top:-4px;white-space:nowrap;border:1px solid ${color};pointer-events:none;">
+      ${drone.uavId}
+    </div>
+  </div>`;
 }
 
 const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(function BaiduMap3DPanel({
@@ -101,285 +75,240 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
   center = [105, 30],
   zoom = 6,
   pitch = 60,
-}: BaiduMap3DPanelProps, ref) {
+}, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<any>(null);
-  const droneMarkersRef = useRef<Map<string, any>>(new Map());
-  const droneLabelMarkersRef = useRef<Map<string, any>>(new Map());
-  const [mapReady, setMapReady] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const dronesRef = useRef(drones);
-  dronesRef.current = drones;
-
-  const popupOverlayRef = useRef<HTMLDivElement>(null);
-  const popupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const popupDroneIdRef = useRef<string | null>(null);
-
+  const engineRef = useRef<mapvthree.Engine | null>(null);
+  const droneOverlaysRef = useRef<Map<string, mapvthree.DOMOverlay>>(new Map());
+  const popupRef = useRef<mapvthree.Popup | null>(null);
+  const mapClickOverlayRef = useRef<mapvthree.DOMOverlay | null>(null);
   const blinkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const blinkStateRef = useRef(true);
+  const popupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [engineReady, setEngineReady] = useState(false);
 
-  const selectedDroneIdRef = useRef(selectedDroneId);
-  const selectedDroneIdsRef = useRef(selectedDroneIds);
+  // Stable refs for callbacks
+  const dronesRef = useRef(drones);
+  dronesRef.current = drones;
   const onDroneClickRef = useRef(onDroneClick);
+  onDroneClickRef.current = onDroneClick;
   const onMapClickRef = useRef(onMapClick);
+  onMapClickRef.current = onMapClick;
   const onMapClickCommandRef = useRef(onMapClickCommand);
+  onMapClickCommandRef.current = onMapClickCommand;
   const hasDroneSelectedRef = useRef(hasDroneSelected);
+  hasDroneSelectedRef.current = hasDroneSelected;
   const onFollowExitRef = useRef(onFollowExit);
-  useEffect(() => { selectedDroneIdRef.current = selectedDroneId; }, [selectedDroneId]);
-  useEffect(() => { selectedDroneIdsRef.current = selectedDroneIds; }, [selectedDroneIds]);
-  useEffect(() => { onDroneClickRef.current = onDroneClick; }, [onDroneClick]);
-  useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
-  useEffect(() => { onMapClickCommandRef.current = onMapClickCommand; }, [onMapClickCommand]);
-  useEffect(() => { hasDroneSelectedRef.current = hasDroneSelected; }, [hasDroneSelected]);
-  useEffect(() => { onFollowExitRef.current = onFollowExit; }, [onFollowExit]);
+  onFollowExitRef.current = onFollowExit;
 
-  // Selection blink animation
-  useEffect(() => {
-    if (blinkTimerRef.current) clearInterval(blinkTimerRef.current);
-    const hasSelection = selectedDroneId != null || (selectedDroneIds && selectedDroneIds.size > 0);
-    if (hasSelection) {
-      blinkTimerRef.current = setInterval(() => {
-        blinkStateRef.current = !blinkStateRef.current;
-        droneMarkersRef.current.forEach((marker, id) => {
-          const isSelected = selectedDroneIdsRef.current
-            ? selectedDroneIdsRef.current.has(id)
-            : id === selectedDroneIdRef.current;
-          if (isSelected) {
-            const icon = marker.getIcon();
-            if (icon) {
-              const size = blinkStateRef.current ? 36 : 24;
-              icon.setImageSize(new (window as any).BMapGL.Size(size, size));
-              icon.setAnchor(new (window as any).BMapGL.Size(size / 2, size / 2));
-              marker.setIcon(icon);
-            }
-          }
-        });
-      }, 500);
-    }
-    return () => {
-      if (blinkTimerRef.current) clearInterval(blinkTimerRef.current);
-    };
-  }, [selectedDroneId, selectedDroneIds]);
-
+  // Close any existing popup
   const closePopup = useCallback(() => {
-    const overlay = popupOverlayRef.current;
-    if (overlay) {
-      overlay.style.display = 'none';
-      overlay.innerHTML = '';
+    if (popupRef.current && engineRef.current) {
+      engineRef.current.remove(popupRef.current);
+      popupRef.current.dispose();
+      popupRef.current = null;
+    }
+    if (mapClickOverlayRef.current && engineRef.current) {
+      engineRef.current.remove(mapClickOverlayRef.current);
+      mapClickOverlayRef.current.dispose();
+      mapClickOverlayRef.current = null;
     }
     if (popupTimerRef.current) {
       clearTimeout(popupTimerRef.current);
       popupTimerRef.current = null;
     }
-    popupDroneIdRef.current = null;
   }, []);
 
-  const showDronePopup = useCallback((drone: MapDrone, screenX: number, screenY: number) => {
-    const overlay = popupOverlayRef.current;
-    if (!overlay) return;
+  // Show drone info popup
+  const showDronePopup = useCallback((drone: MapDrone) => {
+    if (!engineRef.current) return;
     closePopup();
-
-    const statusColor = getDroneMarkerColor(drone, false);
     const statusText = getDroneStatusText(drone);
-    const altitude = drone.altitude != null ? `${drone.altitude.toFixed(1)}m` : 'N/A';
-    const battery = drone.battery != null ? `${drone.battery.toFixed(0)}%` : 'N/A';
-    const lat = drone.lat != null ? drone.lat.toFixed(6) : 'N/A';
-    const lng = drone.lng != null ? drone.lng.toFixed(6) : 'N/A';
-
-    overlay.innerHTML = `<div style="
-      background:rgba(10,15,31,0.95); backdrop-filter:blur(8px);
-      border:1px solid ${statusColor}; border-radius:8px;
-      padding:10px 14px; color:#c0d8ff; font-size:12px;
-      font-family:'Microsoft YaHei',monospace; min-width:200px;
-      box-shadow:0 0 12px rgba(82,168,255,0.3);
-    ">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-        <span style="font-weight:bold;font-size:14px;color:#fff;">${drone.uavId}</span>
-        <span style="padding:2px 8px;border-radius:4px;font-size:10px;
-          background:${statusColor}33;color:${statusColor};border:1px solid ${statusColor}66;">
-          ${statusText}
-        </span>
-      </div>
-      <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:11px;">
-        <span style="color:#52a8ff;">高度:</span><span>${altitude}</span>
-        <span style="color:#52a8ff;">电量:</span><span>${battery}</span>
-        <span style="color:#52a8ff;">纬度:</span><span>${lat}</span>
-        <span style="color:#52a8ff;">经度:</span><span>${lng}</span>
-        ${drone.owner ? `<span style="color:#52a8ff;">操控者:</span><span>${drone.owner}</span>` : ''}
-        ${drone.teamName ? `<span style="color:#52a8ff;">队伍:</span><span>${drone.teamName}</span>` : ''}
-        ${drone.model ? `<span style="color:#52a8ff;">型号:</span><span>${drone.model}</span>` : ''}
-      </div>
-    </div>`;
-
-    const containerRect = containerRef.current?.getBoundingClientRect();
-    if (containerRect) {
-      const left = Math.min(screenX - containerRect.left + 10, containerRect.width - 220);
-      const top = Math.min(screenY - containerRect.top - 10, containerRect.height - 200);
-      overlay.style.left = `${Math.max(0, left)}px`;
-      overlay.style.top = `${Math.max(0, top)}px`;
-    }
-    overlay.style.display = 'block';
-    popupDroneIdRef.current = drone.uavId;
-
-    if (popupTimerRef.current) clearTimeout(popupTimerRef.current);
-    popupTimerRef.current = setTimeout(closePopup, 5000);
-  }, [closePopup]);
-
-  const showMapClickMenu = useCallback((lat: number, lng: number, screenX: number, screenY: number) => {
-    const overlay = popupOverlayRef.current;
-    if (!overlay) return;
-    closePopup();
-
-    overlay.innerHTML = `<div style="
-      background:rgba(10,15,31,0.95); backdrop-filter:blur(8px);
-      border:1px solid #334155; border-radius:8px;
-      padding:10px 14px; color:#c0d8ff; font-size:12px;
-      font-family:'Microsoft YaHei',monospace; min-width:200px;
-      box-shadow:0 0 12px rgba(82,168,255,0.3);
-    ">
-      <div style="background:#0f172a;border:1px solid #334155;border-radius:4px;padding:5px 8px;text-align:center;margin-bottom:8px;font-family:monospace;">
-        <span style="font-weight:bold;font-size:12px;color:#38bdf8;">${lat.toFixed(6)}</span>
-        <span style="color:#64748b;margin:0 3px;">,</span>
-        <span style="font-weight:bold;font-size:12px;color:#38bdf8;">${lng.toFixed(6)}</span>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;">
-        <button data-cmd="GOTO" style="background:#0891b2;border:none;color:white;padding:5px 0;border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">前往</button>
-        <button data-cmd="ORBIT" style="background:#6366f1;border:none;color:white;padding:5px 0;border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">盘旋</button>
-        <button data-cmd="MARK_HOME" style="background:#0d9488;border:none;color:white;padding:5px 0;border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">设为Home</button>
-      </div>
-    </div>`;
-
-    overlay.querySelectorAll('button[data-cmd]').forEach(btn => {
-      btn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        const cmd = (ev.currentTarget as HTMLElement).getAttribute('data-cmd');
-        if (cmd) onMapClickCommandRef.current?.(cmd, lat, lng);
-        closePopup();
-      });
-      (btn as HTMLElement).addEventListener('mouseenter', () => {
-        (btn as HTMLElement).style.opacity = '0.8';
-      });
-      (btn as HTMLElement).addEventListener('mouseleave', () => {
-        (btn as HTMLElement).style.opacity = '1';
-      });
+    const content = `
+      <div style="font-size:11px;line-height:1.6;min-width:160px;">
+        <div style="font-weight:600;margin-bottom:4px;color:#60a5fa;">无人机 ${drone.uavId}</div>
+        <div>状态: <span style="color:${drone.armed ? '#4ade80' : drone.onlineStatus ? '#60a5fa' : '#94a3b8'}">${statusText}</span></div>
+        <div>经度: ${drone.lng?.toFixed(6) ?? '-'}</div>
+        <div>纬度: ${drone.lat?.toFixed(6) ?? '-'}</div>
+        <div>高度: ${drone.altitude?.toFixed(1) ?? '-'} m</div>
+        ${drone.battery != null ? `<div>电量: ${drone.battery}%</div>` : ''}
+        ${drone.model ? `<div>型号: ${drone.model}</div>` : ''}
+      </div>`;
+    const popup = new mapvthree.Popup({
+      point: [drone.lng, drone.lat, (drone.altitude ?? 0) + 20],
+      title: `无人机 ${drone.uavId}`,
+      content,
+      offset: [0, -40],
     });
-
-    const containerRect = containerRef.current?.getBoundingClientRect();
-    if (containerRect) {
-      const left = Math.min(screenX - containerRect.left + 10, containerRect.width - 220);
-      const top = Math.min(screenY - containerRect.top - 10, containerRect.height - 200);
-      overlay.style.left = `${Math.max(0, left)}px`;
-      overlay.style.top = `${Math.max(0, top)}px`;
-    }
-    overlay.style.display = 'block';
+    popup.className = 'baidu-drone-popup';
+    engineRef.current.add(popup);
+    popupRef.current = popup;
+    popupTimerRef.current = setTimeout(() => closePopup(), 5000);
   }, [closePopup]);
 
-  // Initialize Baidu Map GL
+  // Show map click coordinate menu
+  const showMapClickMenu = useCallback((lat: number, lng: number) => {
+    if (!engineRef.current) return;
+    closePopup();
+    const menuHTML = `
+      <div style="background:rgba(15,23,42,0.95);border:1px solid rgba(100,116,139,0.5);border-radius:8px;padding:8px;color:white;font-size:11px;min-width:150px;backdrop-filter:blur(8px);">
+        <div style="color:#94a3b8;margin-bottom:6px;">
+          ${lat.toFixed(6)}, ${lng.toFixed(6)}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:3px;">
+          <button data-cmd="GOTO" style="background:#3b82f6;border:none;color:white;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:10px;">前往此处</button>
+          <button data-cmd="ORBIT" style="background:#8b5cf6;border:none;color:white;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:10px;">盘旋此处</button>
+          <button data-cmd="MARK_HOME" style="background:#f59e0b;border:none;color:white;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:10px;">设为Home</button>
+        </div>
+      </div>`;
+    const overlay = new mapvthree.DOMOverlay({
+      point: [lng, lat, 0],
+      dom: menuHTML,
+      offset: [10, -10],
+    });
+    overlay.stopPropagation = true;
+    engineRef.current.add(overlay);
+    mapClickOverlayRef.current = overlay;
+
+    // Attach command button handlers
+    setTimeout(() => {
+      const el = overlay.dom;
+      if (!el) return;
+      el.querySelectorAll('button[data-cmd]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const cmd = (e.currentTarget as HTMLElement).getAttribute('data-cmd');
+          if (cmd) onMapClickCommandRef.current?.(cmd, lat, lng);
+          closePopup();
+        });
+      });
+    }, 50);
+    popupTimerRef.current = setTimeout(() => closePopup(), 8000);
+  }, [closePopup]);
+
+  // Initialize engine
   useEffect(() => {
+    if (!containerRef.current) return;
     let destroyed = false;
 
-    async function init() {
-      try {
-        await loadBMapGL(BAIDU_MAP_AK);
-      } catch (err: any) {
-        setLoadError(err?.message || '百度地图加载失败');
+    // Configure Baidu Map AK
+    mapvthree.BaiduMapConfig.ak = BAIDU_MAP_AK;
+
+    // Convert zoom to range (approximate: range = earthCircumference / 2^zoom)
+    const zoomToRange = (z: number) => Math.max(500, 40075016 / Math.pow(2, z));
+
+    try {
+      const engine = new mapvthree.Engine(containerRef.current, {
+        map: {
+          center: [center[0], center[1]],
+          pitch,
+          heading: 0,
+          range: zoomToRange(zoom),
+          projection: 'EPSG:3857',
+        },
+      });
+
+      if (destroyed) {
+        engine.dispose();
         return;
       }
-      if (destroyed || !containerRef.current) return;
 
-      const BMapGL = (window as any).BMapGL;
-      const map = new BMapGL.Map(containerRef.current, {
-        enableRotate: true,
-        enableTilt: true,
-        enableKeyboard: true,
-        enableContinuousZoom: true,
+      // Add MapView with satellite imagery + 3D vector buildings
+      const mapView = new mapvthree.MapView();
+      engine.add(mapView);
+
+      // Add satellite imagery layer
+      const imageryProvider = new mapvthree.Baidu09ImageryTileProvider({
+        ak: BAIDU_MAP_AK,
+        type: 'satellite',
       });
+      const terrainProvider = new mapvthree.PlaneTerrainTileProvider();
+      mapView.addRasterSurface(terrainProvider, [imageryProvider], {});
 
-      // Set initial view
-      map.centerAndZoom(new BMapGL.Point(center[0], center[1]), zoom);
-      map.setTilt(pitch);
-      map.setHeading(0);
-
-      // Explicitly enable scroll wheel zoom (must be called after centerAndZoom)
-      map.enableScrollWheelZoom(true);
-
-      // Switch to Earth/Satellite mode for real-scene 3D
-      map.setMapType(window.BMAP_EARTH_MAP);
-
-      // Enable 3D building rendering
-      map.setDisplayOptions({
-        indoor: true,
-        poi: true,
-        skyColors: ['rgba(5, 5, 30, 0.5)', 'rgba(5, 5, 50, 1.0)'],
+      // Add 3D vector buildings layer on top
+      const vectorProvider = new mapvthree.BaiduVectorTileProvider({
+        ak: BAIDU_MAP_AK,
+        displayOptions: {
+          building: true,
+          base: false,
+          link: true,
+          poi: true,
+        },
       });
+      mapView.addVectorSurface(vectorProvider, {});
 
       // Map click handler
-      map.addEventListener('click', (e: any) => {
-        const point = e.latlng || e.point;
-        if (!point) return;
-        const lat = point.lat;
-        const lng = point.lng;
+      engine.map.addEventListener('click', (e: { point?: number[] }) => {
+        if (!e.point) return;
+        const [lng, lat] = e.point;
         onMapClickRef.current?.(lat, lng);
         if (hasDroneSelectedRef.current) {
-          // Get pixel position for popup
-          const pixel = map.pointToPixel(point);
-          const containerRect = containerRef.current?.getBoundingClientRect();
-          if (containerRect) {
-            showMapClickMenu(lat, lng, pixel.x + containerRect.left, pixel.y + containerRect.top);
-          }
+          showMapClickMenu(lat, lng);
         }
       });
 
-      // Exit follow mode on drag
-      map.addEventListener('dragstart', () => {
+      // Exit follow on user drag
+      engine.controller.addEventListener('dragstart', () => {
         onFollowExitRef.current?.();
       });
 
-      mapRef.current = map;
-      setMapReady(true);
+      engineRef.current = engine;
+      setEngineReady(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '引擎初始化失败';
+      setLoadError(msg);
     }
-
-    init();
 
     return () => {
       destroyed = true;
       if (blinkTimerRef.current) clearInterval(blinkTimerRef.current);
       if (popupTimerRef.current) clearTimeout(popupTimerRef.current);
-      // Remove all markers
-      droneMarkersRef.current.forEach(marker => {
-        mapRef.current?.removeOverlay(marker);
+      // Remove overlays
+      droneOverlaysRef.current.forEach(overlay => {
+        engineRef.current?.remove(overlay);
+        overlay.dispose();
       });
-      droneMarkersRef.current.clear();
-      droneLabelMarkersRef.current.forEach(label => {
-        mapRef.current?.removeOverlay(label);
-      });
-      droneLabelMarkersRef.current.clear();
-      if (mapRef.current) {
-        mapRef.current.destroy();
-        mapRef.current = null;
+      droneOverlaysRef.current.clear();
+      if (popupRef.current) {
+        engineRef.current?.remove(popupRef.current);
+        popupRef.current.dispose();
+        popupRef.current = null;
+      }
+      if (mapClickOverlayRef.current) {
+        engineRef.current?.remove(mapClickOverlayRef.current);
+        mapClickOverlayRef.current.dispose();
+        mapClickOverlayRef.current = null;
+      }
+      if (engineRef.current) {
+        engineRef.current.dispose();
+        engineRef.current = null;
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update drone markers
+  // Blink selected drones
   useEffect(() => {
-    if (!mapReady || !mapRef.current) return;
-    const BMapGL = (window as any).BMapGL;
-    const map = mapRef.current;
+    if (blinkTimerRef.current) clearInterval(blinkTimerRef.current);
+    blinkTimerRef.current = setInterval(() => {
+      blinkStateRef.current = !blinkStateRef.current;
+    }, 500);
+    return () => {
+      if (blinkTimerRef.current) clearInterval(blinkTimerRef.current);
+    };
+  }, []);
+
+  // Update drone overlays
+  useEffect(() => {
+    if (!engineReady || !engineRef.current) return;
+    const engine = engineRef.current;
     const currentIds = new Set(drones.map(d => d.uavId));
 
-    // Remove markers for drones that no longer exist
-    droneMarkersRef.current.forEach((marker, id) => {
+    // Remove overlays for drones that no longer exist
+    droneOverlaysRef.current.forEach((overlay, id) => {
       if (!currentIds.has(id)) {
-        map.removeOverlay(marker);
-        droneMarkersRef.current.delete(id);
-      }
-    });
-    droneLabelMarkersRef.current.forEach((label, id) => {
-      if (!currentIds.has(id)) {
-        map.removeOverlay(label);
-        droneLabelMarkersRef.current.delete(id);
+        engine.remove(overlay);
+        overlay.dispose();
+        droneOverlaysRef.current.delete(id);
       }
     });
 
@@ -389,135 +318,115 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
         ? selectedDroneIds.has(drone.uavId)
         : drone.uavId === selectedDroneId;
       const color = getDroneMarkerColor(drone, isSelected);
-      const point = new BMapGL.Point(drone.lng, drone.lat);
       const heading = drone.heading ?? 0;
+      const alt = drone.altitude ?? 0;
+      const html = createDroneMarkerHTML(drone, color, heading);
 
-      const existingMarker = droneMarkersRef.current.get(drone.uavId);
-      if (existingMarker) {
-        // Update position
-        existingMarker.setPosition(point);
-        // Update icon
-        const iconSize = isSelected && !blinkStateRef.current ? 24 : 36;
-        const icon = new BMapGL.Icon(
-          createDroneSvgUri(color, heading),
-          new BMapGL.Size(iconSize, iconSize),
-          { anchor: new BMapGL.Size(iconSize / 2, iconSize / 2) }
-        );
-        existingMarker.setIcon(icon);
-      } else {
-        // Create new marker
-        const icon = new BMapGL.Icon(
-          createDroneSvgUri(color, heading),
-          new BMapGL.Size(36, 36),
-          { anchor: new BMapGL.Size(18, 18) }
-        );
-        const marker = new BMapGL.Marker(point, { icon, enableDragging: false });
-        marker.addEventListener('click', (ev: any) => {
-          onDroneClickRef.current?.(drone.uavId);
-          // Show drone info popup
-          const d = dronesRef.current.find(dd => dd.uavId === drone.uavId);
-          if (d) {
-            const pixel = map.pointToPixel(new BMapGL.Point(d.lng, d.lat));
-            const containerRect = containerRef.current?.getBoundingClientRect();
-            if (containerRect) {
-              showDronePopup(d, pixel.x + containerRect.left, pixel.y + containerRect.top);
-            }
-          }
-          if (ev.domEvent) ev.domEvent.stopPropagation();
-        });
-        map.addOverlay(marker);
-        droneMarkersRef.current.set(drone.uavId, marker);
-      }
-
-      // Update or create label
-      const statusText = getDroneStatusText(drone);
-      const labelContent = `<div style="
-        background:rgba(10,15,31,0.85);border:1px solid ${color};border-radius:4px;
-        padding:2px 6px;color:${color};font-size:10px;white-space:nowrap;
-        font-family:'Microsoft YaHei',monospace;pointer-events:none;
-        text-shadow:0 0 4px ${color};
-      ">${drone.uavId} ${statusText}${drone.altitude != null ? ' ' + drone.altitude.toFixed(0) + 'm' : ''}</div>`;
-
-      const existingLabel = droneLabelMarkersRef.current.get(drone.uavId);
-      if (existingLabel) {
-        existingLabel.setPosition(point);
-        existingLabel.setContent(labelContent);
-      } else {
-        const label = new BMapGL.Label(labelContent, {
-          position: point,
-          offset: new BMapGL.Size(20, -10),
-        });
-        label.setStyle({
-          border: 'none',
-          background: 'transparent',
-          padding: '0',
-        });
-        map.addOverlay(label);
-        droneLabelMarkersRef.current.set(drone.uavId, label);
-      }
-    }
-
-    // Update drone info popup position if it's open
-    if (popupDroneIdRef.current && popupOverlayRef.current?.style.display !== 'none') {
-      const d = drones.find(dd => dd.uavId === popupDroneIdRef.current);
-      if (d && d.lat != null && d.lng != null) {
-        const pixel = map.pointToPixel(new BMapGL.Point(d.lng, d.lat));
-        const containerRect = containerRef.current?.getBoundingClientRect();
-        if (containerRect) {
-          const left = Math.min(pixel.x + 10, containerRect.width - 220);
-          const top = Math.min(pixel.y - 10, containerRect.height - 200);
-          popupOverlayRef.current!.style.left = `${Math.max(0, left)}px`;
-          popupOverlayRef.current!.style.top = `${Math.max(0, top)}px`;
+      const existingOverlay = droneOverlaysRef.current.get(drone.uavId);
+      if (existingOverlay) {
+        existingOverlay.point = [drone.lng, drone.lat, alt];
+        existingOverlay.dom = html;
+        // Blink effect: toggle visibility for selected drones
+        if (isSelected) {
+          existingOverlay.visible = blinkStateRef.current;
+        } else {
+          existingOverlay.visible = true;
         }
+      } else {
+        const overlay = new mapvthree.DOMOverlay({
+          point: [drone.lng, drone.lat, alt],
+          dom: html,
+          offset: [0, -18],
+        });
+        overlay.stopPropagation = true;
+
+        // Click handler on DOMOverlay dom
+        const el = overlay.dom;
+        if (el) {
+          el.style.cursor = 'pointer';
+          el.addEventListener('click', () => {
+            onDroneClickRef.current?.(drone.uavId);
+            const d = dronesRef.current.find(dd => dd.uavId === drone.uavId);
+            if (d) showDronePopup(d);
+          });
+        }
+
+        engine.add(overlay);
+        droneOverlaysRef.current.set(drone.uavId, overlay);
       }
     }
-  }, [drones, selectedDroneId, selectedDroneIds, mapReady, showDronePopup]);
+
+    engine.requestRender();
+  }, [drones, selectedDroneId, selectedDroneIds, engineReady, showDronePopup]);
 
   // Focus on all drones
   const focusOnDrones = useCallback(() => {
-    if (!mapRef.current) return;
-    const BMapGL = (window as any).BMapGL;
+    if (!engineRef.current || drones.length === 0) return;
     const validDrones = drones.filter(d => d.lat != null && d.lng != null);
     if (validDrones.length === 0) return;
 
     if (validDrones.length === 1) {
-      mapRef.current.flyTo(new BMapGL.Point(validDrones[0].lng, validDrones[0].lat), 16);
-    } else {
-      const points = validDrones.map(d => new BMapGL.Point(d.lng, d.lat));
-      const viewport = mapRef.current.getViewport(points);
-      mapRef.current.flyTo(viewport.center, viewport.zoom);
+      const d = validDrones[0];
+      engineRef.current.map.flyTo([d.lng, d.lat, 0], {
+        range: 2000,
+        pitch: 60,
+        heading: 0,
+        duration: 1500,
+      });
+      return;
     }
+
+    // Calculate center of all drones
+    let sumLng = 0, sumLat = 0;
+    for (const d of validDrones) {
+      sumLng += d.lng;
+      sumLat += d.lat;
+    }
+    const cLng = sumLng / validDrones.length;
+    const cLat = sumLat / validDrones.length;
+
+    // Calculate range based on spread
+    let maxDist = 0;
+    for (const d of validDrones) {
+      const dist = Math.sqrt(Math.pow(d.lng - cLng, 2) + Math.pow(d.lat - cLat, 2));
+      if (dist > maxDist) maxDist = dist;
+    }
+    // Convert degrees to approximate meters, add padding
+    const rangeMeters = Math.max(2000, maxDist * 111000 * 2.5);
+
+    engineRef.current.map.flyTo([cLng, cLat, 0], {
+      range: rangeMeters,
+      pitch: 60,
+      heading: 0,
+      duration: 1500,
+    });
   }, [drones]);
 
   useImperativeHandle(ref, () => ({ focusOnDrones: () => focusOnDrones() }), [focusOnDrones]);
 
   // Locate drone
   useEffect(() => {
-    if (!locateDroneId || !mapRef.current || locateDroneCounter === 0) return;
-    const BMapGL = (window as any).BMapGL;
+    if (!locateDroneId || !engineRef.current || locateDroneCounter === 0) return;
     const drone = drones.find(d => d.uavId === locateDroneId);
     if (!drone || drone.lat == null || drone.lng == null) return;
-    mapRef.current.flyTo(new BMapGL.Point(drone.lng, drone.lat), Math.max(mapRef.current.getZoom(), 16));
+    engineRef.current.map.flyTo([drone.lng, drone.lat, 0], {
+      range: 1000,
+      pitch: 60,
+      duration: 1500,
+    });
   }, [locateDroneCounter, locateDroneId, drones]);
 
   // Follow mode
   useEffect(() => {
-    if (!followDroneId || !mapRef.current) return;
-    const BMapGL = (window as any).BMapGL;
+    if (!followDroneId || !engineRef.current) return;
     const drone = drones.find(d => d.uavId === followDroneId);
     if (!drone || drone.lat == null || drone.lng == null) return;
-    mapRef.current.panTo(new BMapGL.Point(drone.lng, drone.lat));
+    engineRef.current.map.setCenter([drone.lng, drone.lat]);
   }, [followDroneId, drones]);
 
   return (
     <div className={`relative w-full h-full ${className}`}>
       <div ref={containerRef} className="absolute inset-0 w-full h-full" />
-
-      {/* Popup overlay for drone info and map click menus */}
-      <div ref={popupOverlayRef} style={{
-        position: 'absolute', display: 'none', zIndex: 100,
-        pointerEvents: 'auto', maxWidth: '300px',
-      }} />
 
       {loadError && (
         <div className="absolute top-12 left-1/2 -translate-x-1/2 z-20 bg-red-900/90 backdrop-blur-sm rounded-lg px-4 py-2 text-white text-xs flex items-center gap-2 max-w-xs shadow-lg border border-red-700">
