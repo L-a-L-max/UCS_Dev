@@ -84,6 +84,7 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
   const blinkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const blinkStateRef = useRef(true);
   const popupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const userDragHandlerRef = useRef<(() => void) | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [engineReady, setEngineReady] = useState(false);
 
@@ -193,16 +194,13 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
     // Configure Baidu Map AK
     mapvthree.BaiduMapConfig.ak = BAIDU_MAP_AK;
 
-    // Convert zoom to range (approximate: range = earthCircumference / 2^zoom)
-    const zoomToRange = (z: number) => Math.max(500, 40075016 / Math.pow(2, z));
-
     try {
       const engine = new mapvthree.Engine(containerRef.current, {
         map: {
           center: [center[0], center[1]],
           pitch,
           heading: 0,
-          range: zoomToRange(zoom),
+          range: 5000000,
           projection: 'EPSG:3857',
         },
       });
@@ -246,10 +244,12 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
         }
       });
 
-      // Exit follow on user drag
-      engine.controller.addEventListener('dragstart', () => {
-        onFollowExitRef.current?.();
-      });
+      // Exit follow on user interaction (drag/scroll)
+      const container = containerRef.current;
+      const handleUserDrag = () => { onFollowExitRef.current?.(); };
+      userDragHandlerRef.current = handleUserDrag;
+      container.addEventListener('pointerdown', handleUserDrag);
+      container.addEventListener('wheel', handleUserDrag);
 
       engineRef.current = engine;
       setEngineReady(true);
@@ -262,6 +262,13 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
       destroyed = true;
       if (blinkTimerRef.current) clearInterval(blinkTimerRef.current);
       if (popupTimerRef.current) clearTimeout(popupTimerRef.current);
+      // Remove DOM listeners
+      const cont = containerRef.current;
+      const handler = userDragHandlerRef.current;
+      if (cont && handler) {
+        cont.removeEventListener('pointerdown', handler);
+        cont.removeEventListener('wheel', handler);
+      }
       // Remove overlays
       droneOverlaysRef.current.forEach(overlay => {
         engineRef.current?.remove(overlay);
