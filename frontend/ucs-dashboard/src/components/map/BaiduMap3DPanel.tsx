@@ -292,7 +292,6 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
         enableRotate: true,
         enableTilt: true,
         enableKeyboard: true,
-        enableScrollWheelZoom: true,
         enableContinuousZoom: true,
       });
 
@@ -300,6 +299,9 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
       map.centerAndZoom(new BMapGL.Point(center[0], center[1]), zoom);
       map.setTilt(pitch);
       map.setHeading(0);
+
+      // Explicitly enable scroll wheel zoom (must be called after centerAndZoom)
+      map.enableScrollWheelZoom(true);
 
       // Switch to Earth/Satellite mode for real-scene 3D
       map.setMapType(window.BMAP_EARTH_MAP);
@@ -522,16 +524,6 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
           <span className="font-semibold">地图加载失败:</span>
           <span>{loadError}</span>
         </div>
-      )}
-
-      {/* Focus button */}
-      {mapReady && (
-        <button
-          className="absolute bottom-6 right-6 z-10 bg-slate-800/80 border border-slate-600 text-white rounded px-3 py-1.5 text-xs hover:bg-slate-700/80 transition-colors"
-          onClick={focusOnDrones}
-        >
-          聚焦无人机
-        </button>
       )}
 
       {/* Stats overlay */}
