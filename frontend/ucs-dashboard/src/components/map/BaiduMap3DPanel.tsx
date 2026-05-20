@@ -196,12 +196,16 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
 
     try {
       const engine = new mapvthree.Engine(containerRef.current, {
+        rendering: {
+          sky: new mapvthree.DynamicSky(),
+          enableAnimationLoop: true,
+        },
         map: {
-          center: [center[0], center[1]],
+          center: [center[0], center[1], 0],
           pitch,
           heading: 0,
           range: 3000,
-          projection: 'EPSG:3857',
+          projection: 'ECEF',
           provider: null,
         },
       });
@@ -211,18 +215,15 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
         return;
       }
 
-      // Add MapView: Bing satellite imagery + Baidu 3D vector buildings
-      const mapView = new mapvthree.MapView();
-      engine.add(mapView);
+      // MapView: Cesium terrain + Bing satellite imagery + Baidu 3D vector buildings
+      const mapView = engine.add(new mapvthree.MapView({
+        terrainProvider: new mapvthree.CesiumTerrainTileProvider({}),
+        imageryProvider: new mapvthree.BingImageryTileProvider({
+          style: mapvthree.mapViewConstants.BING_MAP_STYLE_AERIAL,
+        }),
+      }));
 
-      // Layer 1: Satellite imagery (Bing Maps - EPSG:3857 native, no AK needed)
-      const imageryProvider = new mapvthree.BingImageryTileProvider({
-        style: mapvthree.mapViewConstants.BING_MAP_STYLE_AERIAL,
-      });
-      const terrainProvider = new mapvthree.PlaneTerrainTileProvider();
-      mapView.addRasterSurface(terrainProvider, [imageryProvider], {});
-
-      // Layer 2: 3D vector buildings on top of satellite
+      // 3D vector buildings on top of satellite imagery
       const vectorProvider = new mapvthree.BaiduVectorTileProvider({
         ak: BAIDU_MAP_AK,
         displayOptions: {
