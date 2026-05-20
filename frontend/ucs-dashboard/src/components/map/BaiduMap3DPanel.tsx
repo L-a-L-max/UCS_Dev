@@ -195,25 +195,14 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
     mapvthree.BaiduMapConfig.ak = BAIDU_MAP_AK;
 
     try {
-      // Use default Baidu vector provider with 3D buildings
-      // (no custom provider → engine auto-creates BaiduVectorTileProvider)
-      const vectorProvider = new mapvthree.BaiduVectorTileProvider({
-        ak: BAIDU_MAP_AK,
-        displayOptions: {
-          building: true,
-          base: true,
-          link: true,
-          poi: true,
-        },
-      });
-
       const engine = new mapvthree.Engine(containerRef.current, {
         map: {
           center: [center[0], center[1]],
           pitch,
           heading: 0,
           range: 3000,
-          provider: vectorProvider,
+          projection: 'EPSG:3857',
+          provider: null,
         },
       });
 
@@ -221,6 +210,29 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
         engine.dispose();
         return;
       }
+
+      // Add MapView: Bing satellite imagery + Baidu 3D vector buildings
+      const mapView = new mapvthree.MapView();
+      engine.add(mapView);
+
+      // Layer 1: Satellite imagery (Bing Maps - EPSG:3857 native, no AK needed)
+      const imageryProvider = new mapvthree.BingImageryTileProvider({
+        style: mapvthree.mapViewConstants.BING_MAP_STYLE_AERIAL,
+      });
+      const terrainProvider = new mapvthree.PlaneTerrainTileProvider();
+      mapView.addRasterSurface(terrainProvider, [imageryProvider], {});
+
+      // Layer 2: 3D vector buildings on top of satellite
+      const vectorProvider = new mapvthree.BaiduVectorTileProvider({
+        ak: BAIDU_MAP_AK,
+        displayOptions: {
+          building: true,
+          base: false,
+          link: true,
+          poi: true,
+        },
+      });
+      mapView.addVectorSurface(vectorProvider, {});
 
       // Map click handler
       engine.map.addEventListener('click', (e: { point?: number[] }) => {
