@@ -195,13 +195,25 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
     mapvthree.BaiduMapConfig.ak = BAIDU_MAP_AK;
 
     try {
+      // Use default Baidu vector provider with 3D buildings
+      // (no custom provider → engine auto-creates BaiduVectorTileProvider)
+      const vectorProvider = new mapvthree.BaiduVectorTileProvider({
+        ak: BAIDU_MAP_AK,
+        displayOptions: {
+          building: true,
+          base: true,
+          link: true,
+          poi: true,
+        },
+      });
+
       const engine = new mapvthree.Engine(containerRef.current, {
         map: {
           center: [center[0], center[1]],
           pitch,
           heading: 0,
-          range: 5000000,
-          projection: 'EPSG:3857',
+          range: 3000,
+          provider: vectorProvider,
         },
       });
 
@@ -209,30 +221,6 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
         engine.dispose();
         return;
       }
-
-      // Add MapView with satellite imagery + 3D vector buildings
-      const mapView = new mapvthree.MapView();
-      engine.add(mapView);
-
-      // Add satellite imagery layer
-      const imageryProvider = new mapvthree.Baidu09ImageryTileProvider({
-        ak: BAIDU_MAP_AK,
-        type: 'satellite',
-      });
-      const terrainProvider = new mapvthree.PlaneTerrainTileProvider();
-      mapView.addRasterSurface(terrainProvider, [imageryProvider], {});
-
-      // Add 3D vector buildings layer on top
-      const vectorProvider = new mapvthree.BaiduVectorTileProvider({
-        ak: BAIDU_MAP_AK,
-        displayOptions: {
-          building: true,
-          base: false,
-          link: true,
-          poi: true,
-        },
-      });
-      mapView.addVectorSurface(vectorProvider, {});
 
       // Map click handler
       engine.map.addEventListener('click', (e: { point?: number[] }) => {
