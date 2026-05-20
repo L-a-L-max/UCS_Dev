@@ -31,6 +31,10 @@ import { lazy, Suspense } from 'react';
 const AMap3DPanel = lazy(() => import('./map/AMap3DPanel'));
 import type { AMap3DPanelHandle } from './map/AMap3DPanel';
 
+// Lazy load Baidu Map 3D Real-Scene panel
+const BaiduMap3DPanel = lazy(() => import('./map/BaiduMap3DPanel'));
+import type { BaiduMap3DPanelHandle } from './map/BaiduMap3DPanel';
+
 // Lazy load Cesium Holographic Dashboard
 const HoloDashboard = lazy(() => import('./cesium/HoloDashboard'));
 
@@ -269,10 +273,12 @@ export default function MapPanel({
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapErrorDetails, setMapErrorDetails] = useState<string | null>(null);
-  // 3D map toggle - switches between MapLibre 2D, AMap 3D, and Cesium Holographic
+  // 3D map toggle - switches between MapLibre 2D, AMap 3D, Cesium Holographic, and Baidu 3D Real-Scene
   const [is3DMode, setIs3DMode] = useState(false);
   const [isCesiumMode, setIsCesiumMode] = useState(false);
+  const [isBaiduMode, setIsBaiduMode] = useState(false);
   const amap3DRef = useRef<AMap3DPanelHandle>(null);
+  const baiduMap3DRef = useRef<BaiduMap3DPanelHandle>(null);
 
   // 弹窗自动关闭逻辑 - 默认5秒后关闭，鼠标移入保持，移出后倒计时关闭
   const POPUP_AUTO_CLOSE_MS = 5000;
@@ -465,11 +471,15 @@ export default function MapPanel({
     await initMap(newSource);
   };
 
-  // 聚焦无人机 - delegates to AMap3DPanel when in 3D mode
+  // 聚焦无人机 - delegates to AMap3DPanel/BaiduMap3DPanel when in 3D mode
   const focusOnDrones = useCallback(() => {
     // Delegate to 3D panel if in 3D mode
     if (is3DMode && amap3DRef.current) {
       amap3DRef.current.focusOnDrones();
+      return;
+    }
+    if (isBaiduMode && baiduMap3DRef.current) {
+      baiduMap3DRef.current.focusOnDrones();
       return;
     }
     if (!map.current || drones.length === 0) return;
@@ -483,7 +493,7 @@ export default function MapPanel({
       validDrones.forEach(d => bounds.extend([d.lng, d.lat]));
       map.current.fitBounds(bounds, { padding: 50, duration: 1000 });
     }
-  }, [drones, is3DMode]);
+  }, [drones, is3DMode, isBaiduMode]);
 
   // ==================== DOM Reuse Marker Update ====================
   // Instead of innerHTML replacement (which destroys and recreates all DOM nodes,
@@ -918,14 +928,14 @@ export default function MapPanel({
     return () => observer.disconnect();
   }, []);
 
-  // When switching back from 3D/Cesium to 2D, re-initialize the MapLibre map
+  // When switching back from 3D/Cesium/Baidu to 2D, re-initialize the MapLibre map
   useEffect(() => {
-    if (!is3DMode && !isCesiumMode) {
+    if (!is3DMode && !isCesiumMode && !isBaiduMode) {
       // Re-init MapLibre map when switching back to 2D
       initMap(tileSource);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [is3DMode, isCesiumMode]);
+  }, [is3DMode, isCesiumMode, isBaiduMode]);
 
   // 对无人机排序：在线优先
   const sortedDrones = [...drones].sort((a, b) => {
@@ -959,8 +969,33 @@ export default function MapPanel({
           </Suspense>
         )}
 
+        {/* Baidu Map 3D Real-Scene mode */}
+        {isBaiduMode && (
+          <Suspense fallback={
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-900 text-slate-400 text-sm">
+              加载实景地图中...
+            </div>
+          }>
+            <BaiduMap3DPanel
+              ref={baiduMap3DRef}
+              drones={drones}
+              selectedDroneId={selectedDroneId}
+              selectedDroneIds={selectedDroneIds}
+              onDroneClick={onDroneClick}
+              onMapClick={onMapClick}
+              onMapClickCommand={onMapClickCommand}
+              hasDroneSelected={hasDroneSelected}
+              locateDroneId={locateDroneId}
+              locateDroneCounter={locateDroneCounter}
+              followDroneId={followDroneId}
+              onFollowExit={onFollowExit}
+              className="absolute inset-0"
+            />
+          </Suspense>
+        )}
+
         {/* AMap 3D mode */}
-        {!isCesiumMode && is3DMode && (
+        {!isCesiumMode && !isBaiduMode && is3DMode && (
           <Suspense fallback={
             <div className="absolute inset-0 flex items-center justify-center bg-slate-900 text-slate-400 text-sm">
               加载3D地图中...
@@ -988,11 +1023,11 @@ export default function MapPanel({
         <div
           ref={mapContainer}
           className="absolute inset-0 w-full h-full"
-          style={{ minHeight: '100%', display: (is3DMode || isCesiumMode) ? 'none' : 'block' }}
+          style={{ minHeight: '100%', display: (is3DMode || isCesiumMode || isBaiduMode) ? 'none' : 'block' }}
         />
 
         {/* 地图错误提示（参考 Observer 视图） */}
-        {!is3DMode && !isCesiumMode && mapError && (
+        {!is3DMode && !isCesiumMode && !isBaiduMode && mapError && (
           <div className="absolute top-12 left-1/2 -translate-x-1/2 z-20 bg-red-900/90 backdrop-blur-sm rounded-lg px-4 py-2 text-white text-xs flex items-center gap-2 max-w-xs shadow-lg border border-red-700">
             <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
             <div>
@@ -1017,7 +1052,7 @@ export default function MapPanel({
             size="sm"
             variant="outline"
             className={`border-slate-600 text-white hover:bg-slate-700/80 text-xs ${is3DMode ? 'bg-indigo-700/80 border-indigo-500' : 'bg-slate-800/80'}`}
-            onClick={() => { setIs3DMode(!is3DMode); setIsCesiumMode(false); }}
+            onClick={() => { setIs3DMode(!is3DMode); setIsCesiumMode(false); setIsBaiduMode(false); }}
           >
             {is3DMode ? <><MapIcon className="w-3 h-3 mr-1" />二维地图</> : <><Globe className="w-3 h-3 mr-1" />高德3D</>}
           </Button>
@@ -1026,9 +1061,18 @@ export default function MapPanel({
             size="sm"
             variant="outline"
             className={`border-slate-600 text-white hover:bg-slate-700/80 text-xs ${isCesiumMode ? 'bg-cyan-700/80 border-cyan-500 shadow-[0_0_8px_rgba(0,255,255,0.3)]' : 'bg-slate-800/80'}`}
-            onClick={() => { setIsCesiumMode(!isCesiumMode); setIs3DMode(false); }}
+            onClick={() => { setIsCesiumMode(!isCesiumMode); setIs3DMode(false); setIsBaiduMode(false); }}
           >
             {isCesiumMode ? <><MapIcon className="w-3 h-3 mr-1" />退出全息</> : <><Globe className="w-3 h-3 mr-1" />全息3D</>}
+          </Button>
+          {/* Baidu Map 3D Real-Scene mode toggle */}
+          <Button
+            size="sm"
+            variant="outline"
+            className={`border-slate-600 text-white hover:bg-slate-700/80 text-xs ${isBaiduMode ? 'bg-emerald-700/80 border-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.3)]' : 'bg-slate-800/80'}`}
+            onClick={() => { setIsBaiduMode(!isBaiduMode); setIs3DMode(false); setIsCesiumMode(false); }}
+          >
+            {isBaiduMode ? <><MapIcon className="w-3 h-3 mr-1" />退出实景</> : <><Globe className="w-3 h-3 mr-1" />实景地图</>}
           </Button>
           <div className="relative">
             <Button
@@ -1058,7 +1102,7 @@ export default function MapPanel({
         </div>
 
         {/* Phase 2: GPU Symbol Layer for high-performance drone rendering (2D mode only) */}
-        {!is3DMode && !isCesiumMode && useSymbolLayer && (
+        {!is3DMode && !isCesiumMode && !isBaiduMode && useSymbolLayer && (
           <DroneLayer
             map={map.current}
             drones={drones.filter((d): d is MapDrone & DroneFeature => d.lat != null && d.lng != null).map(d => ({
@@ -1079,7 +1123,7 @@ export default function MapPanel({
         )}
 
         {/* 统计信息 (2D mode only, 3D/Cesium has its own stats) */}
-        {!is3DMode && !isCesiumMode && (
+        {!is3DMode && !isCesiumMode && !isBaiduMode && (
           <div className="absolute bottom-6 left-2 z-10 bg-slate-800/80 rounded px-2 py-1 text-xs text-slate-300">
             共 {drones.length} 架 | 在线 {drones.filter(d => d.onlineStatus === true).length} | 飞行中 {drones.filter(d => d.flightStatus === 'FLYING').length}
           </div>
