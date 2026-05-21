@@ -17,6 +17,12 @@ export interface BaiduMap3DPanelHandle {
 
 const BAIDU_MAP_AK = import.meta.env.VITE_BAIDU_MAP_AK || 'nGb4GqLhx9IMrTkm3xlZKg6dv2J2pXnu';
 
+const OBLIQUE_3DTILES_URLS = [
+  'https://t.hangzhoumap.gov.cn/3dtile/atzx/tileset.json',
+  'https://t.hangzhoumap.gov.cn/3dtile/xxsd/tileset.json',
+];
+const CUSTOM_3DTILES_URL = import.meta.env.VITE_3DTILES_URL as string | undefined;
+
 interface BaiduMap3DPanelProps {
   drones: MapDrone[];
   selectedDroneId?: string | null;
@@ -72,7 +78,7 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
   followDroneId,
   onFollowExit,
   className = '',
-  center = [105, 30],
+  center = [120.2130, 30.2130],
   zoom = 6,
   pitch = 60,
 }, ref) {
@@ -201,10 +207,10 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
           enableAnimationLoop: true,
         },
         map: {
-          center: [center[0], center[1], 0],
+          center: [center[0], center[1], 200],
           pitch,
           heading: 0,
-          range: 3000,
+          range: 1500,
           projection: 'ECEF',
           provider: null,
         },
@@ -215,25 +221,22 @@ const BaiduMap3DPanel = forwardRef<BaiduMap3DPanelHandle, BaiduMap3DPanelProps>(
         return;
       }
 
-      // MapView: Cesium terrain + Bing satellite imagery + Baidu 3D vector buildings
-      const mapView = engine.add(new mapvthree.MapView({
-        terrainProvider: new mapvthree.CesiumTerrainTileProvider({}),
+      // MapView: Bing satellite imagery base
+      engine.add(new mapvthree.MapView({
         imageryProvider: new mapvthree.BingImageryTileProvider({
           style: mapvthree.mapViewConstants.BING_MAP_STYLE_AERIAL,
         }),
       }));
 
-      // 3D vector buildings on top of satellite imagery
-      const vectorProvider = new mapvthree.BaiduVectorTileProvider({
-        ak: BAIDU_MAP_AK,
-        displayOptions: {
-          building: true,
-          base: false,
-          link: true,
-          poi: true,
-        },
-      });
-      mapView.addVectorSurface(vectorProvider, {});
+      // Load oblique photogrammetry 3D Tiles for real-scene city rendering
+      const tileUrls = CUSTOM_3DTILES_URL ? [CUSTOM_3DTILES_URL] : OBLIQUE_3DTILES_URLS;
+      for (const url of tileUrls) {
+        engine.add(new mapvthree.Default3DTiles({
+          url,
+          errorTarget: 16,
+          forceUnlit: true,
+        }));
+      }
 
       // Map click handler
       engine.map.addEventListener('click', (e: { point?: number[] }) => {
