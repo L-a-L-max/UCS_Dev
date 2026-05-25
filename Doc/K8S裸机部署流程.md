@@ -30,7 +30,7 @@
 - **物理层面**：只有一台服务器（裸机），所有服务运行在同一台物理机上
 - **逻辑层面**：通过 K8S 将各个服务（前端、后端、DDS网关、数据库、缓存等）隔离为独立的 Pod/容器，每个服务拥有独立的网络、存储、资源限制，彼此通过 K8S 内部 DNS 进行服务发现
 
-这种方式的好处是：即使在单台服务器上，也能获得 K8S 的编排能力（自动重启、滚动更新、服务发现），未来需要扩展时可以无缝添加新节点。
+这种方式的好处是：即使在单台服务器上，也能获得 K8S 的编排能力（自动重启、滚动更新、服务发现），未来需要扩展时可以通过 `kubeadm join` 无缝添加新节点。
 
 ### 1.2 与现有三虚拟机方案的区别
 
@@ -50,10 +50,10 @@
 │                    单台物理服务器 (裸机)                            │
 │                                                                 │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │              Kubernetes 单节点集群 (k3s)                    │  │
+│  │              Kubernetes 单节点集群 (kubeadm)                │  │
 │  │                                                           │  │
 │  │  ┌─────────────────────────────────────────────────────┐  │  │
-│  │  │           Ingress Controller (Traefik)              │  │  │
+│  │  │           Ingress Controller (Nginx Ingress)        │  │  │
 │  │  │           监听 80/443 端口，路由外部流量               │  │  │
 │  │  └──────────┬─────────────────────┬────────────────────┘  │  │
 │  │             │                     │                        │  │
@@ -291,39 +291,69 @@ docker --version
 
 ### 5.1 目的
 
-在单台服务器上安装 Kubernetes 集群。由于只有一台机器，我们使用 **k3s**（轻量级 K8S 发行版），它具有以下优势：
+在单台服务器上安装 Kubernetes 集群。本文档使用 **kubeadm**（K8S 官方集群引导工具），它具有以下优势：
 
-- **单二进制文件**：安装极简，一条命令即可启动完整集群
-- **内置 Traefik Ingress**：无需额外安装 Ingress Controller
-- **内置 Local Storage**：支持本地持久化卷
-- **资源占用低**：比 kubeadm 少用约 50% 内存
-- **功能完整**：与标准 K8S API 100% 兼容
+- **官方标准**：Kubernetes 官方推荐的集群部署工具，社区支持最广泛
+- **扩展性强**：未来添加 Worker 节点时，直接 `kubeadm join` 即可，无需更换架构
+- **生产就绪**：与云托管 K8S（EKS/AKS/GKE）架构一致，迁移无缝
+- **生态完整**：所有 K8S 生态工具原生支持，无兼容性问题
+- **可控性高**：各组件透明可见，便于深入学习和问题排查
 
-### 5.2 安装 k3s
+### 5.2 安装 kubeadm、kubelet、kubectl
 
 ```bash
 # ============================================================
-# 安装 k3s
-# 目的：在本机部署一个完整的 Kubernetes 单节点集群
-# 参数说明：
-#   --docker: 使用 Docker 作为容器运行时（便于本地构建镜像）
-#   --disable=traefik: 不使用内置 Traefik，后续手动安装 Nginx Ingress
-#                      （也可以保留 Traefik，去掉此参数）
-#   --write-kubeconfig-mode=644: 让非root用户也能使用 kubectl
-#   --node-name: 指定节点名称
+# 安装 Kubernetes 组件
+# 目的：
+#   kubeadm: 集群初始化和管理工具
+#   kubelet: 每个节点上的代理，负责实际管理 Pod
+#   kubectl: 命令行客户端，用于与集群交互
 # ============================================================
-curl -sfL https://get.k3s.io | sh -s - \
-    --write-kubeconfig-mode=644 \
+
+# 添加 Kubernetes 官方仓库
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | \
+    sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] \
+    https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" | \
+    sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+sudo apt update
+sudo apt install -y kubelet kubeadm kubectl
+
+# 锁定版本，防止 apt upgrade 意外升级导致集群不兼容
+sudo apt-mark hold kubelet kubeadm kubectl
+
+# 验证安装
+kubeadm version
+kubelet --version
+kubectl version --client
+```
+
+### 5.3 初始化集群
+
+```bash
+# ============================================================
+# 使用 kubeadm 初始化单节点集群
+# 参数说明：
+#   --pod-network-cidr: Pod 网络地址范围，Calico/Flannel 需要
+#   --apiserver-advertise-address: API Server 监听地址
+#   --node-name: 节点名称
+#   --service-cidr: Service 网络地址范围（默认即可）
+# ============================================================
+sudo kubeadm init \
+    --pod-network-cidr=10.244.0.0/16 \
     --node-name=ucs-node \
-    --kube-apiserver-arg="service-node-port-range=30000-32767"
+    --apiserver-advertise-address=$(hostname -I | awk '{print $1}')
 
 # ============================================================
 # 配置 kubectl
 # 目的：设置 kubectl 命令行工具的认证配置
-#       k3s 的 kubeconfig 默认在 /etc/rancher/k3s/k3s.yaml
+#       kubeadm 的 kubeconfig 默认在 /etc/kubernetes/admin.conf
 # ============================================================
 mkdir -p ~/.kube
-sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo cp /etc/kubernetes/admin.conf ~/.kube/config
 sudo chown $(id -u):$(id -g) ~/.kube/config
 export KUBECONFIG=~/.kube/config
 
@@ -331,19 +361,35 @@ export KUBECONFIG=~/.kube/config
 echo 'export KUBECONFIG=~/.kube/config' >> ~/.bashrc
 
 # ============================================================
+# 去除 Master 节点的 Taint（允许在 Master 上调度业务 Pod）
+# 目的：单节点集群必须去除此 Taint，否则业务 Pod 无法调度
+# ============================================================
+kubectl taint nodes ucs-node node-role.kubernetes.io/control-plane:NoSchedule-
+
+# ============================================================
+# 安装 Pod 网络插件（Flannel）
+# 目的：K8S 需要网络插件来实现 Pod 之间的跨节点通信
+#       Flannel 配置简单，适合单节点和小规模集群
+#       未来扩展时也可替换为 Calico（支持网络策略）
+# ============================================================
+kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+
+# ============================================================
 # 验证集群
 # 目的：确认 K8S 集群已成功启动，节点处于 Ready 状态
 # ============================================================
 kubectl get nodes
 # 期望输出:
-# NAME       STATUS   ROLES                  AGE   VERSION
-# ucs-node   Ready    control-plane,master   1m    v1.28.x+k3s1
+# NAME       STATUS   ROLES           AGE   VERSION
+# ucs-node   Ready    control-plane   1m    v1.29.x
 
 kubectl get pods -A
-# 所有系统 Pod 应处于 Running 状态
+# 所有系统 Pod 应处于 Running 状态（coredns、flannel、kube-proxy、etcd 等）
 ```
 
-### 5.3 安装 Helm
+> **扩展节点方法（未来需要时）**：在新服务器上完成步骤 3（系统初始化）和步骤 4（容器运行时），然后安装 kubeadm/kubelet/kubectl，执行 `kubeadm init` 输出的 `kubeadm join` 命令即可加入集群。
+
+### 5.4 安装 Helm
 
 ```bash
 # ============================================================
@@ -364,7 +410,7 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo update
 ```
 
-### 5.4 安装 kubectl 自动补全（可选但推荐）
+### 5.5 安装 kubectl 自动补全（可选但推荐）
 
 ```bash
 # 目的：提高命令行操作效率
@@ -1057,9 +1103,37 @@ Ingress 是 K8S 的统一入口网关，作用相当于传统的 Nginx 反向代
 - 提供 SSL/TLS 终止
 - 负载均衡
 
-k3s 默认内置了 Traefik 作为 Ingress Controller。如果安装时未禁用，可以直接使用。
+本文档使用 **Nginx Ingress Controller**，这是 K8S 社区最广泛使用的 Ingress 实现，文档丰富，生产环境验证充分。
 
-### 11.2 配置 Ingress 规则
+### 11.2 安装 Nginx Ingress Controller
+
+```bash
+# ============================================================
+# 使用 Helm 安装 Nginx Ingress Controller
+# 目的：提供集群的统一 HTTP 入口，路由外部流量到内部服务
+# 参数说明：
+#   hostNetwork=true: 直接使用宿主机网络，监听 80/443 端口
+#   kind=DaemonSet: 确保每个节点都运行一个实例
+#   publishService.enabled=false: hostNetwork 模式下无需服务发布
+# ============================================================
+helm install ingress-nginx ingress-nginx/ingress-nginx \
+    --namespace ingress-nginx --create-namespace \
+    --set controller.hostNetwork=true \
+    --set controller.kind=DaemonSet \
+    --set controller.service.type=ClusterIP \
+    --set controller.publishService.enabled=false \
+    --set controller.admissionWebhooks.enabled=false
+
+# 等待 Ingress Controller 就绪
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=ingress-nginx \
+    -n ingress-nginx --timeout=120s
+
+# 验证
+kubectl get pods -n ingress-nginx
+# 期望输出: ingress-nginx-controller-xxxxx   1/1   Running
+```
+
+### 11.3 配置 Ingress 规则
 
 ```bash
 # ============================================================
@@ -1088,7 +1162,7 @@ metadata:
       proxy_set_header Upgrade $http_upgrade;
       proxy_set_header Connection "upgrade";
 spec:
-  ingressClassName: traefik  # k3s 内置，如使用nginx改为 nginx
+  ingressClassName: nginx
   rules:
     # 如果有域名，替换为实际域名；没有域名可以用 IP 直接访问
     - http:
@@ -1122,7 +1196,7 @@ EOF
 kubectl apply -f /tmp/ingress.yaml
 ```
 
-### 11.3 外部访问方式
+### 11.4 外部访问方式
 
 部署完成后，有以下方式从外部访问 UCS 平台：
 
@@ -1287,15 +1361,31 @@ UCS_BRANCH="FUIAttemptation"
 WORK_DIR="/opt/ucs"
 # -----------------------------------------
 
-echo "[1/8] 安装 k3s..."
-if ! command -v k3s &> /dev/null; then
-    curl -sfL https://get.k3s.io | sh -s - \
-        --write-kubeconfig-mode=644 \
-        --node-name=ucs-node
+echo "[1/8] 安装 Kubernetes (kubeadm)..."
+if ! command -v kubeadm &> /dev/null; then
+    sudo mkdir -p /etc/apt/keyrings
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | \
+        sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] \
+        https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" | \
+        sudo tee /etc/apt/sources.list.d/kubernetes.list
+    sudo apt update && sudo apt install -y kubelet kubeadm kubectl
+    sudo apt-mark hold kubelet kubeadm kubectl
+fi
+
+if ! kubectl get nodes &> /dev/null; then
+    sudo kubeadm init \
+        --pod-network-cidr=10.244.0.0/16 \
+        --node-name=ucs-node \
+        --apiserver-advertise-address=$(hostname -I | awk '{print $1}')
     mkdir -p ~/.kube
-    sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+    sudo cp /etc/kubernetes/admin.conf ~/.kube/config
     sudo chown $(id -u):$(id -g) ~/.kube/config
     export KUBECONFIG=~/.kube/config
+    # 去除 Master Taint（单节点必须）
+    kubectl taint nodes ucs-node node-role.kubernetes.io/control-plane:NoSchedule-
+    # 安装 Pod 网络 (Flannel)
+    kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
 fi
 
 echo "[2/8] 安装 Helm..."
@@ -1303,6 +1393,7 @@ if ! command -v helm &> /dev/null; then
     curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 fi
 helm repo add bitnami https://charts.bitnami.com/bitnami 2>/dev/null || true
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx 2>/dev/null || true
 helm repo update
 
 echo "[3/8] 创建 Namespace 和 Secret..."
@@ -1368,7 +1459,15 @@ echo "[6/8] 部署应用服务..."
 kubectl apply -f k8s/ --recursive 2>/dev/null || \
     echo "请确保 k8s/ 目录下有部署清单文件"
 
-echo "[7/8] 配置 Ingress..."
+echo "[7/8] 安装 Nginx Ingress Controller 并配置路由..."
+helm install ingress-nginx ingress-nginx/ingress-nginx \
+    --namespace ingress-nginx --create-namespace \
+    --set controller.hostNetwork=true \
+    --set controller.kind=DaemonSet \
+    --set controller.service.type=ClusterIP \
+    --set controller.publishService.enabled=false \
+    --set controller.admissionWebhooks.enabled=false \
+    2>/dev/null || echo "Nginx Ingress 已存在，跳过"
 kubectl apply -f /tmp/ingress.yaml 2>/dev/null || true
 
 echo "[8/8] 验证部署..."
@@ -1473,8 +1572,8 @@ kubectl exec -it $(kubectl get pod -l app.kubernetes.io/name=mysql -o jsonpath='
 解决: 
   - 确认使用了 imagePullPolicy: Never（本地镜像）
   - 确认 docker images 中存在对应镜像
-  - 如果使用 k3s，需要将镜像导入 k3s:
-    docker save ucs/backend:latest | sudo k3s ctr images import -
+  - kubeadm 使用 containerd 作为运行时，需要将镜像导入 containerd:
+    docker save ucs/backend:latest | sudo ctr -n k8s.io images import -
 ```
 
 ### Q2: Pod 状态为 CrashLoopBackOff
@@ -1517,10 +1616,10 @@ kubectl exec -it $(kubectl get pod -l app.kubernetes.io/name=mysql -o jsonpath='
 ### Q5: 服务器重启后 K8S 服务未自动恢复
 
 ```
-k3s 默认已配置为 systemd 服务，重启后会自动恢复。
+kubeadm 安装的 kubelet 默认已配置为 systemd 服务，重启后会自动恢复。
 如果未恢复:
-  sudo systemctl status k3s
-  sudo systemctl restart k3s
+  sudo systemctl status kubelet
+  sudo systemctl restart kubelet
   # 等待约1-2分钟，所有 Pod 会自动重新调度
   kubectl get pods -n ucs -w
 ```
@@ -1538,9 +1637,12 @@ k3s 默认已配置为 systemd 服务，重启后会自动恢复。
 ### Q7: 单节点 Pod 无法调度（Taint 问题）
 
 ```
-k3s 默认已处理 Master Taint，单节点可直接调度 Pod。
-如果使用 kubeadm 安装，需要手动去除 Taint:
+kubeadm 初始化后 Master 节点默认有 Taint，不允许调度业务 Pod。
+单节点集群必须去除 Taint：
   kubectl taint nodes ucs-node node-role.kubernetes.io/control-plane:NoSchedule-
+验证 Taint 已移除：
+  kubectl describe node ucs-node | grep Taints
+  # 期望输出: Taints: <none>
 ```
 
 ---
@@ -1566,7 +1668,7 @@ k3s 默认已处理 Master Taint，单节点可直接调度 Pod。
 | Ubuntu Server | 22.04 LTS | 操作系统安装 | 基础操作系统 |
 | containerd | 1.7+ | 步骤4 | 容器运行时 |
 | Docker CE | 24+ | 步骤4 | 构建容器镜像 |
-| k3s | 最新稳定版 | 步骤5 | Kubernetes 集群 |
+| kubeadm/kubelet/kubectl | v1.29 | 步骤5 | Kubernetes 集群 |
 | Helm | 3.14+ | 步骤5 | K8S 包管理 |
 | ROS2 Humble | - | 步骤12(可选) | DDS通信/仿真 |
 | PX4-Autopilot | v1.14+ | 步骤12(可选) | 无人机仿真 |
@@ -1605,6 +1707,8 @@ kubectl rollout restart deploy/dds-gateway -n ucs
 
 # --- 完全清理重装 ---
 helm uninstall mysql redis kafka -n ucs
+helm uninstall ingress-nginx -n ingress-nginx
 kubectl delete namespace ucs
 # 然后从步骤6重新开始
+# 如需完全重置集群: sudo kubeadm reset && 从步骤5重新开始
 ```
