@@ -4,20 +4,21 @@
 
 1. [概述与部署逻辑说明](#1-概述与部署逻辑说明)
 2. [服务器硬件要求](#2-服务器硬件要求)
-3. [操作系统初始化](#3-操作系统初始化)
-4. [容器运行时安装](#4-容器运行时安装)
-5. [Kubernetes 单节点集群安装](#5-kubernetes-单节点集群安装)
-6. [集群基础组件部署](#6-集群基础组件部署)
-7. [中间件部署（数据库/缓存/消息队列）](#7-中间件部署数据库缓存消息队列)
-8. [DDS 网关部署](#8-dds-网关部署)
-9. [后端服务部署](#9-后端服务部署)
-10. [前端服务部署](#10-前端服务部署)
-11. [Ingress 与外部访问配置](#11-ingress-与外部访问配置)
-12. [PX4/Gazebo 仿真环境（可选）](#12-px4gazebo-仿真环境可选)
-13. [监控与日志](#13-监控与日志)
-14. [一键部署脚本](#14-一键部署脚本)
-15. [验证与测试](#15-验证与测试)
-16. [常见问题排查](#16-常见问题排查)
+3. [虚拟环境创建（KVM 虚拟机）](#3-虚拟环境创建kvm-虚拟机)
+4. [虚拟机操作系统初始化](#4-虚拟机操作系统初始化)
+5. [容器运行时安装](#5-容器运行时安装)
+6. [Kubernetes 单节点集群安装](#6-kubernetes-单节点集群安装)
+7. [集群基础组件部署](#7-集群基础组件部署)
+8. [中间件部署（数据库/缓存/消息队列）](#8-中间件部署数据库缓存消息队列)
+9. [DDS 网关部署](#9-dds-网关部署)
+10. [后端服务部署](#10-后端服务部署)
+11. [前端服务部署](#11-前端服务部署)
+12. [Ingress 与外部访问配置](#12-ingress-与外部访问配置)
+13. [PX4/Gazebo 仿真环境（可选）](#13-px4gazebo-仿真环境可选)
+14. [监控与日志](#14-监控与日志)
+15. [一键部署脚本](#15-一键部署脚本)
+16. [验证与测试](#16-验证与测试)
+17. [常见问题排查](#17-常见问题排查)
 
 ---
 
@@ -43,44 +44,51 @@
 | **适用场景** | 生产环境、需要高可用 | 开发测试、验证部署流程、小规模生产 |
 | **运维复杂度** | 需要管理多台机器的网络互通 | 只需维护一台机器 |
 
-### 1.3 整体架构图（单服务器）
+### 1.3 整体架构图（虚拟环境部署）
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    单台物理服务器 (裸机)                            │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │              Kubernetes 单节点集群 (k3s)                    │  │
-│  │                                                           │  │
-│  │  ┌─────────────────────────────────────────────────────┐  │  │
-│  │  │           Ingress Controller (Traefik)              │  │  │
-│  │  │           监听 80/443 端口，路由外部流量               │  │  │
-│  │  └──────────┬─────────────────────┬────────────────────┘  │  │
-│  │             │                     │                        │  │
-│  │   ┌─────────▼─────────┐ ┌────────▼──────────┐            │  │
-│  │   │   Frontend Pod    │ │   Backend Pod     │            │  │
-│  │   │   (Nginx+React)   │ │   (Spring Boot)   │            │  │
-│  │   │   Port: 80        │ │   Port: 8080      │            │  │
-│  │   └───────────────────┘ └────────┬──────────┘            │  │
-│  │                                   │                        │  │
-│  │   ┌───────────────────────────────▼────────────────────┐  │  │
-│  │   │         DDS Gateway Pod (Python + ROS2)            │  │  │
-│  │   │         hostNetwork: true (DDS需要)                 │  │  │
-│  │   │         Port: 5050                                 │  │  │
-│  │   └───────────────────────────────┬────────────────────┘  │  │
-│  │                                   │                        │  │
-│  │   ┌────────────┐ ┌───────────┐ ┌─▼──────────┐            │  │
-│  │   │  Redis Pod │ │ MySQL Pod │ │  Kafka Pod │            │  │
-│  │   │  Port:6379 │ │ Port:3306 │ │  Port:9092 │            │  │
-│  │   └────────────┘ └───────────┘ └────────────┘            │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │        宿主机进程 (非K8S管理)                                │  │
-│  │        PX4-Autopilot + Gazebo 仿真 (可选)                   │  │
-│  │        通过 DDS/ROS2 与 DDS Gateway Pod 通信                │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                      物理服务器 (宿主机)                                │
+│                      Ubuntu 22.04 + KVM/QEMU                        │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │              KVM 虚拟机 (ucs-vm)                                │  │
+│  │              Ubuntu 22.04 Server                               │  │
+│  │              vCPU: 8+  内存: 16G+  磁盘: 200G+                  │  │
+│  │              网络: 桥接模式 (br0) — 与宿主机同网段                  │  │
+│  │                                                                │  │
+│  │  ┌──────────────────────────────────────────────────────────┐  │  │
+│  │  │            Kubernetes 单节点集群 (k3s)                     │  │  │
+│  │  │                                                          │  │  │
+│  │  │  ┌────────────────────────────────────────────────────┐  │  │  │
+│  │  │  │         Ingress Controller (Traefik)               │  │  │  │
+│  │  │  │         监听 80/443 端口，路由外部流量                │  │  │  │
+│  │  │  └─────────┬──────────────────────┬───────────────────┘  │  │  │
+│  │  │            │                      │                      │  │  │
+│  │  │  ┌─────────▼────────┐  ┌──────────▼─────────┐           │  │  │
+│  │  │  │  Frontend Pod    │  │   Backend Pod      │           │  │  │
+│  │  │  │  (Nginx+React)   │  │   (Spring Boot)    │           │  │  │
+│  │  │  └──────────────────┘  └──────────┬─────────┘           │  │  │
+│  │  │                                    │                     │  │  │
+│  │  │  ┌─────────────────────────────────▼──────────────────┐  │  │  │
+│  │  │  │       DDS Gateway Pod (Python + ROS2)              │  │  │  │
+│  │  │  │       hostNetwork: true                            │  │  │  │
+│  │  │  └─────────────────────────────────┬──────────────────┘  │  │  │
+│  │  │                                    │                     │  │  │
+│  │  │  ┌───────────┐ ┌──────────┐ ┌──────▼─────┐              │  │  │
+│  │  │  │ Redis Pod │ │MySQL Pod │ │ Kafka Pod  │              │  │  │
+│  │  │  └───────────┘ └──────────┘ └────────────┘              │  │  │
+│  │  └──────────────────────────────────────────────────────────┘  │  │
+│  │                                                                │  │
+│  │  ┌──────────────────────────────────────────────────────────┐  │  │
+│  │  │    VM内宿主进程 (非K8S管理)                                │  │  │
+│  │  │    PX4-Autopilot + Gazebo 仿真 (可选)                     │  │  │
+│  │  └──────────────────────────────────────────────────────────┘  │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  宿主机仅需安装: KVM/QEMU/libvirt + 桥接网络                          │
+│  所有 UCS 服务完全运行在虚拟机内部，与宿主机隔离                        │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 1.4 各组件的职责
@@ -99,24 +107,26 @@
 
 ## 2. 服务器硬件要求
 
-### 2.1 最低配置（开发验证）
+### 2.1 宿主机配置（运行虚拟机的物理服务器）
 
-| 资源 | 最低要求 | 说明 |
-|------|---------|------|
-| CPU | 8核 | K8S + 所有服务至少需要 8 核 |
-| 内存 | 16 GB | Kafka和Java服务内存需求较高 |
-| 磁盘 | 200 GB SSD | 容器镜像、数据库、日志占用空间 |
-| 网络 | 千兆网卡 | DDS通信需要稳定网络 |
+由于所有服务运行在虚拟机内部，宿主机需要预留足够资源给虚拟机使用。
 
-### 2.2 推荐配置（小规模生产）
+| 资源 | 最低要求 | 推荐配置 | 说明 |
+|------|---------|---------|------|
+| CPU | 12核 | 20核+ | 预留2-4核给宿主机系统，其余分配给VM |
+| 内存 | 20 GB | 40 GB+ | 预留2-4G给宿主机，其余分配给VM |
+| 磁盘 | 300 GB SSD | 600 GB NVMe SSD | VM磁盘镜像占用较大 |
+| 网络 | 千兆网卡 | 万兆网卡 | 桥接网络模式，VM直接获取局域网IP |
+| 虚拟化 | 必须支持 | — | CPU需支持VT-x/AMD-V硬件虚拟化 |
 
-| 资源 | 推荐配置 | 说明 |
-|------|---------|------|
-| CPU | 16核+ | 预留充足的仿真和并发处理空间 |
-| 内存 | 32 GB+ | 运行仿真环境 + 全部服务 |
-| 磁盘 | 500 GB NVMe SSD | 高IOPS，适合数据库和Kafka |
-| 网络 | 千兆/万兆网卡 | 支持多架无人机遥测数据流 |
-| GPU | 可选 | 如需运行 Gazebo 渲染仿真 |
+### 2.2 虚拟机分配配置
+
+| 资源 | 最低分配 | 推荐分配 | 说明 |
+|------|---------|---------|------|
+| vCPU | 8核 | 16核 | K8S + 所有服务至少需要 8 核 |
+| 内存 | 16 GB | 32 GB | Kafka和Java服务内存需求较高 |
+| 磁盘 | 200 GB | 400 GB | 容器镜像、数据库、日志 |
+| 网络 | 桥接模式 | 桥接模式 | 与宿主机同网段，外部可直接访问 |
 
 ### 2.3 资源分配预估
 
@@ -134,22 +144,393 @@
 
 ---
 
-## 3. 操作系统初始化
+## 3. 虚拟环境创建（KVM 虚拟机）
 
 ### 3.1 目的
 
-准备一个干净的 Ubuntu 操作系统环境，安装必要的基础工具，配置网络和系统参数，使其满足 K8S 运行的前置要求。
+在物理服务器上创建一个**独立的虚拟机**，将 K8S 和所有 UCS 服务完全运行在虚拟机内部。这样做的好处：
 
-### 3.2 安装 Ubuntu Server
+| 优势 | 说明 |
+|------|------|
+| **隔离性** | UCS 平台与宿主机完全隔离，不影响服务器上的其他服务 |
+| **可迁移** | 虚拟机可以导出为镜像，迁移到其他服务器 |
+| **快照回滚** | 部署出错时可以通过虚拟机快照快速回滚 |
+| **资源管控** | 精确控制 UCS 平台可用的 CPU、内存、磁盘 |
+| **安全性** | 虚拟机故障不会影响宿主机和其他虚拟机 |
+| **可复制** | 可以克隆多个虚拟机做测试或灾备 |
 
-推荐版本：**Ubuntu 22.04 LTS Server**
+### 3.2 虚拟化方案选择
 
-安装时选择：
-- 最小化安装（Minimal Installation）
-- 启用 OpenSSH Server
-- 分区建议：单分区即可，全部空间分配给 `/`
+| 方案 | 适用场景 | 性能 | 推荐度 |
+|------|---------|------|-------|
+| **KVM/QEMU + libvirt** | Linux 服务器（推荐） | 接近物理机（~95%） | ★★★★★ |
+| VirtualBox | Windows/Mac 开发机 | 一般（~80%） | ★★★ |
+| VMware ESXi | 企业级虚拟化 | 优秀 | ★★★★ |
+| Proxmox VE | 需要Web管理界面 | 接近物理机 | ★★★★ |
 
-### 3.3 系统初始化
+本文档使用 **KVM/QEMU + libvirt**，这是 Linux 原生的虚拟化方案，性能最佳。
+
+### 3.3 在宿主机上安装 KVM
+
+以下操作在**物理服务器（宿主机）**上执行：
+
+```bash
+# ============================================================
+# 步骤 1：检查 CPU 是否支持硬件虚拟化
+# 目的：KVM 依赖 CPU 的 VT-x (Intel) 或 AMD-V (AMD) 虚拟化扩展
+#       如果输出为 0，说明 CPU 不支持或 BIOS 中未启用虚拟化
+# ============================================================
+egrep -c '(vmx|svm)' /proc/cpuinfo
+# 输出应大于 0（例如 8 表示 8 个核心都支持虚拟化）
+# 如果输出为 0，需要进入 BIOS 启用 VT-x / AMD-V
+
+# ============================================================
+# 步骤 2：安装 KVM 和管理工具
+# 目的：
+#   qemu-kvm: 核心虚拟化引擎，创建和运行虚拟机
+#   libvirt-daemon-system: 虚拟机管理守护进程
+#   virtinst: 命令行创建虚拟机的工具（virt-install）
+#   virt-manager: 图形化管理界面（可选，如果有桌面环境）
+#   bridge-utils: 网络桥接工具，让虚拟机获取局域网IP
+# ============================================================
+sudo apt update
+sudo apt install -y \
+    qemu-kvm libvirt-daemon-system libvirt-clients \
+    virtinst bridge-utils \
+    cpu-checker cloud-image-utils
+
+# 验证 KVM 是否可用
+kvm-ok
+# 期望输出: INFO: /dev/kvm exists
+#          KVM acceleration can be used
+
+# 将当前用户加入 libvirt 和 kvm 组（免 sudo 管理虚拟机）
+sudo usermod -aG libvirt $(whoami)
+sudo usermod -aG kvm $(whoami)
+# 注意：需要重新登录才生效，或执行 newgrp libvirt
+
+# 启动 libvirtd 服务
+sudo systemctl enable --now libvirtd
+sudo systemctl status libvirtd
+# 输出应包含: Active: active (running)
+```
+
+### 3.4 配置桥接网络
+
+```bash
+# ============================================================
+# 创建桥接网络
+# 目的：让虚拟机拥有与宿主机同网段的独立IP地址
+#       这样外部设备（浏览器、无人机等）可以直接访问虚拟机
+#
+# 网络模式对比：
+#   NAT模式（默认）: VM通过宿主机NAT上网，外部无法直接访问VM
+#   桥接模式（推荐）: VM获得局域网独立IP，外部可直接访问
+# ============================================================
+
+# 查看宿主机当前网卡名称（通常是 eth0、ens33、enp3s0 等）
+ip link show
+# 记下你的物理网卡名，下面以 enp3s0 为例
+
+# 备份当前网络配置
+sudo cp /etc/netplan/*.yaml /etc/netplan/*.yaml.bak 2>/dev/null || true
+
+# 创建桥接网络配置
+# 注意：请将 enp3s0 替换为你实际的网卡名
+#       将 IP 地址替换为你服务器实际的网络配置
+sudo tee /etc/netplan/01-bridge.yaml <<'EOF'
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    enp3s0:          # ← 替换为你的物理网卡名
+      dhcp4: false
+      dhcp6: false
+  bridges:
+    br0:
+      interfaces:
+        - enp3s0     # ← 替换为你的物理网卡名
+      dhcp4: true    # 使用 DHCP 自动获取IP
+      # 如果需要静态IP，改为以下配置：
+      # dhcp4: false
+      # addresses:
+      #   - 192.168.1.100/24
+      # routes:
+      #   - to: default
+      #     via: 192.168.1.1
+      # nameservers:
+      #   addresses: [8.8.8.8, 114.114.114.114]
+EOF
+
+# 应用网络配置
+# 警告：如果你通过SSH连接，此操作可能导致短暂断连
+sudo netplan apply
+
+# 验证桥接网络
+ip addr show br0
+# 应看到 br0 获得了IP地址
+
+brctl show br0
+# 应看到物理网卡已绑定到 br0
+```
+
+**如果不想修改宿主机网络配置**，可以使用 libvirt 默认的 NAT 网络，然后通过端口转发让外部访问虚拟机。详见本节末尾的 [NAT + 端口转发方案](#nat-端口转发备选方案)。
+
+### 3.5 下载 Ubuntu 安装镜像
+
+```bash
+# ============================================================
+# 下载 Ubuntu 22.04 Cloud Image（云镜像）
+# 目的：Cloud Image 是预装好系统的磁盘镜像，无需手动安装操作系统
+#       比 ISO 安装方式快得多（几分钟 vs 半小时）
+# ============================================================
+sudo mkdir -p /var/lib/libvirt/images
+cd /var/lib/libvirt/images
+
+# 下载 Ubuntu 22.04 cloud image
+sudo wget https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
+
+# 创建虚拟机的磁盘（基于 cloud image，扩展到 200GB）
+sudo qemu-img create -f qcow2 -F qcow2 -b jammy-server-cloudimg-amd64.img ucs-vm.qcow2 200G
+```
+
+### 3.6 创建虚拟机
+
+```bash
+# ============================================================
+# 准备 Cloud-Init 配置
+# 目的：Cloud-Init 是云镜像的初始化工具，用于设置：
+#   - 用户名和密码（首次登录用）
+#   - SSH 公钥（免密登录）
+#   - 主机名
+#   - 需要预装的软件包
+# ============================================================
+
+# 创建 cloud-init 配置文件
+cat > /tmp/cloud-init.yaml <<'EOF'
+#cloud-config
+hostname: ucs-vm
+manage_etc_hosts: true
+users:
+  - name: ucs
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    # 设置密码（首次登录后建议修改）
+    passwd: $6$rounds=4096$randomsalt$PLACEHOLDER
+    ssh_authorized_keys:
+      # 如果你有SSH公钥，粘贴到这里（推荐）
+      # - ssh-rsa AAAA... your-key-comment
+chpasswd:
+  list: |
+    ucs:ucs123456
+  expire: false
+package_update: true
+packages:
+  - curl
+  - wget
+  - git
+  - vim
+  - net-tools
+  - htop
+EOF
+
+# 生成 cloud-init ISO（虚拟机启动时会读取此配置）
+cloud-localds /tmp/cloud-init.iso /tmp/cloud-init.yaml
+sudo mv /tmp/cloud-init.iso /var/lib/libvirt/images/ucs-vm-cloudinit.iso
+
+# ============================================================
+# 创建并启动虚拟机
+# 参数说明：
+#   --name: 虚拟机名称
+#   --vcpus: 分配的虚拟CPU核数（根据宿主机配置调整）
+#   --memory: 分配的内存（MB）
+#   --disk: 虚拟机磁盘文件路径
+#   --disk: cloud-init 配置ISO
+#   --network bridge=br0: 使用桥接网络（获取独立IP）
+#   --os-variant: 操作系统类型（用于优化虚拟机配置）
+#   --graphics none: 无图形界面（通过SSH管理）
+#   --console: 串口控制台（用于初始登录）
+#   --noautoconsole: 创建后不自动连接控制台
+# ============================================================
+sudo virt-install \
+    --name ucs-vm \
+    --vcpus 8 \
+    --memory 16384 \
+    --disk path=/var/lib/libvirt/images/ucs-vm.qcow2,format=qcow2 \
+    --disk path=/var/lib/libvirt/images/ucs-vm-cloudinit.iso,device=cdrom \
+    --network bridge=br0,model=virtio \
+    --os-variant ubuntu22.04 \
+    --graphics none \
+    --console pty,target_type=serial \
+    --import \
+    --noautoconsole
+
+# 如果没有配置桥接网络，使用默认 NAT 网络：
+# 将 --network bridge=br0,model=virtio 改为：
+# --network network=default,model=virtio
+```
+
+### 3.7 验证虚拟机并获取IP
+
+```bash
+# ============================================================
+# 验证虚拟机状态
+# ============================================================
+
+# 查看虚拟机列表
+sudo virsh list --all
+# 期望输出:
+#  Id   Name     State
+#  -----------------------
+#  1    ucs-vm   running
+
+# 等待虚拟机启动完成（约1-2分钟）
+sleep 60
+
+# 获取虚拟机 IP 地址
+sudo virsh domifaddr ucs-vm
+# 期望输出示例:
+#  Name       MAC address          Protocol     Address
+#  -------------------------------------------------------
+#  vnet0      52:54:00:xx:xx:xx    ipv4         192.168.1.150/24
+
+# 记录此 IP 地址，后续所有外部访问都使用这个 IP
+
+# SSH 登录到虚拟机
+ssh ucs@<虚拟机IP>
+# 密码: ucs123456（在 cloud-init 中设置的）
+```
+
+### 3.8 虚拟机管理常用命令
+
+```bash
+# ============================================================
+# 虚拟机生命周期管理（在宿主机上执行）
+# ============================================================
+
+# 查看虚拟机状态
+sudo virsh list --all
+
+# 启动虚拟机
+sudo virsh start ucs-vm
+
+# 安全关机
+sudo virsh shutdown ucs-vm
+
+# 强制关机（相当于拔电源，仅在无响应时使用）
+sudo virsh destroy ucs-vm
+
+# 设置虚拟机开机自启（宿主机重启后自动启动VM）
+sudo virsh autostart ucs-vm
+
+# ============================================================
+# 快照管理（部署前建议创建快照，出错可回滚）
+# ============================================================
+
+# 创建快照（在关键步骤前执行）
+sudo virsh snapshot-create-as ucs-vm snap-before-k8s "K8S安装前快照"
+
+# 查看快照列表
+sudo virsh snapshot-list ucs-vm
+
+# 回滚到快照（如果部署出问题）
+sudo virsh snapshot-revert ucs-vm snap-before-k8s
+
+# 删除快照
+sudo virsh snapshot-delete ucs-vm snap-before-k8s
+
+# ============================================================
+# 资源调整（需要先关机）
+# ============================================================
+
+# 增加内存到 32GB
+sudo virsh shutdown ucs-vm
+sudo virsh setmaxmem ucs-vm 32G --config
+sudo virsh setmem ucs-vm 32G --config
+sudo virsh start ucs-vm
+
+# 增加 CPU 到 16 核
+sudo virsh shutdown ucs-vm
+sudo virsh setvcpus ucs-vm 16 --config --maximum
+sudo virsh setvcpus ucs-vm 16 --config
+sudo virsh start ucs-vm
+
+# 扩展磁盘到 400GB（在宿主机上）
+sudo virsh shutdown ucs-vm
+sudo qemu-img resize /var/lib/libvirt/images/ucs-vm.qcow2 400G
+sudo virsh start ucs-vm
+# 启动后在VM内扩展文件系统:
+# sudo growpart /dev/vda 1
+# sudo resize2fs /dev/vda1
+```
+
+### 3.9 NAT + 端口转发（备选方案）{#nat-端口转发备选方案}
+
+如果不想修改宿主机的网络配置（不创建桥接），可以使用 libvirt 默认的 NAT 网络，然后在宿主机上设置端口转发：
+
+```bash
+# ============================================================
+# NAT 模式下的端口转发
+# 目的：将宿主机端口映射到虚拟机端口，外部通过宿主机IP访问
+# 适用场景：不方便修改宿主机网络配置时的备选方案
+# ============================================================
+
+# 假设虚拟机 NAT IP 为 192.168.122.150（通过 virsh domifaddr 获取）
+VM_IP=192.168.122.150
+
+# 转发 HTTP (80)
+sudo iptables -t nat -A PREROUTING -p tcp --dport 80 -j DNAT --to-destination $VM_IP:80
+
+# 转发 HTTPS (443)
+sudo iptables -t nat -A PREROUTING -p tcp --dport 443 -j DNAT --to-destination $VM_IP:443
+
+# 转发后端 API (8080)
+sudo iptables -t nat -A PREROUTING -p tcp --dport 8080 -j DNAT --to-destination $VM_IP:8080
+
+# 转发 DDS Gateway (5050)
+sudo iptables -t nat -A PREROUTING -p tcp --dport 5050 -j DNAT --to-destination $VM_IP:5050
+
+# 转发 Grafana (30300)
+sudo iptables -t nat -A PREROUTING -p tcp --dport 30300 -j DNAT --to-destination $VM_IP:30300
+
+# 允许转发流量
+sudo iptables -A FORWARD -p tcp -d $VM_IP --dport 80 -j ACCEPT
+sudo iptables -A FORWARD -p tcp -d $VM_IP --dport 443 -j ACCEPT
+sudo iptables -A FORWARD -p tcp -d $VM_IP --dport 8080 -j ACCEPT
+sudo iptables -A FORWARD -p tcp -d $VM_IP --dport 5050 -j ACCEPT
+sudo iptables -A FORWARD -p tcp -d $VM_IP --dport 30300 -j ACCEPT
+
+# 持久化 iptables 规则
+sudo apt install -y iptables-persistent
+sudo netfilter-persistent save
+
+# 外部访问: http://<宿主机IP> → 转发到 → VM 的 80 端口
+```
+
+> **推荐使用桥接模式**：桥接网络让虚拟机直接获得局域网 IP，配置更简单，无需手动管理端口转发。NAT + 端口转发仅作为网络环境受限时的备选。
+
+---
+
+## 4. 虚拟机操作系统初始化
+
+### 4.1 目的
+
+**以下所有操作在虚拟机内部执行**（通过 SSH 连接到虚拟机）。
+
+准备虚拟机的操作系统环境，安装必要的基础工具，配置系统参数，使其满足 K8S 运行的前置要求。
+
+### 4.2 连接到虚拟机
+
+```bash
+# 从宿主机 SSH 连接到虚拟机
+ssh ucs@<虚拟机IP>
+# 密码: ucs123456
+
+# 以下所有命令均在虚拟机内执行
+```
+
+### 4.3 系统初始化
 
 ```bash
 # ============================================================
@@ -231,15 +612,15 @@ echo "$(hostname -I | awk '{print $1}') ucs-node" | sudo tee -a /etc/hosts
 
 ---
 
-## 4. 容器运行时安装
+## 5. 容器运行时安装
 
-### 4.1 目的
+### 5.1 目的
 
 容器运行时是 Kubernetes 运行容器的底层引擎。K8S 不直接管理容器，而是通过 CRI (Container Runtime Interface) 调用容器运行时来创建、启动、停止容器。
 
 本文档使用 **containerd**（K8S 官方推荐的轻量级容器运行时），同时安装 Docker CLI 用于构建镜像。
 
-### 4.2 安装 containerd
+### 5.2 安装 containerd
 
 ```bash
 # ============================================================
@@ -287,9 +668,9 @@ docker --version
 
 ---
 
-## 5. Kubernetes 单节点集群安装
+## 6. Kubernetes 单节点集群安装
 
-### 5.1 目的
+### 6.1 目的
 
 在单台服务器上安装 Kubernetes 集群。由于只有一台机器，我们使用 **k3s**（轻量级 K8S 发行版），它具有以下优势：
 
@@ -299,7 +680,7 @@ docker --version
 - **资源占用低**：比 kubeadm 少用约 50% 内存
 - **功能完整**：与标准 K8S API 100% 兼容
 
-### 5.2 安装 k3s
+### 6.2 安装 k3s
 
 ```bash
 # ============================================================
@@ -343,7 +724,7 @@ kubectl get pods -A
 # 所有系统 Pod 应处于 Running 状态
 ```
 
-### 5.3 安装 Helm
+### 6.3 安装 Helm
 
 ```bash
 # ============================================================
@@ -364,7 +745,7 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo update
 ```
 
-### 5.4 安装 kubectl 自动补全（可选但推荐）
+### 6.4 安装 kubectl 自动补全（可选但推荐）
 
 ```bash
 # 目的：提高命令行操作效率
@@ -377,13 +758,13 @@ source ~/.bashrc
 
 ---
 
-## 6. 集群基础组件部署
+## 7. 集群基础组件部署
 
-### 6.1 目的
+### 7.1 目的
 
 创建应用所需的 Namespace（命名空间）和全局配置。Namespace 是 K8S 中的逻辑隔离单位，将不同类别的资源分组管理。
 
-### 6.2 创建 Namespace
+### 7.2 创建 Namespace
 
 ```bash
 # ============================================================
@@ -399,7 +780,7 @@ kubectl create namespace monitoring
 kubectl config set-context --current --namespace=ucs
 ```
 
-### 6.3 创建 Secret（敏感信息）
+### 7.3 创建 Secret（敏感信息）
 
 ```bash
 # ============================================================
@@ -427,16 +808,16 @@ kubectl get secrets -n ucs
 
 ---
 
-## 7. 中间件部署（数据库/缓存/消息队列）
+## 8. 中间件部署（数据库/缓存/消息队列）
 
-### 7.1 目的
+### 8.1 目的
 
 UCS 平台的后端依赖三个中间件服务：
 - **MySQL**：持久化存储用户信息、任务数据、飞行日志等结构化数据
 - **Redis**：高速缓存无人机在线状态、Session、高频遥测数据
 - **Kafka**：消息队列，DDS网关将遥测数据通过 Kafka 异步传输给后端，解耦生产和消费
 
-### 7.2 部署 MySQL
+### 8.2 部署 MySQL
 
 ```bash
 # ============================================================
@@ -471,7 +852,7 @@ MySQL 部署完成后，集群内其他服务通过以下地址访问：
 - 主机名：`mysql.ucs.svc.cluster.local`
 - 端口：`3306`
 
-### 7.3 部署 Redis
+### 8.3 部署 Redis
 
 ```bash
 # ============================================================
@@ -505,7 +886,7 @@ Redis 集群内访问地址：
 - 主机名：`redis-master.ucs.svc.cluster.local`
 - 端口：`6379`
 
-### 7.4 部署 Kafka
+### 8.4 部署 Kafka
 
 ```bash
 # ============================================================
@@ -536,7 +917,7 @@ Kafka 集群内访问地址：
 - 主机名：`kafka.ucs.svc.cluster.local`
 - 端口：`9092`
 
-### 7.5 验证所有中间件
+### 8.5 验证所有中间件
 
 ```bash
 # 查看所有中间件 Pod 状态
@@ -550,9 +931,9 @@ kubectl get pods -n ucs
 
 ---
 
-## 8. DDS 网关部署
+## 9. DDS 网关部署
 
-### 8.1 目的
+### 9.1 目的
 
 DDS Gateway 是 UCS 系统的核心通信桥梁：
 - **上行**：通过 ROS2/DDS 协议订阅 PX4 无人机的遥测数据（位置、姿态、状态等）
@@ -561,7 +942,7 @@ DDS Gateway 是 UCS 系统的核心通信桥梁：
 
 DDS 使用 UDP Multicast 进行服务发现，**必须使用宿主机网络**（hostNetwork: true），否则 K8S 的虚拟网络会阻断 DDS 的 Multicast 通信。
 
-### 8.2 构建 DDS Gateway 镜像
+### 9.2 构建 DDS Gateway 镜像
 
 ```bash
 # ============================================================
@@ -622,7 +1003,7 @@ EOF
 docker build -t ucs/dds-gateway:latest -f dds-gateway/Dockerfile dds-gateway/
 ```
 
-### 8.3 K8S 部署配置
+### 9.3 K8S 部署配置
 
 ```bash
 # ============================================================
@@ -712,9 +1093,9 @@ kubectl apply -f /tmp/dds-gateway.yaml
 
 ---
 
-## 9. 后端服务部署
+## 10. 后端服务部署
 
-### 9.1 目的
+### 10.1 目的
 
 Backend 是 UCS 系统的业务核心，提供：
 - REST API：用户认证、权限管理、无人机CRUD、任务管理
@@ -722,7 +1103,7 @@ Backend 是 UCS 系统的业务核心，提供：
 - 数据库交互：持久化存储业务数据
 - DDS Gateway 调用：向无人机发送控制指令
 
-### 9.2 构建后端镜像
+### 10.2 构建后端镜像
 
 ```bash
 # ============================================================
@@ -758,7 +1139,7 @@ cd /opt/ucs/UCS_Dev
 docker build -t ucs/backend:latest -f backend/Dockerfile backend/
 ```
 
-### 9.3 K8S 部署配置
+### 10.3 K8S 部署配置
 
 ```bash
 # ============================================================
@@ -883,9 +1264,9 @@ kubectl apply -f /tmp/backend.yaml
 
 ---
 
-## 10. 前端服务部署
+## 11. 前端服务部署
 
-### 10.1 目的
+### 11.1 目的
 
 Frontend 是用户直接交互的 Web 界面，提供：
 - 地图面板：实时显示无人机位置、航迹
@@ -895,7 +1276,7 @@ Frontend 是用户直接交互的 Web 界面，提供：
 
 前端编译后是纯静态文件（HTML/CSS/JS），通过 Nginx 提供 HTTP 服务。
 
-### 10.2 构建前端镜像
+### 11.2 构建前端镜像
 
 ```bash
 # ============================================================
@@ -977,7 +1358,7 @@ cd /opt/ucs/UCS_Dev
 docker build -t ucs/frontend:latest -f frontend/ucs-dashboard/Dockerfile frontend/ucs-dashboard/
 ```
 
-### 10.3 K8S 部署配置
+### 11.3 K8S 部署配置
 
 ```bash
 # ============================================================
@@ -1048,9 +1429,9 @@ kubectl apply -f /tmp/frontend.yaml
 
 ---
 
-## 11. Ingress 与外部访问配置
+## 12. Ingress 与外部访问配置
 
-### 11.1 目的
+### 12.1 目的
 
 Ingress 是 K8S 的统一入口网关，作用相当于传统的 Nginx 反向代理：
 - 将外部请求按 URL 路径路由到对应的内部服务
@@ -1059,7 +1440,7 @@ Ingress 是 K8S 的统一入口网关，作用相当于传统的 Nginx 反向代
 
 k3s 默认内置了 Traefik 作为 Ingress Controller。如果安装时未禁用，可以直接使用。
 
-### 11.2 配置 Ingress 规则
+### 12.2 配置 Ingress 规则
 
 ```bash
 # ============================================================
@@ -1122,35 +1503,41 @@ EOF
 kubectl apply -f /tmp/ingress.yaml
 ```
 
-### 11.3 外部访问方式
+### 12.3 外部访问方式
 
 部署完成后，有以下方式从外部访问 UCS 平台：
 
 ```bash
-# 方式1：直接通过服务器 IP 访问（推荐用于测试）
-# 浏览器打开: http://<服务器IP>
+# 方式1：通过虚拟机 IP 访问（桥接网络模式，推荐）
+# 虚拟机在桥接网络下有独立的局域网IP
+# 在宿主机上查看: sudo virsh domifaddr ucs-vm
+# 浏览器打开: http://<虚拟机IP>
 
-# 方式2：配置域名（推荐用于生产）
-# 在 DNS 中将域名 A 记录指向服务器 IP
+# 方式2：通过宿主机 IP 访问（NAT + 端口转发模式）
+# 如果使用NAT网络 + 端口转发，外部通过宿主机IP访问
+# 浏览器打开: http://<宿主机IP>
+
+# 方式3：配置域名（推荐用于生产）
+# 在 DNS 中将域名 A 记录指向虚拟机IP（桥接）或宿主机IP（NAT）
 # 然后通过: http://ucs.yourdomain.com 访问
 
-# 方式3：NodePort 直接暴露（备选方案）
+# 方式4：NodePort 直接暴露（备选方案）
 # 如果 Ingress 配置有问题，可以临时用 NodePort 直接暴露前端
 kubectl patch svc frontend-svc -n ucs -p '{"spec":{"type":"NodePort","ports":[{"port":80,"nodePort":30080}]}}'
-# 通过 http://<服务器IP>:30080 访问
+# 通过 http://<虚拟机IP>:30080 访问
 ```
 
 ---
 
-## 12. PX4/Gazebo 仿真环境（可选）
+## 13. PX4/Gazebo 仿真环境（可选）
 
-### 12.1 目的
+### 13.1 目的
 
-如果需要在同一台服务器上运行 PX4 无人机仿真（用于测试验证），需要在**宿主机**上安装 ROS2 和 PX4。
+如果需要运行 PX4 无人机仿真（用于测试验证），需要在**虚拟机内部（但在 K8S 之外）**安装 ROS2 和 PX4。
 
-> **注意**：PX4 仿真不运行在 K8S 内部，而是直接运行在宿主机上。DDS Gateway Pod（使用 hostNetwork）可以直接通过 DDS 协议与宿主机上的 PX4 仿真通信。
+> **注意**：PX4 仿真不运行在 K8S Pod 内部，而是直接运行在虚拟机的宿主进程中。DDS Gateway Pod（使用 hostNetwork）可以直接通过 DDS 协议与虚拟机内的 PX4 仿真通信。所有操作都在虚拟机内执行。
 
-### 12.2 安装 ROS2 Humble
+### 13.2 安装 ROS2 Humble
 
 ```bash
 # ============================================================
@@ -1173,7 +1560,7 @@ echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 source /opt/ros/humble/setup.bash
 ```
 
-### 12.3 安装 PX4-Autopilot
+### 13.3 安装 PX4-Autopilot
 
 ```bash
 # ============================================================
@@ -1195,7 +1582,7 @@ make px4_sitl
 # Tools/simulation/gazebo-classic/sitl_multiple_run.sh -n 3
 ```
 
-### 12.4 验证 DDS 通信
+### 13.4 验证 DDS 通信
 
 ```bash
 # 在宿主机上启动 PX4 仿真后，检查 DDS Gateway Pod 是否能接收到话题
@@ -1206,16 +1593,16 @@ kubectl exec -it $(kubectl get pod -l app=dds-gateway -o jsonpath='{.items[0].me
 
 ---
 
-## 13. 监控与日志
+## 14. 监控与日志
 
-### 13.1 目的
+### 14.1 目的
 
 监控和日志系统用于：
 - **实时监控**：观察各服务的 CPU、内存、网络使用情况
 - **告警**：当服务异常时自动通知运维人员
 - **日志收集**：集中查看所有服务的日志，快速定位问题
 
-### 13.2 安装 Prometheus + Grafana
+### 14.2 安装 Prometheus + Grafana
 
 ```bash
 # ============================================================
@@ -1239,7 +1626,7 @@ kubectl patch svc monitoring-grafana -n monitoring \
 # 访问: http://<服务器IP>:30300  用户名: admin  密码: admin
 ```
 
-### 13.3 查看日志
+### 14.3 查看日志
 
 ```bash
 # 查看各服务日志
@@ -1257,13 +1644,13 @@ kubectl top nodes
 
 ---
 
-## 14. 一键部署脚本
+## 15. 一键部署脚本
 
-### 14.1 目的
+### 15.1 目的
 
 将上述所有步骤整合为一个自动化脚本，一键完成从环境初始化到服务部署的全流程。
 
-### 14.2 完整部署脚本
+### 15.2 完整部署脚本
 
 ```bash
 #!/bin/bash
@@ -1388,13 +1775,13 @@ echo "=========================================="
 
 ---
 
-## 15. 验证与测试
+## 16. 验证与测试
 
-### 15.1 目的
+### 16.1 目的
 
 确认所有服务正常运行，端到端通信无问题。
 
-### 15.2 检查清单
+### 16.2 检查清单
 
 ```bash
 # ============================================================
@@ -1446,7 +1833,7 @@ kubectl exec -it $(kubectl get pod -l app.kubernetes.io/name=mysql -o jsonpath='
 # 登录后应看到地图面板
 ```
 
-### 15.3 端到端验证流程
+### 16.3 端到端验证流程
 
 ```
 1. 启动 PX4 仿真 (宿主机)
@@ -1464,7 +1851,7 @@ kubectl exec -it $(kubectl get pod -l app.kubernetes.io/name=mysql -o jsonpath='
 
 ---
 
-## 16. 常见问题排查
+## 17. 常见问题排查
 
 ### Q1: Pod 状态为 ImagePullBackOff
 
