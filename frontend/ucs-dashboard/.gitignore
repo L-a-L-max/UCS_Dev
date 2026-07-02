@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# mapvthree static assets (copied from node_modules at build time)
+public/mapvthree

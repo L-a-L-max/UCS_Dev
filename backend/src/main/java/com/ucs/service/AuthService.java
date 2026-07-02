@@ -10,12 +10,17 @@ import com.ucs.repository.RoleRepository;
 import com.ucs.repository.TeamRepository;
 import com.ucs.repository.UserRepository;
 import com.ucs.repository.UserRoleMapRepository;
+import com.ucs.kafka.MemberStatusKafkaProducer;
 import com.ucs.security.JwtUtil;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import com.ucs.util.PartitionNameUtil;
+import java.time.LocalDateTime;
+import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Service
@@ -27,6 +32,10 @@ public class AuthService {
     private final RoleRepository roleRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
+
+    // Optional: Kafka producer for member online status (may be null if Kafka is disabled)
+    @Autowired(required = false)
+    private MemberStatusKafkaProducer memberStatusKafkaProducer;
     
     public AuthService(UserRepository userRepository, 
                        UserRoleMapRepository userRoleMapRepository,
@@ -89,8 +98,41 @@ public class AuthService {
             userRepository.save(user);
         }
         response.setPartitions(List.of(partitionName));
+
+        // Update user online status in database
+        user.setIsOnline(true);
+        user.setLastLoginTime(LocalDateTime.now());
+        userRepository.save(user);
+
+        // Publish member online status to Kafka
+        if (memberStatusKafkaProducer != null) {
+            memberStatusKafkaProducer.publishStatusChange(
+                    user.getId(), user.getUsername(), user.getRealName(), true);
+        }
         
         return response;
+    }
+
+    /**
+     * Publish member offline status to Kafka and update database when user logs out.
+     */
+    public void publishLogout(Long userId, String username, String realName) {
+        // Update user online status in database
+        Optional<User> userOpt = userRepository.findById(userId);
+        userOpt.ifPresent(user -> {
+            user.setIsOnline(false);
+            // Accumulate online time
+            if (user.getLastLoginTime() != null) {
+                long seconds = Duration.between(user.getLastLoginTime(), LocalDateTime.now()).getSeconds();
+                user.setOnlineSeconds((user.getOnlineSeconds() != null ? user.getOnlineSeconds() : 0L) + seconds);
+            }
+            userRepository.save(user);
+        });
+
+        // Publish offline status to Kafka
+        if (memberStatusKafkaProducer != null) {
+            memberStatusKafkaProducer.publishStatusChange(userId, username, realName, false);
+        }
     }
     
     public User register(String username, String password, String realName, String roleName) {

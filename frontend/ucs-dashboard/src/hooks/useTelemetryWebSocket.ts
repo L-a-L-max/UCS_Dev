@@ -94,6 +94,18 @@ export interface DroneStatusMessage {
   reason?: string;
 }
 
+/**
+ * Member online status message from Kafka via WebSocket.
+ * Published when users login/logout.
+ */
+export interface MemberStatusMessage {
+  userId: number;
+  username: string;
+  realName: string;
+  online: boolean;
+  timestamp: string;
+}
+
 interface UseTelemetryWebSocketOptions {
   enabled?: boolean;
   partitions?: string[];
@@ -102,11 +114,12 @@ interface UseTelemetryWebSocketOptions {
   onDroneRemoved?: (removedUavIds: string[]) => void;
   onCommandAck?: (ack: CommandAckMessage) => void;
   onDroneStatusChange?: (status: DroneStatusMessage) => void;
+  onMemberStatusChange?: (status: MemberStatusMessage) => void;
   onConnectionChange?: (connected: boolean) => void;
 }
 
 export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}) {
-  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onDroneRemoved, onCommandAck, onDroneStatusChange, onConnectionChange } = options;
+  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onDroneRemoved, onCommandAck, onDroneStatusChange, onMemberStatusChange, onConnectionChange } = options;
   const clientRef = useRef<Client | null>(null);
   const [connected, setConnected] = useState(false);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -117,6 +130,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   const onDroneRemovedRef = useRef(onDroneRemoved);
   const onCommandAckRef = useRef(onCommandAck);
   const onDroneStatusChangeRef = useRef(onDroneStatusChange);
+  const onMemberStatusChangeRef = useRef(onMemberStatusChange);
   const onConnectionChangeRef = useRef(onConnectionChange);
   const partitionsRef = useRef(partitions);
 
@@ -126,6 +140,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   useEffect(() => { onDroneRemovedRef.current = onDroneRemoved; }, [onDroneRemoved]);
   useEffect(() => { onCommandAckRef.current = onCommandAck; }, [onCommandAck]);
   useEffect(() => { onDroneStatusChangeRef.current = onDroneStatusChange; }, [onDroneStatusChange]);
+  useEffect(() => { onMemberStatusChangeRef.current = onMemberStatusChange; }, [onMemberStatusChange]);
   useEffect(() => { onConnectionChangeRef.current = onConnectionChange; }, [onConnectionChange]);
   useEffect(() => { partitionsRef.current = partitions; }, [partitions]);
 
@@ -221,6 +236,17 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
     }
   }, []);
 
+  // Handle member online status changes (from Kafka consumer via WebSocket)
+  const handleMemberStatus = useCallback((message: IMessage) => {
+    try {
+      const status: MemberStatusMessage = JSON.parse(message.body);
+      console.log('[WS] Member status:', status.username, status.online ? 'ONLINE' : 'OFFLINE');
+      onMemberStatusChangeRef.current?.(status);
+    } catch (error) {
+      console.error('Failed to parse member status message:', error);
+    }
+  }, []);
+
   const connect = useCallback(() => {
     if (clientRef.current?.active) {
       return;
@@ -252,6 +278,10 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
         // Subscribe to drone status topic (online/offline from heartbeat service)
         client.subscribe('/topic/drone-status', handleDroneStatus);
         console.log('[WS] Subscribed to /topic/drone-status');
+        
+        // Subscribe to member online status topic (from Kafka via backend)
+        client.subscribe('/topic/member-status', handleMemberStatus);
+        console.log('[WS] Subscribed to /topic/member-status');
         
         // Subscribe to partition-specific topics if partitions are provided
         if (currentPartitions && currentPartitions.length > 0) {
@@ -286,7 +316,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
 
     clientRef.current = client;
     client.activate();
-  }, [handleMessage, handlePartitionMessage, handleCommandAck, handleDroneStatus]);
+  }, [handleMessage, handlePartitionMessage, handleCommandAck, handleDroneStatus, handleMemberStatus]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {

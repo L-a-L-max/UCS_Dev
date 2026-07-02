@@ -58,6 +58,7 @@ import {
   type RallyPoint,
 } from '@/services/api';
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
+import { HoloDashboard, type LogEntry } from '@/components/cesium';
 import { useTelemetryWebSocket, type PartitionTelemetryMessage, type CommandAckMessage } from '@/hooks/useTelemetryWebSocket';
 
 interface LeaderViewProps {
@@ -137,6 +138,9 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
 
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
+
+  // 全息模式状态
+  const [holoMode, setHoloMode] = useState(false);
 
   // Home position display
   const [homePosition, setHomePosition] = useState<{ lat: number; lon: number; alt: number } | null>(null);
@@ -366,10 +370,17 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     if (commandType === 'TAKEOFF') {
       return JSON.stringify({ altitude: parseFloat(takeoffAlt) || 5 });
     } else if (commandType === 'GOTO') {
+      // When triggered from map click (coordOverrides present), preserve drone's
+      // current altitude instead of using the panel's gotoAlt value.
+      // Only the detail panel's explicit altitude input should change altitude.
+      const isMapClick = !!coordOverrides;
+      const droneCurrentAlt = isMapClick
+        ? (mapDrones.find(d => d.uavId === uavId)?.altitude || 50)
+        : undefined;
       return JSON.stringify({
         lat: coordOverrides?.lat ?? (parseFloat(gotoLat) || 0),
         lon: coordOverrides?.lon ?? (parseFloat(gotoLon) || 0),
-        alt: parseFloat(gotoAlt) || 50,
+        alt: isMapClick ? droneCurrentAlt : (parseFloat(gotoAlt) || 50),
         address: gotoAddress || undefined,
         ...(isBatch ? { formation: true, droneArea: 6.25 } : {}),
       });
@@ -596,6 +607,11 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
           <Button variant="outline" size="sm" onClick={() => setLeftPanelCollapsed(!leftPanelCollapsed)}
             className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-7 text-xs">
             {leftPanelCollapsed ? <PanelLeftOpen className="w-3.5 h-3.5" /> : <PanelLeftClose className="w-3.5 h-3.5" />}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setHoloMode(!holoMode)}
+            className={`h-7 text-xs border-slate-500/50 text-slate-100 hover:bg-slate-600/50 ${holoMode ? 'bg-cyan-700/50 border-cyan-400/50 text-cyan-300' : 'bg-slate-700/50'}`}
+            title={holoMode ? '\u9000\u51fa\u5168\u606f\u6a21\u5f0f' : '\u5168\u606f3D\u6a21\u5f0f'}>
+            🌐 {holoMode ? '\u9000\u51fa\u5168\u606f' : '\u5168\u606f3D'}
           </Button>
           <Button variant="outline" size="sm" onClick={() => { fetchDrones(); fetchTeamInfo(); fetchLogs(); }} disabled={loading}
             className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50 h-7 text-xs">
@@ -865,6 +881,13 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                         </Button>
                       );
                     })}
+                  </div>
+                  {/* Multi-drone takeoff height control */}
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <span className="text-[10px] text-slate-400 whitespace-nowrap flex items-center gap-0.5"><ArrowUp className="w-2.5 h-2.5 text-blue-400" />{'\u8d77\u98de\u9ad8\u5ea6'}</span>
+                    <Input type="number" min="1" max="500" step="1" value={takeoffAlt} onChange={e => setTakeoffAlt(e.target.value)}
+                      className="bg-slate-700 border-slate-600 text-white text-xs h-6 flex-1" placeholder="5" />
+                    <span className="text-[10px] text-slate-400">{'\u7c73'}</span>
                   </div>
                 </div>
                 {/* Multi-select GOTO with coordinates - collapsible */}
@@ -1415,6 +1438,30 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {/* 全息3D模式 */}
+      {holoMode && (
+        <HoloDashboard
+          drones={mapDrones}
+          selectedDroneId={selectedMapDrone}
+          selectedDroneIds={selectedDrones}
+          onDroneClick={setSelectedMapDrone}
+          logs={logs.slice(0, 20).map(log => ({
+            id: String(log.id),
+            time: log.createdAt ? new Date(log.createdAt).toLocaleTimeString('zh-CN', { hour12: false }) : '',
+            message: log.detail || log.operationType || '操作',
+            level: (log.result === 'SUCCESS' ? 'success' : log.result === 'FAIL' ? 'error' : 'info') as LogEntry['level'],
+            result: log.result,
+          }))}
+          members={members.map(m => ({
+            userId: m.userId,
+            username: m.username,
+            realName: m.realName,
+            role: m.role,
+            online: undefined,
+          }))}
+          onClose={() => setHoloMode(false)}
+        />
+      )}
     </div>
   );
 }

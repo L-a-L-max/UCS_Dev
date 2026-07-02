@@ -35,15 +35,15 @@ public class OperationLogService {
                                          String result, String errorMessage, String ipAddress) {
         OperationLog opLog = new OperationLog();
         opLog.setUserId(userId);
-        opLog.setUsername(username);
-        opLog.setOperationType(operationType);
+        opLog.setUsername(truncate(username, 50));
+        opLog.setOperationType(truncate(operationType, 50));
         opLog.setTargetDroneId(targetDroneId);
-        opLog.setTargetUavId(targetUavId);
+        opLog.setTargetUavId(truncate(targetUavId, 500));
         opLog.setTargetUserId(targetUserId);
-        opLog.setDetail(detail);
-        opLog.setResult(result);
-        opLog.setErrorMessage(errorMessage);
-        opLog.setIpAddress(ipAddress);
+        opLog.setDetail(truncate(detail, 2000));
+        opLog.setResult(truncate(result, 20));
+        opLog.setErrorMessage(truncate(errorMessage, 2000));
+        opLog.setIpAddress(truncate(ipAddress, 50));
         
         OperationLog saved = operationLogRepository.save(opLog);
         log.info("Operation logged: user={}, type={}, target={}, result={}",
@@ -144,5 +144,14 @@ public class OperationLogService {
         dto.setErrorMessage(entity.getErrorMessage());
         dto.setCreatedAt(entity.getCreatedAt());
         return dto;
+    }
+
+    /**
+     * Truncate a string to fit the database column length.
+     * Prevents "value too long for type character varying(N)" errors.
+     */
+    private String truncate(String value, int maxLength) {
+        if (value == null) return null;
+        return value.length() <= maxLength ? value : value.substring(0, maxLength);
     }
 }

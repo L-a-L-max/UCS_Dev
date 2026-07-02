@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import './App.css';
-import { useTelemetryWebSocket, TelemetryBatch } from './hooks/useTelemetryWebSocket';
+import { useTelemetryWebSocket, TelemetryBatch, type PartitionTelemetryMessage } from './hooks/useTelemetryWebSocket';
 import PilotView from './pages/PilotView';
 import CommanderView from './pages/CommanderView';
 import LeaderView from './pages/LeaderView';
@@ -388,13 +388,78 @@ function App() {
 
   // WebSocket hook for real-time telemetry (only for OBSERVER role - other roles use their own view-level WS)
   const isObserverRole = !userRoles.some(r => ['COMMANDER', 'LEADER', 'PILOT', 'OPERATOR'].includes(r.toUpperCase()));
+
+  // Handler for partition-based telemetry data (used by Observer to receive drone data)
+  const handlePartitionData = useCallback((data: PartitionTelemetryMessage) => {
+    if (!data.drones || data.drones.length === 0) return;
+    setDrones(prevDrones => {
+      const updatedDrones = [...prevDrones];
+      let hasChanges = false;
+      data.drones.forEach(uav => {
+        const existingIndex = updatedDrones.findIndex(d => d.uavId === uav.uavId);
+        if (existingIndex >= 0) {
+          const existing = updatedDrones[existingIndex];
+          if (existing.lat !== uav.lat || existing.lng !== uav.lon || existing.altitude !== uav.alt) {
+            hasChanges = true;
+            updatedDrones[existingIndex] = {
+              ...existing,
+              lat: uav.lat,
+              lng: uav.lon,
+              altitude: uav.alt,
+              heading: uav.heading,
+              onlineStatus: true,
+              armed: uav.armed ?? uav.isActive ?? false,
+              flightStatus: (uav.armed ?? uav.isActive) ? 'FLYING' : 'IDLE',
+              battery: (uav.batteryPercent != null && uav.batteryPercent >= 0) ? uav.batteryPercent : existing.battery,
+            };
+          }
+        } else {
+          hasChanges = true;
+          updatedDrones.push({
+            uavId: uav.uavId,
+            uavName: uav.uavName || uav.uavId,
+            lat: uav.lat,
+            lng: uav.lon,
+            altitude: uav.alt,
+            heading: uav.heading,
+            groundSpeed: uav.groundSpeed || 0,
+            battery: uav.batteryPercent ?? 100,
+            signalStrength: 100,
+            onlineStatus: true,
+            armed: uav.armed ?? uav.isActive ?? false,
+            hardwareStatus: 'NORMAL',
+            flightStatus: (uav.armed ?? uav.isActive) ? 'FLYING' : 'IDLE',
+            taskStatus: (uav.armed ?? uav.isActive) ? 'EXECUTING' : 'IDLE',
+            color: '#22c55e',
+            model: 'DJI Mavic 3',
+            owner: 'System',
+            teamName: 'Alpha',
+          });
+        }
+      });
+      if (hasChanges) {
+        updatedDrones.sort((a, b) => a.uavId.localeCompare(b.uavId));
+        return updatedDrones;
+      }
+      return prevDrones;
+    });
+  }, []);
+
+  // Handler for drone removal notifications
+  const handleDroneRemoved = useCallback((removedUavIds: string[]) => {
+    setDrones(prev => prev.filter(d => !removedUavIds.includes(d.uavId)));
+  }, []);
+
   const { connected: _telemetryConnected } = useTelemetryWebSocket({
     enabled: isLoggedIn && useLiveTelemetry && isObserverRole,
+    partitions: userPartitions,  // Subscribe to partition-specific topics for Observer
     onTelemetryReceived: (batch) => {
       handleTelemetryReceived(batch);
       // Record successful connection for resilience tracking
       wsResilience.recordSuccess();
     },
+    onPartitionDataReceived: handlePartitionData,
+    onDroneRemoved: handleDroneRemoved,
     onConnectionChange: (connected) => {
       setWsConnected(connected);
       if (connected) {

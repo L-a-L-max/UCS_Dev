@@ -52,7 +52,8 @@ import {
   type RallyPoint,
 } from '@/services/api';
 import MapPanel, { type MapDrone, type MapRallyPoint } from '@/components/MapPanel';
-import { useTelemetryWebSocket, type PartitionTelemetryMessage } from '@/hooks/useTelemetryWebSocket';
+import { HoloDashboard, type LogEntry } from '@/components/cesium';
+import { useTelemetryWebSocket, type PartitionTelemetryMessage, type MemberStatusMessage } from '@/hooks/useTelemetryWebSocket';
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import * as echarts from 'echarts/core';
 import { PieChart as EPieChart, BarChart as EBarChart } from 'echarts/charts';
@@ -115,8 +116,21 @@ export default function CommanderView({ token, username, partitions = [], onLogo
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
 
+  // 全息模式状态
+  const [holoMode, setHoloMode] = useState(false);
+
   // 地图选中的无人机
   const [selectedMapDrone, setSelectedMapDrone] = useState<string | null>(null);
+
+  // 多选无人机状态 (Phase 6)
+  const [selectedDroneIdsSet, setSelectedDroneIdsSet] = useState<Set<string>>(new Set());
+  const toggleDroneMultiSelect = useCallback((uavId: string) => {
+    setSelectedDroneIdsSet(prev => {
+      const next = new Set(prev);
+      if (next.has(uavId)) next.delete(uavId); else next.add(uavId);
+      return next;
+    });
+  }, []);
 
   // ==================== Telemetry Buffer (no-flicker) ====================
   // Use useRef buffer + version counter instead of useState<Map> to avoid
@@ -173,12 +187,34 @@ export default function CommanderView({ token, username, partitions = [], onLogo
     });
   }, []);
 
+  // Handle member online status changes from Kafka via WebSocket
+  const handleMemberStatusChange = useCallback((status: MemberStatusMessage) => {
+    setRegisteredUsers(prev => {
+      const idx = prev.findIndex(u => u.userId === status.userId);
+      if (idx >= 0) {
+        // Update existing user's online status
+        const updated = [...prev];
+        updated[idx] = { ...updated[idx], online: status.online } as typeof updated[number] & { online?: boolean };
+        return updated;
+      }
+      // New user not in list - add them
+      return [...prev, {
+        userId: status.userId,
+        username: status.username,
+        realName: status.realName,
+        role: '',
+        online: status.online,
+      } as typeof prev[number] & { online?: boolean }];
+    });
+  }, []);
+
   // Subscribe to partition-specific WebSocket topics for real-time telemetry
   useTelemetryWebSocket({
     enabled: partitions.length > 0,
     partitions,
     onPartitionDataReceived: handlePartitionData,
     onDroneRemoved: handleDroneRemoved,
+    onMemberStatusChange: handleMemberStatusChange,
   });
 
   // 快捷转接弹窗状态
@@ -522,7 +558,7 @@ export default function CommanderView({ token, username, partitions = [], onLogo
     const disarmed = mapDrones.filter(d => d.onlineStatus === true && d.armed !== true).length;
     const offline = mapDrones.filter(d => !d.onlineStatus).length;
     return [
-      { name: '飞行中', value: armed, color: '#22c55e' },
+      { name: '飞行中', value: armed, color: '#00ff7f' },
       { name: '在线未解锁', value: disarmed, color: '#3b82f6' },
       { name: '离线', value: offline, color: '#64748b' },
     ].filter(d => d.value > 0);
@@ -532,6 +568,27 @@ export default function CommanderView({ token, username, partitions = [], onLogo
   const eventLogsForMap = logs.slice(0, 20).map(log => ({
     id: log.id, time: formatTime(log.createdAt),
     detail: log.detail || log.operationType, result: log.result,
+  }));
+
+  // 日志格式化为全息面板使用
+  const holoLogs: LogEntry[] = logs.slice(0, 20).map(log => ({
+    id: String(log.id),
+    time: formatTime(log.createdAt),
+    message: log.detail || log.operationType || '操作',
+    detail: log.detail || log.operationType || '操作',
+    level: log.result === 'SUCCESS' ? 'success' as const : log.result === 'FAIL' ? 'error' as const : 'info' as const,
+    result: log.result,
+    operatorName: log.username,
+    operationType: log.operationType,
+  }));
+
+  // 成员数据用于全息面板 (merge online status from WebSocket events)
+  const holoMembers = registeredUsers.map(u => ({
+    userId: String(u.userId),
+    username: u.username,
+    realName: u.realName,
+    role: u.role,
+    online: (u as Record<string, unknown>).online as boolean | undefined,
   }));
 
   return (
@@ -553,6 +610,11 @@ export default function CommanderView({ token, username, partitions = [], onLogo
             className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50"
             title={rightPanelCollapsed ? '展开右侧面板' : '收起右侧面板'}>
             {rightPanelCollapsed ? <PanelRightOpen className="w-4 h-4" /> : <PanelRightClose className="w-4 h-4" />}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setHoloMode(!holoMode)}
+            className={`border-slate-500/50 text-slate-100 hover:bg-slate-600/50 ${holoMode ? 'bg-cyan-700/50 border-cyan-400/50 text-cyan-300' : 'bg-slate-700/50'}`}
+            title={holoMode ? '退出全息模式' : '全息3D模式'}>
+            🌐 {holoMode ? '退出全息' : '全息3D'}
           </Button>
           <Button variant="outline" size="sm" onClick={() => { fetchFleet(); fetchLogs(logPage, logFilter); fetchTeams(); }}
             disabled={loading} className="bg-slate-700/50 border-slate-500/50 text-slate-100 hover:bg-slate-600/50">
@@ -1200,6 +1262,79 @@ export default function CommanderView({ token, username, partitions = [], onLogo
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {/* 全息3D模式 */}
+      {holoMode && (
+        <HoloDashboard
+          drones={mapDrones}
+          selectedDroneId={selectedMapDrone}
+          selectedDroneIds={selectedDroneIdsSet}
+          onDroneClick={setSelectedMapDrone}
+          onDroneToggleSelect={toggleDroneMultiSelect}
+          logs={holoLogs}
+          members={holoMembers}
+          teams={teams}
+          teamMembers={teamMembers}
+          rallyPoints={mapRallyPoints}
+          registeredUsers={registeredUsers}
+          logPage={logPage}
+          logTotalPages={logTotalPages}
+          logFilter={logFilter}
+          logLoading={logLoading}
+          onCommand={(cmd, uavIds, params) => {
+            if (uavIds && uavIds.length > 0) {
+              import('@/services/api').then(api => {
+                if (uavIds.length === 1) {
+                  api.sendControlCommand(token, { uavId: uavIds[0], command: cmd, params: params || '' });
+                } else {
+                  api.sendBatchControlCommand(token, { uavIds, command: cmd, params: params || '' });
+                }
+                fetchLogs(logPage, logFilter);
+              });
+            }
+          }}
+          onTransferPermission={(uavIds, toUserId, toTeamId, mode) => {
+            if (mode === 'team' && toTeamId) {
+              transferPermissionToTeam(token, uavIds, toTeamId).then(res => {
+                if (res.code === 0) { fetchFleet(); fetchTeams(); fetchLogs(0, logFilter); }
+              });
+            } else if (mode === 'user' && toUserId) {
+              transferPermission(token, { uavIds, toUserId, reason: '全息模式转接' }).then(res => {
+                if (res.code === 0) { fetchFleet(); fetchTeams(); fetchLogs(0, logFilter); }
+              });
+            }
+          }}
+          onFetchLogs={(page, filter) => {
+            setLogFilter(filter);
+            fetchLogs(page, filter);
+          }}
+          onTeamExpand={(teamId) => {
+            if (!teamMembers[teamId]) fetchMembers(teamId);
+          }}
+          onTeamFilter={(teamId) => {
+            fetchMembers(teamId);
+          }}
+          onRallyPointCreate={(data) => {
+            if (data) {
+              import('@/services/api').then(api => {
+                api.createRallyPoint(token, data as Parameters<typeof api.createRallyPoint>[1]).then(res => {
+                  if (res.code === 0) fetchRallyPoints();
+                });
+              });
+            }
+          }}
+          onRallyPointEdit={(rp, data) => {
+            if (rp && data) {
+              import('@/services/api').then(api => {
+                api.updateRallyPoint(token, rp.id, data as Parameters<typeof api.updateRallyPoint>[2]).then(res => {
+                  if (res.code === 0) fetchRallyPoints();
+                });
+              });
+            }
+          }}
+          onRallyPointDelete={handleRpDelete}
+          onClose={() => setHoloMode(false)}
+        />
+      )}
     </div>
   );
 }
