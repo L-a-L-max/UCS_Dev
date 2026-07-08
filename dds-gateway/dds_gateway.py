@@ -39,6 +39,8 @@ from typing import Dict, List, Optional, Set
 import redis
 import requests
 
+from shard_coordinator import ShardCoordinator, maybe_create_from_env
+
 # rclpy QoS imports - needed for PX4-compatible subscription profiles
 try:
     from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -136,9 +138,14 @@ class DDSGateway:
         self.api_key = api_key
         self.poll_interval = poll_interval
 
-        # Multi-instance partitioning
+        # Legacy static partitioning values — still honoured when
+        # DDS_DYNAMIC_SHARDING=false (see shard_coordinator.maybe_create_from_env).
         self.instance_id = instance_id
         self.total_instances = total_instances
+        # Populated after Redis init if dynamic sharding is enabled. When non-None,
+        # _owns_drone() delegates to it and instance_id/total_instances become
+        # advisory (only used as a fallback node-name suffix for ROS2).
+        self._shard: Optional[ShardCoordinator] = None
 
         self.drone_states: Dict[str, DroneState] = {}
         self.running = False
@@ -178,6 +185,20 @@ class DDSGateway:
         except Exception as e:
             logger.warning("[Redis] Connection failed (%s), epoch will use memory-only (NOT persistent)", e)
             self._redis = None
+
+        # Dynamic sharding (opt-in via DDS_DYNAMIC_SHARDING; auto-on if no legacy
+        # --total-instances / DDS_TOTAL_INSTANCES flag was supplied).
+        self._shard = maybe_create_from_env(
+            redis_client=self._redis,
+            gateway_type="routing",
+            legacy_total_instances=self.total_instances,
+        )
+        # Stable per-process identifier used for ROS2 node / Kafka consumer group
+        # naming. Using a short UUID in dynamic mode avoids collisions when two
+        # instances happen to momentarily pick the same rank during a rebalance.
+        self._instance_tag: str = (
+            self._shard.instance_uuid[:8] if self._shard is not None else str(self.instance_id)
+        )
 
         # Kafka producer (optional, for dual-write mode)
         self._kafka_producer = None
@@ -228,10 +249,15 @@ class DDSGateway:
             if not rclpy.ok():
                 rclpy.init()
                 logger.info("[ROS2] rclpy initialized")
-            node_name = f'ucs_dds_gateway_{self.instance_id}'
+            node_name = f'ucs_dds_gateway_{self._instance_tag}'
             self._node = rclpy.create_node(node_name)
-            logger.info("[ROS2] Node '%s' created (instance %d/%d)",
-                        node_name, self.instance_id, self.total_instances)
+            if self._shard is not None:
+                layout = self._shard.layout()
+                logger.info("[ROS2] Node '%s' created (dynamic shard rank=%d/%d)",
+                            node_name, layout.rank, layout.total)
+            else:
+                logger.info("[ROS2] Node '%s' created (static instance %d/%d)",
+                            node_name, self.instance_id, self.total_instances)
             return True
         except Exception as e:
             logger.error("[ROS2] Failed to create node: %s", e)
@@ -240,12 +266,19 @@ class DDSGateway:
     def _owns_drone(self, uav_id: str) -> bool:
         """Check if this instance owns a drone (for multi-instance partitioning).
 
+        When dynamic sharding is enabled, delegates to ShardCoordinator which
+        reads the live peer set from Redis every heartbeat_interval seconds.
+        Otherwise falls back to the legacy ``hash(uav_id) % total_instances``
+        math using the values passed at startup.
+
         Partitioning strategy: hash the uav_id string and assign to instance
         via modulo: hash(uav_id) % total_instances == instance_id.
         This works with any naming convention, not just px4_N.
 
         In single-instance mode (total_instances=1), all drones are owned.
         """
+        if self._shard is not None:
+            return self._shard.owns_drone(uav_id)
         if self.total_instances <= 1:
             return True
         h = int(hashlib.md5(uav_id.encode('utf-8')).hexdigest(), 16)
@@ -735,7 +768,7 @@ class DDSGateway:
             consumer = _KafkaConsumer(
                 'commands.down',
                 bootstrap_servers=self._kafka_bootstrap,
-                group_id=f'dds-gateway-command-consumer-{self.instance_id}',
+                group_id=f'dds-gateway-command-consumer-{self._instance_tag}',
                 value_deserializer=lambda v: json.loads(v.decode('utf-8')),
                 auto_offset_reset='latest',
                 enable_auto_commit=True,
@@ -1223,9 +1256,19 @@ class DDSGateway:
         forwarding without blocking on DDS message processing.
         """
         self.running = True
+        # Register with Redis and start the heartbeat/peer-scan thread before
+        # any discovery runs so the very first _owns_drone() check already
+        # sees an accurate (rank, total).
+        if self._shard is not None:
+            self._shard.start()
         logger.info("=" * 60)
-        logger.info("[Startup] DDS Routing Gateway (Instance %d/%d)",
-                    self.instance_id, self.total_instances)
+        if self._shard is not None:
+            layout = self._shard.layout()
+            logger.info("[Startup] DDS Routing Gateway (dynamic shard rank=%d/%d uuid=%s)",
+                        layout.rank, layout.total, self._shard.instance_uuid[:8])
+        else:
+            logger.info("[Startup] DDS Routing Gateway (static instance %d/%d)",
+                        self.instance_id, self.total_instances)
         logger.info("[Startup] Backend: %s", self.backend_url)
         logger.info("[Startup] Interval: %.1fs", self.poll_interval)
         logger.info(
@@ -1399,6 +1442,11 @@ class DDSGateway:
     def stop(self):
         """Stop the gateway gracefully."""
         self.running = False
+        if self._shard is not None:
+            try:
+                self._shard.close()
+            except Exception as e:
+                logger.warning("[Shutdown] ShardCoordinator.close failed: %s", e)
 
     # ============================================================
     # Command Publishing (Backend -> DDS)

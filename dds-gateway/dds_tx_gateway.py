@@ -47,6 +47,8 @@ from typing import Dict, Optional
 import redis
 import requests
 
+from shard_coordinator import ShardCoordinator, maybe_create_from_env
+
 try:
     from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 except ImportError:
@@ -112,8 +114,10 @@ class DdsTxGateway:
                  instance_id: int = 0, total_instances: int = 1):
         self.backend_url = backend_url.rstrip('/')
         self.api_key = api_key
+        # Legacy static partitioning — only used when DDS_DYNAMIC_SHARDING=false.
         self.instance_id = instance_id
         self.total_instances = total_instances
+        self._shard: Optional[ShardCoordinator] = None
 
         self.drone_states: Dict[str, DroneState] = {}
         self.running = False
@@ -162,6 +166,16 @@ class DdsTxGateway:
         except Exception as e:
             logger.warning("[Redis] Connection failed: %s", e)
             self._redis = None
+
+        # Dynamic sharding coordinator (see shard_coordinator.py).
+        self._shard = maybe_create_from_env(
+            redis_client=self._redis,
+            gateway_type="tx",
+            legacy_total_instances=self.total_instances,
+        )
+        self._instance_tag: str = (
+            self._shard.instance_uuid[:8] if self._shard is not None else str(self.instance_id)
+        )
 
         # Kafka — T-10: 命令ACK生产者 acks=all + 幂等
         self._kafka_producer = None
@@ -224,7 +238,7 @@ class DdsTxGateway:
             consumer = _KafkaConsumer(
                 'commands.down',
                 bootstrap_servers=self._kafka_bootstrap,
-                group_id=f'dds-tx-gateway-{self.instance_id}',
+                group_id=f'dds-tx-gateway-{self._instance_tag}',
                 value_deserializer=lambda v: json.loads(v.decode('utf-8')),
                 auto_offset_reset='latest',
                 max_poll_records=1,       # Process one command at a time
@@ -358,6 +372,9 @@ class DdsTxGateway:
     # ============================================================
 
     def _owns_drone(self, uav_id: str) -> bool:
+        # Dynamic mode (Redis-backed) takes precedence when enabled.
+        if self._shard is not None:
+            return self._shard.owns_drone(uav_id)
         if self.total_instances <= 1:
             return True
         h = int(hashlib.md5(uav_id.encode('utf-8')).hexdigest(), 16)
@@ -384,7 +401,7 @@ class DdsTxGateway:
             import rclpy
             if not rclpy.ok():
                 rclpy.init()
-            self._node = rclpy.create_node(f'dds_tx_gateway_{self.instance_id}')
+            self._node = rclpy.create_node(f'dds_tx_gateway_{self._instance_tag}')
             logger.info("[ROS2] Node created: %s", self._node.get_name())
             return True
         except Exception as e:
@@ -958,8 +975,16 @@ class DdsTxGateway:
 
     def run(self):
         self.running = True
+        if self._shard is not None:
+            self._shard.start()
         logger.info("=" * 60)
-        logger.info("[Startup] DDS Tx Gateway (Instance %d/%d)", self.instance_id, self.total_instances)
+        if self._shard is not None:
+            layout = self._shard.layout()
+            logger.info("[Startup] DDS Tx Gateway (dynamic shard rank=%d/%d uuid=%s)",
+                        layout.rank, layout.total, self._shard.instance_uuid[:8])
+        else:
+            logger.info("[Startup] DDS Tx Gateway (static instance %d/%d)",
+                        self.instance_id, self.total_instances)
         logger.info("[Startup] Kafka: %s", self._kafka_bootstrap)
         logger.info("[Startup] Urgent commands: %s (retry=3)", URGENT_COMMANDS)
         logger.info("=" * 60)
@@ -1015,6 +1040,11 @@ class DdsTxGateway:
 
     def stop(self):
         self.running = False
+        if self._shard is not None:
+            try:
+                self._shard.close()
+            except Exception as e:
+                logger.warning("[Shutdown] ShardCoordinator.close failed: %s", e)
 
 
 def main():
