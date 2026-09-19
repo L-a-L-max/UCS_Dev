@@ -26,6 +26,8 @@ import {
 import { DroneLayer, type DroneFeature } from './map/DroneLayer';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { lazy, Suspense } from 'react';
+import { useMissionPlanningStore } from '@/stores/missionPlanningStore';
+import { MAX_INSERT_SUB_POINTS, MAX_WAYPOINTS, formatLabel } from '@/types/task';
 
 // Lazy load AMap 3D panel to avoid loading Three.js + AMap SDK when not needed
 const AMap3DPanel = lazy(() => import('./map/AMap3DPanel'));
@@ -101,6 +103,11 @@ export interface MapDrone {
   controlOwnerName?: string;
   /** Heading in degrees (0-360) for drone icon rotation */
   heading?: number;
+  /** 正在执行的航点任务名称（REST 轮询获取，遥测帧里没有） */
+  currentTaskName?: string | null;
+  /** 当前航点序号（0 基），-1 表示还没开始 */
+  currentTaskSeq?: number | null;
+  currentTaskTotal?: number | null;
 }
 
 /** Rally point data for map display */
@@ -268,6 +275,23 @@ export default function MapPanel({
   useEffect(() => { onFollowExitRef.current = onFollowExit; }, [onFollowExit]);
   const homeMarkerRef = useRef<maplibregl.Marker | null>(null);
   const mapClickPopupRef = useRef<maplibregl.Popup | null>(null);
+
+  // ---- 航点预规划 ----
+  // 规划模式下地图点击不再弹飞控按钮，而是加点 / 选中 / 删除 / 插入。
+  // 地图点击监听只注册一次，所以在监听里用 store.getState() 直接读最新状态，
+  // 不必再为每个字段挂一个 ref。
+  const planningWaypoints = useMissionPlanningStore((s) => s.waypoints);
+  const planningInsertMode = useMissionPlanningStore((s) => s.insertMode);
+  const isPlanningMode = useMissionPlanningStore((s) => s.isPlanningMode);
+  const planningSelectedLabel = useMissionPlanningStore((s) => s.selectedLabel);
+  // 航点编号要显示在图标上，而当前底图 style 没有配 glyphs，
+  // symbol 图层的文字渲染不出来，所以航点沿用 HTML Marker（与集结点一致），
+  // 只有航线用 GeoJSON line 图层画。
+  const waypointMarkersRef = useRef<Map<number, maplibregl.Marker>>(new Map());
+  const planningPopupRef = useRef<maplibregl.Popup | null>(null);
+  // 切换瓦片源 / 2D-3D 来回切会重建 MapLibre 实例，旧 marker 和图层随之失效，
+  // 这个计数器一变就让航点重新画一遍。
+  const [mapVersion, setMapVersion] = useState(0);
   const [tileSource, setTileSource] = useState<TileSourceKey>('gaode');
   const [showTileSelector, setShowTileSelector] = useState(false);
   const [droneListCollapsed, setDroneListCollapsed] = useState(false);
@@ -323,6 +347,111 @@ export default function MapPanel({
     }
   };
 
+  // ==================== 航点预规划：地图交互 ====================
+
+  const closePlanningPopup = useCallback(() => {
+    if (planningPopupRef.current) {
+      planningPopupRef.current.remove();
+      planningPopupRef.current = null;
+    }
+  }, []);
+
+  /** 提示类小弹窗：数量到上限、插入点用完等 */
+  const showPlanningNotice = useCallback((lat: number, lon: number, text: string) => {
+    if (!map.current) return;
+    closePlanningPopup();
+    const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '240px' })
+      .setLngLat([lon, lat])
+      .setHTML(
+        `<div style="background:#7f1d1d;padding:8px 10px;border-radius:6px;color:#fee2e2;font-size:11px;">${text}</div>`
+      )
+      .addTo(map.current);
+    planningPopupRef.current = popup;
+  }, [closePlanningPopup]);
+
+  /**
+   * 航点操作弹窗。
+   * 需求：设置航点时点击地图只出现「选中 / 删除」，点击已存在的航点还要出现「插入」。
+   * 「选中」= 确认该点并继续添加；「删除」= 去掉该点（其余点编号不变）。
+   */
+  const showPlanningPopup = useCallback((label: number) => {
+    if (!map.current) return;
+    const store = useMissionPlanningStore.getState();
+    const wp = store.waypoints.find((w) => Math.abs(w.displayLabel - label) < 1e-6);
+    if (!wp || wp.latitude == null || wp.longitude == null) return;
+
+    // 插入只对整数编号开放（4.1 与 4.2 之间不再细分），且插入态下不允许再嵌套插入
+    const allowInsert = Number.isInteger(label) && !store.insertMode.active;
+
+    closePlanningPopup();
+    const container = document.createElement('div');
+    container.innerHTML = `
+      <div style="background:#1e293b;padding:10px;border-radius:8px;color:white;font-size:11px;min-width:170px;">
+        <div style="background:#0f172a;border:1px solid #334155;border-radius:4px;padding:5px 8px;text-align:center;margin-bottom:8px;font-family:monospace;">
+          <div style="font-weight:bold;font-size:12px;color:#38bdf8;margin-bottom:2px;">航点 ${formatLabel(label)}</div>
+          <div style="color:#94a3b8;">${wp.latitude.toFixed(6)}, ${wp.longitude.toFixed(6)}</div>
+          <div style="color:#94a3b8;">${(wp.altitude ?? 0).toFixed(1)} m</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(${allowInsert ? 3 : 2},1fr);gap:4px;">
+          <button data-act="select" style="background:#0891b2;border:none;color:white;padding:5px 0;border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">选中</button>
+          <button data-act="delete" style="background:#dc2626;border:none;color:white;padding:5px 0;border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">删除</button>
+          ${allowInsert ? '<button data-act="insert" style="background:#6366f1;border:none;color:white;padding:5px 0;border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">插入</button>' : ''}
+        </div>
+      </div>
+    `;
+    container.querySelectorAll('button[data-act]').forEach((btn) => {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const act = (ev.currentTarget as HTMLElement).getAttribute('data-act');
+        const actions = useMissionPlanningStore.getState();
+        if (act === 'select') {
+          // 选中后继续添加下一个点
+          actions.setSelectedLabel(label);
+        } else if (act === 'delete') {
+          actions.deleteWaypoint(label);
+        } else if (act === 'insert') {
+          actions.beginInsert(label);
+        }
+        closePlanningPopup();
+      });
+      (btn as HTMLElement).addEventListener('mouseenter', () => {
+        (btn as HTMLElement).style.opacity = '0.8';
+      });
+      (btn as HTMLElement).addEventListener('mouseleave', () => {
+        (btn as HTMLElement).style.opacity = '1';
+      });
+    });
+
+    const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false, maxWidth: '220px' })
+      .setLngLat([wp.longitude, wp.latitude])
+      .setDOMContent(container)
+      .addTo(map.current);
+    planningPopupRef.current = popup;
+  }, [closePlanningPopup]);
+
+  /** 规划模式下点击地图空白处：落一个新航点并弹出「选中 / 删除」 */
+  const handlePlanningMapClick = useCallback((lat: number, lon: number) => {
+    const store = useMissionPlanningStore.getState();
+    if (store.waypoints.length >= MAX_WAYPOINTS) {
+      showPlanningNotice(lat, lon, `航点数量已达上限 ${MAX_WAYPOINTS} 个`);
+      return;
+    }
+    if (store.insertMode.active && store.insertMode.subIndex > MAX_INSERT_SUB_POINTS) {
+      showPlanningNotice(
+        lat,
+        lon,
+        `两点之间最多只能插入 ${MAX_INSERT_SUB_POINTS} 个航点`
+      );
+      return;
+    }
+    const label = store.addWaypoint(lat, lon);
+    if (label == null) {
+      showPlanningNotice(lat, lon, '无法添加航点');
+      return;
+    }
+    showPlanningPopup(label);
+  }, [showPlanningNotice, showPlanningPopup]);
+
   // 初始化地图（与 Observer 视图 initMap 逻辑完全一致）
   const initMap = async (selectedTileSource: TileSourceKey = tileSource) => {
     if (!mapContainer.current) return;
@@ -332,6 +461,9 @@ export default function MapPanel({
       map.current.remove();
       map.current = null;
     }
+    // 航点 marker 绑在旧地图实例上，实例销毁后这些引用没用了
+    waypointMarkersRef.current.clear();
+    planningPopupRef.current = null;
 
     // Get tile configuration
     const tileConfig = TILE_SOURCES[selectedTileSource];
@@ -401,6 +533,16 @@ export default function MapPanel({
 
     // Map click handler for QGC-style click menu (Issue 4)
     map.current.on('click', (e) => {
+      // 规划模式优先：这时不能弹出控制无人机飞行的按钮
+      if (useMissionPlanningStore.getState().isPlanningMode) {
+        if (mapClickPopupRef.current) {
+          mapClickPopupRef.current.remove();
+          mapClickPopupRef.current = null;
+        }
+        const { lat: wlat, lng: wlng } = e.lngLat;
+        handlePlanningMapClick(wlat, wlng);
+        return;
+      }
       if (!hasDroneSelectedRef.current) return;
       // Dismiss existing map click popup
       if (mapClickPopupRef.current) {
@@ -462,6 +604,9 @@ export default function MapPanel({
         map.current?.resize();
       });
     });
+
+    // 通知规划相关的 effect：地图实例换了，需要重画航点和航线
+    setMapVersion((v) => v + 1);
   };
 
   // 切换地图源
@@ -916,6 +1061,145 @@ export default function MapPanel({
     `;
   }
 
+  // ==================== 航点预规划：地图渲染 ====================
+
+  /** 航点图标：圆形 + 编号。插入出来的子点（4.1）用紫色区分 */
+  function createWaypointMarkerHTML(label: number, isSubPoint: boolean, selected: boolean): string {
+    const bg = selected ? '#f59e0b' : isSubPoint ? '#8b5cf6' : '#2563eb';
+    const size = isSubPoint ? 22 : 26;
+    const fontSize = isSubPoint ? 9 : 11;
+    return `
+      <div style="display:flex;flex-direction:column;align-items:center;cursor:pointer;">
+        <div style="width:${size}px;height:${size}px;background:${bg};border:2px solid white;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.45);">
+          <span style="font-size:${fontSize}px;font-weight:bold;color:white;font-family:monospace;">${formatLabel(label)}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  // 航点标记：只在 2D MapLibre 地图上渲染（本期规划模式限定 2D）
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    const markers = waypointMarkersRef.current;
+
+    if (!isPlanningMode) {
+      markers.forEach((mk) => mk.remove());
+      markers.clear();
+      closePlanningPopup();
+      return;
+    }
+
+    const visible = useMissionPlanningStore
+      .getState()
+      .getVisibleWaypoints()
+      .filter((w) => w.latitude != null && w.longitude != null);
+    const alive = new Set(visible.map((w) => w.displayLabel));
+
+    // 删掉已经不该显示的点（被删除的，或插入态下临时隐藏的）
+    markers.forEach((mk, label) => {
+      if (!alive.has(label)) {
+        mk.remove();
+        markers.delete(label);
+      }
+    });
+
+    visible.forEach((w) => {
+      const lat = w.latitude as number;
+      const lon = w.longitude as number;
+      const isSub = !Number.isInteger(w.displayLabel);
+      const selected =
+        planningSelectedLabel !== null &&
+        Math.abs(planningSelectedLabel - w.displayLabel) < 1e-6;
+      const html = createWaypointMarkerHTML(w.displayLabel, isSub, selected);
+      const existing = markers.get(w.displayLabel);
+      if (existing) {
+        existing.setLngLat([lon, lat]);
+        const el = existing.getElement();
+        if (el) el.innerHTML = html;
+        return;
+      }
+      const el = document.createElement('div');
+      el.className = 'waypoint-marker';
+      el.innerHTML = html;
+      const label = w.displayLabel;
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        // 点击已存在的航点：弹出「选中 / 删除 / 插入」
+        showPlanningPopup(label);
+      });
+      const marker = new maplibregl.Marker({ element: el }).setLngLat([lon, lat]).addTo(m);
+      markers.set(label, marker);
+    });
+  }, [
+    isPlanningMode,
+    planningWaypoints,
+    planningInsertMode,
+    planningSelectedLabel,
+    mapVersion,
+    closePlanningPopup,
+    showPlanningPopup,
+  ]);
+
+  // 航线：虚线连接当前可见的航点，顺序就是编号升序
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    const SRC_ID = 'planning-route-src';
+    const LAYER_ID = 'planning-route-line';
+
+    const coords: number[][] = isPlanningMode
+      ? useMissionPlanningStore
+          .getState()
+          .getVisibleWaypoints()
+          .filter((w) => w.itemType === 'NAV' && w.latitude != null && w.longitude != null)
+          .map((w) => [w.longitude as number, w.latitude as number])
+      : [];
+
+    const data = {
+      type: 'FeatureCollection' as const,
+      features:
+        coords.length >= 2
+          ? [
+              {
+                type: 'Feature' as const,
+                properties: {},
+                geometry: { type: 'LineString' as const, coordinates: coords },
+              },
+            ]
+          : [],
+    };
+
+    const apply = () => {
+      if (!map.current) return;
+      const existing = map.current.getSource(SRC_ID) as maplibregl.GeoJSONSource | undefined;
+      if (existing) {
+        existing.setData(data);
+        return;
+      }
+      map.current.addSource(SRC_ID, { type: 'geojson', data });
+      map.current.addLayer({
+        id: LAYER_ID,
+        type: 'line',
+        source: SRC_ID,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#38bdf8',
+          'line-width': 2,
+          'line-dasharray': [2, 1.5],
+          'line-opacity': 0.9,
+        },
+      });
+    };
+
+    if (!m.isStyleLoaded()) {
+      // 底图还没加载完（或刚切换过瓦片源），等 load 之后再补上
+      m.once('load', apply);
+      return () => { m.off('load', apply); };
+    }
+    apply();
+  }, [isPlanningMode, planningWaypoints, planningInsertMode, mapVersion]);
+
   // ResizeObserver 确保地图容器尺寸变化时自动resize
   useEffect(() => {
     if (!mapContainer.current) return;
@@ -1034,6 +1318,28 @@ export default function MapPanel({
               <div className="font-semibold">{mapError}</div>
               {mapErrorDetails && <div className="text-red-300 mt-0.5">{mapErrorDetails}</div>}
             </div>
+          </div>
+        )}
+
+        {/* 航点规划模式提示条 */}
+        {isPlanningMode && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-blue-900/90 backdrop-blur-sm rounded-lg px-3 py-1.5 text-white text-xs shadow-lg border border-blue-600 whitespace-nowrap">
+            {is3DMode || isCesiumMode || isBaiduMode ? (
+              <span className="text-amber-300">航点规划仅支持二维地图，请切回二维地图后再点选航点</span>
+            ) : planningInsertMode.active ? (
+              <span>
+                插入模式：在航点 {formatLabel(planningInsertMode.afterLabel)}
+                {planningInsertMode.beforeLabel !== null
+                  ? ` 与 ${formatLabel(planningInsertMode.beforeLabel)}`
+                  : ''}{' '}
+                之间点选，编号 {formatLabel(planningInsertMode.afterLabel)}.
+                {Math.min(planningInsertMode.subIndex, MAX_INSERT_SUB_POINTS)} 起，最多 {MAX_INSERT_SUB_POINTS} 个
+              </span>
+            ) : (
+              <span>
+                航点规划中：点击地图添加航点（{planningWaypoints.length}/{MAX_WAYPOINTS}），点击已有航点可选中 / 删除 / 插入
+              </span>
+            )}
           </div>
         )}
 

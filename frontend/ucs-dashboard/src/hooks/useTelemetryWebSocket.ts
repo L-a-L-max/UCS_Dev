@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Client, IMessage } from '@stomp/stompjs';
+import type { TaskAlertMessage, TaskProgressMessage } from '@/types/task';
 
 const getApiBase = () => {
   if (import.meta.env.VITE_API_URL) {
@@ -115,11 +116,15 @@ interface UseTelemetryWebSocketOptions {
   onCommandAck?: (ack: CommandAckMessage) => void;
   onDroneStatusChange?: (status: DroneStatusMessage) => void;
   onMemberStatusChange?: (status: MemberStatusMessage) => void;
+  /** 航点任务进度推送（到点、完成、失败等） */
+  onTaskProgress?: (progress: TaskProgressMessage) => void;
+  /** 航点任务告警推送（超时、无人机掉线等） */
+  onTaskAlert?: (alert: TaskAlertMessage) => void;
   onConnectionChange?: (connected: boolean) => void;
 }
 
 export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}) {
-  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onDroneRemoved, onCommandAck, onDroneStatusChange, onMemberStatusChange, onConnectionChange } = options;
+  const { enabled = true, partitions, onTelemetryReceived, onPartitionDataReceived, onDroneRemoved, onCommandAck, onDroneStatusChange, onMemberStatusChange, onTaskProgress, onTaskAlert, onConnectionChange } = options;
   const clientRef = useRef<Client | null>(null);
   const [connected, setConnected] = useState(false);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -131,6 +136,8 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   const onCommandAckRef = useRef(onCommandAck);
   const onDroneStatusChangeRef = useRef(onDroneStatusChange);
   const onMemberStatusChangeRef = useRef(onMemberStatusChange);
+  const onTaskProgressRef = useRef(onTaskProgress);
+  const onTaskAlertRef = useRef(onTaskAlert);
   const onConnectionChangeRef = useRef(onConnectionChange);
   const partitionsRef = useRef(partitions);
 
@@ -141,6 +148,8 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
   useEffect(() => { onCommandAckRef.current = onCommandAck; }, [onCommandAck]);
   useEffect(() => { onDroneStatusChangeRef.current = onDroneStatusChange; }, [onDroneStatusChange]);
   useEffect(() => { onMemberStatusChangeRef.current = onMemberStatusChange; }, [onMemberStatusChange]);
+  useEffect(() => { onTaskProgressRef.current = onTaskProgress; }, [onTaskProgress]);
+  useEffect(() => { onTaskAlertRef.current = onTaskAlert; }, [onTaskAlert]);
   useEffect(() => { onConnectionChangeRef.current = onConnectionChange; }, [onConnectionChange]);
   useEffect(() => { partitionsRef.current = partitions; }, [partitions]);
 
@@ -247,6 +256,27 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
     }
   }, []);
 
+  // Handle waypoint mission progress (from dds-gateway via Kafka mission.progress)
+  const handleTaskProgress = useCallback((message: IMessage) => {
+    try {
+      const progress: TaskProgressMessage = JSON.parse(message.body);
+      onTaskProgressRef.current?.(progress);
+    } catch (error) {
+      console.error('Failed to parse task progress message:', error);
+    }
+  }, []);
+
+  // Handle waypoint mission alerts (single-waypoint timeout, drone lost, ...)
+  const handleTaskAlert = useCallback((message: IMessage) => {
+    try {
+      const alert: TaskAlertMessage = JSON.parse(message.body);
+      console.warn('[WS] Task alert:', alert.event, alert.uavId, alert.reason);
+      onTaskAlertRef.current?.(alert);
+    } catch (error) {
+      console.error('Failed to parse task alert message:', error);
+    }
+  }, []);
+
   const connect = useCallback(() => {
     if (clientRef.current?.active) {
       return;
@@ -283,6 +313,13 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
         client.subscribe('/topic/member-status', handleMemberStatus);
         console.log('[WS] Subscribed to /topic/member-status');
         
+        // Subscribe to waypoint mission progress / alert topics
+        client.subscribe('/topic/task-progress', handleTaskProgress);
+        console.log('[WS] Subscribed to /topic/task-progress');
+
+        client.subscribe('/topic/task-alert', handleTaskAlert);
+        console.log('[WS] Subscribed to /topic/task-alert');
+
         // Subscribe to partition-specific topics if partitions are provided
         if (currentPartitions && currentPartitions.length > 0) {
           console.log('[WS] Subscribing to partition topics:', currentPartitions);
@@ -316,7 +353,7 @@ export function useTelemetryWebSocket(options: UseTelemetryWebSocketOptions = {}
 
     clientRef.current = client;
     client.activate();
-  }, [handleMessage, handlePartitionMessage, handleCommandAck, handleDroneStatus, handleMemberStatus]);
+  }, [handleMessage, handlePartitionMessage, handleCommandAck, handleDroneStatus, handleMemberStatus, handleTaskProgress, handleTaskAlert]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {

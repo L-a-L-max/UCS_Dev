@@ -124,6 +124,22 @@ def _latlon_to_ned(lat: float, lon: float, alt: float,
     return north, east, down
 
 
+# 手动飞行指令：收到这些指令时先中止该机正在执行的航点任务，
+# 保证操作人员的人工干预永远优先于自动航线。
+_MISSION_OVERRIDE_COMMANDS = {
+    'TAKEOFF', 'LAND', 'RTL', 'HOLD', 'GOTO', 'ORBIT', 'DISARM',
+}
+
+# 航点动作项支持的动作指令 -> MAVLink 指令号
+_ACTION_MAV_COMMANDS = {
+    'CAMERA_CAPTURE': 203,   # DO_DIGICAM_CONTROL
+    'GIMBAL_CONTROL': 205,   # DO_MOUNT_CONTROL
+    'SET_ROI': 195,          # DO_SET_ROI_LOCATION
+    'CLEAR_ROI': 197,        # DO_SET_ROI_NONE
+    'SET_YAW': 115,          # CONDITION_YAW
+}
+
+
 class DDSGateway:
     """
     DDS Routing Gateway using rclpy (ROS2).
@@ -155,6 +171,13 @@ class DDSGateway:
         self._last_stats_time = time.time()
         # Thread pool for parallel command dispatch (batch multi-drone commands)
         self._command_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix='cmd-dispatch')
+
+        # ---- 航点任务执行状态 ----
+        # uav_id -> mission dict。心跳循环里判定到点，到点后在这个线程池里
+        # 推进到下一个航点，绝不在心跳线程内做推进，避免阻塞 4Hz 心跳。
+        self._missions: Dict[str, dict] = {}
+        self._mission_lock = threading.Lock()
+        self._mission_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='mission-adv')
 
         # Epoch map: uav_id -> epoch (generation ID)
         # Stored in Redis for persistence across gateway restarts.
@@ -1597,6 +1620,20 @@ class DDSGateway:
         command_type = command_type.upper()
         logger.info("[Command] Handling %s for %s params=%s", command_type, uav_id, params)
 
+        # 人工接管优先：一旦操作人员手动干预飞行，先把这架机的航点任务撤掉，
+        # 免得心跳循环继续推进航点、把无人机拉回航线。
+        if command_type in _MISSION_OVERRIDE_COMMANDS:
+            self._interrupt_mission(uav_id, f'manual {command_type}')
+
+        if command_type == 'START_MISSION':
+            return self.start_mission(uav_id, params)
+
+        if command_type == 'UPDATE_MISSION':
+            return self.update_mission(uav_id, params)
+
+        if command_type == 'ABORT_MISSION':
+            return self.abort_mission(uav_id, params)
+
         if command_type == 'TAKEOFF':
             # TAKEOFF: ARM + OFFBOARD mode auto-takeoff (replaces old ARM button)
             #
@@ -1967,13 +2004,21 @@ class DDSGateway:
                         hb_lock = self._drone_locks[uav_id]
                         with hb_lock:
                             state = self.drone_states.get(uav_id)
+
+                        # 航点任务：到点判定 + 单点超时保护（只比较，不阻塞）
+                        in_mission = uav_id in self._missions
+                        if in_mission:
+                            self._check_mission_arrival(uav_id, state, x, y, z)
+
                         if state:
                             dx = state.ned_x - x
                             dy = state.ned_y - y
                             dz = state.ned_z - z if not math.isnan(z) else 0
                             dist_h = math.sqrt(dx ** 2 + dy ** 2)
                             dist_3d = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
-                            if dist_3d < 1.5:  # Within 1.5m of target
+                            # 手动单点 GOTO 到点后锁定悬停的行为保持不变；
+                            # 执行航点任务时不锁定，否则无法飞往下一个航点。
+                            if dist_3d < 1.5 and not in_mission:  # Within 1.5m of target
                                 if not _arrival_logged:
                                     logger.info(
                                         "[Heartbeat] %s arrived at target (dist=%.2fm), "
@@ -2002,12 +2047,461 @@ class DDSGateway:
 
     def stop_offboard_heartbeat(self, uav_id: str):
         """Stop the offboard heartbeat for a drone."""
+        # 心跳一停，航点任务就没法继续推进了，顺手清掉避免留下孤儿任务
+        self._interrupt_mission(uav_id, 'offboard heartbeat stopped')
         if hasattr(self, '_heartbeat_active'):
             self._heartbeat_active[uav_id] = False
         if hasattr(self, '_heartbeat_setpoints') and uav_id in self._heartbeat_setpoints:
             del self._heartbeat_setpoints[uav_id]
         # Also stop orbit heartbeat if running
         self.stop_orbit_heartbeat(uav_id)
+
+    # ==================================================================
+    # 航点任务执行器
+    #
+    # 设计要点：
+    #   1. 不新起线程。航点任务复用已有的 OFFBOARD 心跳线程——飞往下一个
+    #      航点只是把心跳的 setpoint 字典改一下，一架机始终只有一个心跳线程。
+    #   2. 到点判定放在心跳循环里。那里本来就在算与目标点的距离，判定零延迟，
+    #      切换航点时不会出现「到点了还在等后端下一条指令」的空档。
+    #   3. 判定到点后不在心跳线程里推进，而是丢给 _mission_executor，
+    #      保证 4Hz 心跳永不被阻塞（心跳中断 > 0.5s PX4 会退出 OFFBOARD）。
+    #   4. 单点超时保护的时长由操作人员在任务里配置，随 START_MISSION 下发。
+    # ==================================================================
+
+    MISSION_CONFIRM_FRAMES = 3   # 连续 3 帧在阈值内才算到点，抗 GPS 抖动
+    MISSION_POS_MAX_AGE = 2.0    # 位置数据超过 2s 未更新则不参与到点判定
+
+    def start_mission(self, uav_id: str, params: dict) -> dict:
+        """开始执行航点任务（START_MISSION）。
+
+        params 结构见后端 MissionExecutionService 的注释。
+        """
+        task_id = params.get('taskId')
+        mission_id = params.get('missionId')
+        raw_items = params.get('waypoints') or []
+        if task_id is None:
+            return {'success': False, 'message': 'START_MISSION requires taskId'}
+        if not raw_items:
+            return {'success': False, 'message': 'START_MISSION requires waypoints'}
+
+        # NAV 航点要转成相对 home 的 NED，没有 home 就用当前位置补一个
+        home = self._get_home_position(uav_id)
+        if not home:
+            self._save_home_position(uav_id)
+            home = self._get_home_position(uav_id)
+        if not home:
+            return {'success': False,
+                    'message': f'No home position for {uav_id}, cannot start mission'}
+
+        try:
+            items = self._build_mission_items(raw_items, home)
+        except (TypeError, ValueError) as e:
+            return {'success': False, 'message': f'Invalid waypoint payload: {e}'}
+
+        timeout_sec = self._mission_timeout(params.get('waypointTimeoutSec'), 300.0)
+        mission = {
+            'task_id': task_id,
+            'task_name': params.get('taskName'),
+            'mission_id': mission_id,
+            'items': items,
+            'idx': -1,
+            'arrival_radius': max(0.5, float(params.get('arrivalRadius') or 3.0)),
+            'arrival_alt_tol': max(0.5, float(params.get('arrivalAltTol') or 2.0)),
+            'timeout_sec': timeout_sec,
+            'on_finish': str(params.get('onFinish') or 'HOLD').upper(),
+            'started_at': time.time(),
+            'confirm': 0,
+            'hold_until': None,
+            'advancing': False,
+        }
+
+        with self._mission_lock:
+            self._missions[uav_id] = mission
+
+        logger.info("[Mission] START task=%s mission=%s items=%d timeout=%.0fs "
+                    "radius=%.1fm altTol=%.1fm onFinish=%s for %s",
+                    task_id, mission_id, len(items), timeout_sec,
+                    mission['arrival_radius'], mission['arrival_alt_tol'],
+                    mission['on_finish'], uav_id)
+
+        # 确保处于 OFFBOARD，否则 setpoint 不生效
+        self.publish_vehicle_command(uav_id, command=176, param1=1.0, param2=6.0)
+        self._advance_mission(uav_id)
+        return {'success': True,
+                'message': f'Mission {mission_id} started on {uav_id} '
+                           f'({len(items)} items)'}
+
+    def update_mission(self, uav_id: str, params: dict) -> dict:
+        """执行中改航（UPDATE_MISSION）。
+
+        后端发的是改动后的完整航点列表（seq 已重排为 0..n-1）外加 fromSeq：
+          fromSeq = -1        连当前正在飞的这一段也立刻改向
+          fromSeq <= 当前序号  改向到 fromSeq
+          fromSeq >  当前序号  当前这一段照飞，只换后面的航点
+        """
+        # 先把换算做完再抢 _mission_lock，避免在持锁期间访问全局状态锁
+        home = self._get_home_position(uav_id)
+        if not home:
+            return {'success': False, 'message': f'No home position for {uav_id}'}
+        try:
+            items = self._build_mission_items(params.get('waypoints') or [], home)
+        except (TypeError, ValueError) as e:
+            return {'success': False, 'message': f'Invalid waypoint payload: {e}'}
+        if not items:
+            return {'success': False, 'message': 'UPDATE_MISSION requires waypoints'}
+
+        with self._mission_lock:
+            mission = self._missions.get(uav_id)
+            if not mission:
+                return {'success': False,
+                        'message': f'No active mission on {uav_id}'}
+
+            from_seq = params.get('fromSeq')
+            from_seq = -1 if from_seq is None else int(from_seq)
+            current_idx = mission['idx']
+
+            mission['items'] = items
+            if params.get('waypointTimeoutSec') is not None:
+                mission['timeout_sec'] = self._mission_timeout(
+                    params.get('waypointTimeoutSec'), mission['timeout_sec'])
+
+            if from_seq < 0 or from_seq <= current_idx:
+                # 立即改向：把游标退到目标位置的前一格，交给 _advance_mission 起飞往新点
+                rewind_to = current_idx if from_seq < 0 else from_seq
+                mission['idx'] = max(rewind_to, 0) - 1
+                revector = True
+            else:
+                revector = False
+
+        logger.info("[Mission] UPDATE task=%s fromSeq=%s items=%d revector=%s for %s",
+                    mission['task_id'], from_seq, len(items), revector, uav_id)
+
+        if revector:
+            self._advance_mission(uav_id)
+        return {'success': True,
+                'message': f'Mission updated on {uav_id} ({len(items)} items)'}
+
+    def abort_mission(self, uav_id: str, params: dict) -> dict:
+        """中止任务（ABORT_MISSION）：停止推进航点，无人机原地悬停。"""
+        mission = self._interrupt_mission(uav_id, 'aborted by operator')
+        if not mission:
+            return {'success': False, 'message': f'No active mission on {uav_id}'}
+
+        on_abort = str((params or {}).get('onAbort') or 'HOLD').upper()
+        if on_abort == 'RTL':
+            self.stop_offboard_heartbeat(uav_id)
+            self.publish_vehicle_command(uav_id, command=20)
+        elif on_abort == 'LAND':
+            self.stop_offboard_heartbeat(uav_id)
+            self.publish_vehicle_command(uav_id, command=21)
+        else:
+            # HOLD：保留心跳，锁定在当前位置悬停
+            self._lock_hover_here(uav_id)
+        return {'success': True, 'message': f'Mission aborted on {uav_id} ({on_abort})'}
+
+    # ------------------------------------------------------------------
+
+    def _build_mission_items(self, raw_items, home) -> list:
+        """把后端下发的航点列表转成执行期结构，NAV 项预先换算成 NED。
+
+        预先换算的原因：心跳循环 4Hz 跑，不该在里面做三角函数换算。
+        """
+        home_lat, home_lon, home_alt = home
+        items = []
+        for raw in raw_items:
+            item_type = str(raw.get('type') or 'NAV').upper()
+            item = {
+                'seq': int(raw.get('seq', len(items))),
+                'label': raw.get('label'),
+                'type': item_type,
+            }
+            if item_type == 'NAV':
+                lat = float(raw['lat'])
+                lon = float(raw['lon'])
+                alt = float(raw['alt'])
+                north, east, _ = _latlon_to_ned(
+                    lat, lon, home_alt + alt, home_lat, home_lon, home_alt)
+                item.update({
+                    'lat': lat, 'lon': lon, 'alt': alt,
+                    'n': north, 'e': east, 'z': -alt,  # NED: 负值向上
+                    'hold_time': float(raw.get('holdTime') or 0),
+                })
+            else:
+                item['action'] = str(raw.get('action') or '').upper()
+                item['action_params'] = raw.get('actionParams') or {}
+            items.append(item)
+        return items
+
+    @staticmethod
+    def _mission_timeout(raw, fallback: float) -> float:
+        """单点超时保护时长（秒），操作人员可配置，取值范围与后端一致。"""
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return float(fallback)
+        return min(max(value, 10.0), 7200.0)
+
+    def _advance_mission(self, uav_id: str):
+        """推进到下一个航点/动作。
+
+        NAV  项：更新心跳 setpoint 后立即返回，剩下的交给到点判定。
+        ACTION 项：当场执行，然后继续往下走（动作不需要等到点）。
+        走完最后一项：上报完成并按 onFinish 收尾。
+        """
+        while True:
+            with self._mission_lock:
+                mission = self._missions.get(uav_id)
+                if not mission:
+                    return
+                mission['idx'] += 1
+                idx = mission['idx']
+                items = mission['items']
+                total = len(items)
+                mission['confirm'] = 0
+                mission['hold_until'] = None
+                mission['advancing'] = False
+                if idx >= total:
+                    on_finish = mission['on_finish']
+                    task_id = mission['task_id']
+                    mission_id = mission['mission_id']
+                    self._missions.pop(uav_id, None)
+                    finished = True
+                else:
+                    item = items[idx]
+                    mission['started_at'] = time.time()
+                    timeout_sec = mission['timeout_sec']
+                    task_id = mission['task_id']
+                    mission_id = mission['mission_id']
+                    finished = False
+
+            if finished:
+                logger.info("[Mission] COMPLETED task=%s for %s, onFinish=%s",
+                            task_id, uav_id, on_finish)
+                self._report_mission_progress(
+                    'MISSION_COMPLETED', uav_id, task_id, mission_id,
+                    seq=total - 1, total=total)
+                self._finish_mission(uav_id, on_finish)
+                return
+
+            if item['type'] == 'NAV':
+                self._fly_to_mission_item(uav_id, item)
+                logger.info("[Mission] WAYPOINT %d/%d (label=%s) task=%s -> %s "
+                            "NED[%.1f,%.1f,%.1f] timeout=%.0fs",
+                            idx + 1, total, item.get('label'), task_id, uav_id,
+                            item['n'], item['e'], item['z'], timeout_sec)
+                self._report_mission_progress(
+                    'WAYPOINT_STARTED', uav_id, task_id, mission_id,
+                    seq=idx, total=total, label=item.get('label'))
+                return
+
+            # ACTION：执行完继续推进下一项
+            ok = self._execute_mission_action(uav_id, item)
+            self._report_mission_progress(
+                'ACTION_EXECUTED', uav_id, task_id, mission_id,
+                seq=idx, total=total, label=item.get('label'),
+                reason=None if ok else f"action {item.get('action')} failed")
+
+    def _fly_to_mission_item(self, uav_id: str, item: dict):
+        """把心跳 setpoint 换到这个航点——这就是「飞往下一个航点」的全部动作。"""
+        with self._drone_locks[uav_id]:
+            state = self.drone_states.get(uav_id)
+        cur_n = state.ned_x if state else 0.0
+        cur_e = state.ned_y if state else 0.0
+        delta_n = item['n'] - cur_n
+        delta_e = item['e'] - cur_e
+        if math.sqrt(delta_n ** 2 + delta_e ** 2) > 0.5:
+            target_yaw = math.atan2(delta_e, delta_n)
+        else:
+            target_yaw = float('nan')  # 太近了，保持当前航向
+
+        self.start_offboard_heartbeat(
+            uav_id, target_z=item['z'],
+            target_x=item['n'], target_y=item['e'],
+            target_yaw=target_yaw)
+
+    def _execute_mission_action(self, uav_id: str, item: dict) -> bool:
+        """执行动作项（拍照、云台、ROI、转向、延时）。"""
+        action = item.get('action') or ''
+        p = item.get('action_params') or {}
+        if not isinstance(p, dict):
+            p = {}
+
+        if action in ('DELAY', 'WAIT'):
+            seconds = min(max(float(p.get('seconds', 1)), 0.0), 120.0)
+            logger.info("[Mission] ACTION DELAY %.1fs for %s", seconds, uav_id)
+            time.sleep(seconds)
+            return True
+
+        command = _ACTION_MAV_COMMANDS.get(action)
+        if command is None:
+            logger.warning("[Mission] Unknown action '%s' for %s, skipped", action, uav_id)
+            return False
+
+        logger.info("[Mission] ACTION %s (cmd=%d) for %s params=%s",
+                    action, command, uav_id, p)
+        if action == 'SET_YAW':
+            return self.publish_vehicle_command(
+                uav_id, command=command,
+                param1=float(p.get('yaw', 0)), param2=float(p.get('speed', 30)),
+                param3=0.0, param4=float(p.get('relative', 0)))
+        if action == 'SET_ROI':
+            return self.publish_vehicle_command(
+                uav_id, command=command,
+                param5=float(p.get('lat', 0)), param6=float(p.get('lon', 0)),
+                param7=float(p.get('alt', 0)))
+        if action == 'GIMBAL_CONTROL':
+            return self.publish_vehicle_command(
+                uav_id, command=command,
+                param1=float(p.get('pitch', 0)), param2=float(p.get('roll', 0)),
+                param3=float(p.get('yaw', 0)))
+        if action == 'CAMERA_CAPTURE':
+            return self.publish_vehicle_command(
+                uav_id, command=command,
+                param1=0.0, param2=0.0, param3=0.0,
+                param4=float(p.get('count', 1)), param5=1.0)
+        return self.publish_vehicle_command(uav_id, command=command)
+
+    def _check_mission_arrival(self, uav_id: str, state, target_x: float,
+                               target_y: float, target_z: float):
+        """心跳循环里的到点判定 + 单点超时保护。
+
+        只读状态、只做比较，判定成立才把推进动作丢给线程池——
+        心跳线程本身不做任何阻塞操作。
+        """
+        with self._mission_lock:
+            mission = self._missions.get(uav_id)
+            if not mission or mission['advancing']:
+                return
+            idx = mission['idx']
+            items = mission['items']
+            if idx < 0 or idx >= len(items) or items[idx]['type'] != 'NAV':
+                return
+
+            now = time.time()
+            # 位置数据太旧就不判定，也不算超时——避免用陈旧坐标误判到点
+            if state is None or now - state.last_update > self.MISSION_POS_MAX_AGE:
+                return
+
+            elapsed = now - mission['started_at']
+            if elapsed > mission['timeout_sec']:
+                task_id = mission['task_id']
+                mission_id = mission['mission_id']
+                total = len(items)
+                timeout_sec = mission['timeout_sec']
+                self._missions.pop(uav_id, None)
+                timed_out = True
+            else:
+                timed_out = False
+                dx = state.ned_x - target_x
+                dy = state.ned_y - target_y
+                dist_h = math.sqrt(dx ** 2 + dy ** 2)
+                dist_v = abs(state.ned_z - target_z) if not math.isnan(target_z) else 0.0
+
+                if dist_h > mission['arrival_radius'] or dist_v > mission['arrival_alt_tol']:
+                    mission['confirm'] = 0
+                    return
+
+                mission['confirm'] += 1
+                if mission['confirm'] < self.MISSION_CONFIRM_FRAMES:
+                    return
+
+                # 到点了，先满足悬停时长再推进
+                hold_time = items[idx].get('hold_time') or 0
+                if hold_time > 0:
+                    if mission['hold_until'] is None:
+                        mission['hold_until'] = now + hold_time
+                        logger.info("[Mission] Waypoint %d reached on %s, holding %.1fs",
+                                    idx, uav_id, hold_time)
+                        return
+                    if now < mission['hold_until']:
+                        return
+
+                mission['advancing'] = True
+                task_id = mission['task_id']
+                dist_log = dist_h
+
+        if timed_out:
+            reason = (f'waypoint {idx} timeout after {timeout_sec:.0f}s '
+                      f'(operator-configured)')
+            logger.error("[Mission] TIMEOUT task=%s seq=%d on %s after %.0fs, "
+                         "mission aborted, holding position",
+                         task_id, idx, uav_id, timeout_sec)
+            self._report_mission_progress(
+                'MISSION_FAILED', uav_id, task_id, mission_id,
+                seq=idx, total=total, reason=reason)
+            self._lock_hover_here(uav_id)
+            return
+
+        logger.info("[Mission] Waypoint %d reached on %s (dist=%.2fm), advancing",
+                    idx, uav_id, dist_log)
+        # 推进放到线程池里做，心跳线程立即返回继续发心跳
+        self._mission_executor.submit(self._advance_mission, uav_id)
+
+    def _finish_mission(self, uav_id: str, on_finish: str):
+        """任务收尾：HOLD 原地悬停 / RTL 返航 / LAND 降落。"""
+        if on_finish == 'RTL':
+            self.stop_offboard_heartbeat(uav_id)
+            self.publish_vehicle_command(uav_id, command=20)
+        elif on_finish == 'LAND':
+            self.stop_offboard_heartbeat(uav_id)
+            self.publish_vehicle_command(uav_id, command=21)
+        else:
+            self._lock_hover_here(uav_id)
+
+    def _lock_hover_here(self, uav_id: str):
+        """把心跳 setpoint 钉在当前位置，保持稳定悬停。"""
+        with self._drone_locks[uav_id]:
+            state = self.drone_states.get(uav_id)
+        if not state:
+            return
+        self.start_offboard_heartbeat(
+            uav_id,
+            target_x=state.ned_x, target_y=state.ned_y,
+            target_z=state.ned_z if state.ned_z != 0.0 else -5.0,
+            target_yaw=float('nan'))
+
+    def _interrupt_mission(self, uav_id: str, reason: str):
+        """撤掉该机的航点任务并上报中断，返回被撤掉的 mission（没有则 None）。"""
+        with self._mission_lock:
+            mission = self._missions.pop(uav_id, None)
+        if not mission:
+            return None
+        logger.info("[Mission] INTERRUPTED task=%s on %s: %s",
+                    mission['task_id'], uav_id, reason)
+        self._report_mission_progress(
+            'MISSION_INTERRUPTED', uav_id, mission['task_id'], mission['mission_id'],
+            seq=mission['idx'], total=len(mission['items']), reason=reason)
+        return mission
+
+    def _report_mission_progress(self, event: str, uav_id: str, task_id, mission_id,
+                                 seq: int = -1, total: int = 0,
+                                 label=None, reason: str = None):
+        """向 mission.progress 上报进度，key=uavId 保证单机进度事件有序。"""
+        if not self._kafka_enabled or not self._kafka_producer:
+            logger.debug("[Mission] Kafka disabled, progress %s not reported", event)
+            return
+        try:
+            from datetime import datetime, timezone
+            payload = {
+                'event': event,
+                'uavId': uav_id,
+                'taskId': task_id,
+                'missionId': mission_id,
+                'seq': seq,
+                'total': total,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+            if label is not None:
+                payload['label'] = float(label)
+            if reason:
+                payload['reason'] = reason
+            self._kafka_producer.send('mission.progress', key=uav_id, value=payload)
+            # 终结事件必须送达，否则后端任务会一直停在「执行中」
+            if event != 'WAYPOINT_STARTED':
+                self._kafka_producer.flush(timeout=2)
+        except Exception as e:
+            logger.error("[Mission] Failed to report %s for %s: %s", event, uav_id, e)
 
     def start_orbit_heartbeat(self, uav_id: str, center_n: float, center_e: float,
                                 alt_ned: float, radius: float, velocity: float,

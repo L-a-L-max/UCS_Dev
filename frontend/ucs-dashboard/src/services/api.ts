@@ -3,6 +3,15 @@
  * Centralizes all backend API calls for control, permission, and operation log features.
  */
 
+import type {
+  TaskCreateRequest,
+  TaskDetail,
+  TaskExecuteRequest,
+  TaskProgress,
+  TaskSort,
+  Waypoint,
+} from '@/types/task';
+
 const getApiBase = () => {
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
@@ -59,6 +68,15 @@ export interface DroneInfo {
   controlOwnerName?: string;
   onlineStatus: boolean;
   lastHeartbeat: string;
+  /** 遥测里的任务态文本；执行航点任务时后端会覆盖成「执行任务：xxx」 */
+  taskStatus?: string;
+  // ---- 正在执行的航点任务（后端 DroneStatusDTO 新增字段） ----
+  currentTaskId?: number | null;
+  currentTaskName?: string | null;
+  /** 当前正在飞第几个航点（0 基），-1 表示还没开始 */
+  currentTaskSeq?: number | null;
+  currentTaskTotal?: number | null;
+  currentTaskProgress?: number | null;
 }
 
 export interface ControlCommandRequest {
@@ -643,6 +661,144 @@ export async function getPilotDrones(
   battery: number;
 }>>> {
   const response = await fetch(`${API_BASE}/api/v1/pilot/uav/list`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+// ==================== 航点任务 API（路径预规划） ====================
+
+/**
+ * 任务列表。
+ * 队长和队员看到的都是自己创建的任务，由后端按 created_by 过滤，
+ * 前端不再做额外的角色判断。
+ */
+export async function listTasks(
+  token: string,
+  sort: TaskSort = 'time_desc'
+): Promise<ApiResponse<TaskDetail[]>> {
+  const response = await fetch(`${API_BASE}/api/v1/tasks?sort=${sort}`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+/** 任务详情（含航点明细与各机进度） */
+export async function getTaskDetail(
+  token: string,
+  id: number
+): Promise<ApiResponse<TaskDetail>> {
+  const response = await fetch(`${API_BASE}/api/v1/tasks/${id}`, {
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+/** 创建任务。名称重复时后端返回 409，msg 里带提示文案。 */
+export async function createTask(
+  token: string,
+  request: TaskCreateRequest
+): Promise<ApiResponse<TaskDetail>> {
+  const response = await fetch(`${API_BASE}/api/v1/tasks`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(request),
+  });
+  return response.json();
+}
+
+/** 修改任务（执行中的任务不可改） */
+export async function updateTask(
+  token: string,
+  id: number,
+  request: TaskCreateRequest
+): Promise<ApiResponse<TaskDetail>> {
+  const response = await fetch(`${API_BASE}/api/v1/tasks/${id}`, {
+    method: 'PUT',
+    headers: authHeaders(token),
+    body: JSON.stringify(request),
+  });
+  return response.json();
+}
+
+export async function deleteTask(
+  token: string,
+  id: number
+): Promise<ApiResponse<null>> {
+  const response = await fetch(`${API_BASE}/api/v1/tasks/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+/** 指派无人机（复选结果一次性覆盖），成功后任务变为「已分配」 */
+export async function assignTaskDrones(
+  token: string,
+  id: number,
+  uavIds: string[]
+): Promise<ApiResponse<TaskDetail>> {
+  const response = await fetch(`${API_BASE}/api/v1/tasks/${id}/assign`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ uavIds }),
+  });
+  return response.json();
+}
+
+/** 执行任务，可临时覆盖单点超时等执行参数 */
+export async function executeTask(
+  token: string,
+  id: number,
+  request?: TaskExecuteRequest
+): Promise<ApiResponse<TaskDetail>> {
+  const response = await fetch(`${API_BASE}/api/v1/tasks/${id}/execute`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(request ?? {}),
+  });
+  return response.json();
+}
+
+/** 中止执行中的任务，无人机原地悬停 */
+export async function abortTask(
+  token: string,
+  id: number
+): Promise<ApiResponse<TaskDetail>> {
+  const response = await fetch(`${API_BASE}/api/v1/tasks/${id}/abort`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  });
+  return response.json();
+}
+
+/**
+ * 执行中改航：替换 fromSeq 之后的航点。
+ * fromSeq 传 -1 表示连当前正在飞的这一段也立即改向。
+ */
+export async function updateTaskWaypoints(
+  token: string,
+  id: number,
+  waypoints: Waypoint[],
+  fromSeq: number = -1
+): Promise<ApiResponse<TaskDetail>> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/tasks/${id}/waypoints?fromSeq=${fromSeq}`,
+    {
+      method: 'PUT',
+      headers: authHeaders(token),
+      body: JSON.stringify(waypoints),
+    }
+  );
+  return response.json();
+}
+
+/** 进度轮询（WebSocket 断线时的兜底） */
+export async function getTaskProgress(
+  token: string,
+  id: number
+): Promise<ApiResponse<TaskProgress>> {
+  const response = await fetch(`${API_BASE}/api/v1/tasks/${id}/progress`, {
     headers: authHeaders(token),
   });
   return response.json();

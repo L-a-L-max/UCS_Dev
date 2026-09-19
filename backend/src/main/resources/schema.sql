@@ -184,6 +184,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     end_time TIMESTAMP,
     created_by BIGINT,
     description VARCHAR(2000),
+    exec_count INTEGER DEFAULT 0,
+    waypoint_timeout_sec INTEGER DEFAULT 300,
+    arrival_radius REAL DEFAULT 3.0,
+    arrival_alt_tol REAL DEFAULT 2.0,
+    on_finish VARCHAR(20) DEFAULT 'HOLD',
+    last_exec_time TIMESTAMP,
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );
@@ -206,9 +212,44 @@ CREATE TABLE IF NOT EXISTS task_drone_map (
     drone_id BIGINT NOT NULL,
     progress REAL DEFAULT 0,
     status INTEGER DEFAULT 0,
+    current_seq INTEGER DEFAULT -1,
+    mission_id VARCHAR(64),
+    error_message VARCHAR(500),
     last_update_time TIMESTAMP,
     CONSTRAINT fk_tdmap_task FOREIGN KEY (task_id) REFERENCES tasks(id)
 );
+
+-- 16b. Task Waypoints（航点路径预规划）
+-- seq           连续执行序号，从 0 开始，网关按此顺序飞行
+-- display_label 前端展示编号，删除不回退、插入用 4.1~4.9
+CREATE TABLE IF NOT EXISTS task_waypoints (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL,
+    seq INTEGER NOT NULL,
+    display_label NUMERIC(5,1) NOT NULL,
+    item_type VARCHAR(20) NOT NULL DEFAULT 'NAV',
+    latitude DOUBLE PRECISION,
+    longitude DOUBLE PRECISION,
+    altitude DOUBLE PRECISION,
+    hold_time INTEGER DEFAULT 0,
+    action_command VARCHAR(50),
+    action_params VARCHAR(2000),
+    created_at TIMESTAMP,
+    CONSTRAINT fk_twp_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    CONSTRAINT uk_twp_task_seq UNIQUE (task_id, seq),
+    CONSTRAINT ck_twp_item_type CHECK (item_type IN ('NAV', 'ACTION')),
+    CONSTRAINT ck_twp_nav_fields CHECK (
+        item_type <> 'NAV'
+        OR (latitude IS NOT NULL AND longitude IS NOT NULL AND altitude IS NOT NULL)
+    ),
+    CONSTRAINT ck_twp_action_fields CHECK (
+        item_type <> 'ACTION' OR action_command IS NOT NULL
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_twp_task_seq ON task_waypoints(task_id, seq);
+CREATE INDEX IF NOT EXISTS idx_tasks_creator_name ON tasks(created_by, task_name);
+CREATE INDEX IF NOT EXISTS idx_tdmap_task_status ON task_drone_map(task_id, status);
 
 -- 17. Command Log
 CREATE TABLE IF NOT EXISTS command_log (

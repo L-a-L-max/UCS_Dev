@@ -23,7 +23,19 @@ public class TaskDroneMap {
     
     @Column
     private Integer status = 0;
-    
+
+    /** 该无人机当前正在飞往的航点 seq，-1 表示尚未开始 */
+    @Column(name = "current_seq")
+    private Integer currentSeq = -1;
+
+    /** 本次执行的唯一标识，用于丢弃上一轮执行残留的迟到进度消息 */
+    @Column(name = "mission_id", length = 64)
+    private String missionId;
+
+    /** 失败原因 */
+    @Column(name = "error_message", length = 500)
+    private String errorMessage;
+
     @Column(name = "last_update_time")
     private LocalDateTime lastUpdateTime;
     

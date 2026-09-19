@@ -40,6 +40,10 @@ import {
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
 import { HoloDashboard } from '@/components/cesium';
 import { useTelemetryWebSocket, type PartitionTelemetryMessage, type CommandAckMessage } from '@/hooks/useTelemetryWebSocket';
+import TaskListPanel from '@/components/task/TaskListPanel';
+import WaypointPlannerPanel from '@/components/task/WaypointPlannerPanel';
+import { useMissionPlanningStore } from '@/stores/missionPlanningStore';
+import type { TaskAlertMessage, TaskDetail } from '@/types/task';
 
 interface PilotViewProps {
   token: string;
@@ -75,6 +79,17 @@ export default function PilotView({ token, username, partitions = [], onLogout }
 
   // 全息模式状态
   const [holoMode, setHoloMode] = useState(false);
+
+  // ==================== 航点任务（路径预规划） ====================
+  const [activeTab, setActiveTab] = useState<'drones' | 'tasks'>('drones');
+  const [plannerOpen, setPlannerOpen] = useState(false);
+  const [plannerTask, setPlannerTask] = useState<TaskDetail | null>(null);
+  const [plannerNames, setPlannerNames] = useState<string[]>([]);
+  /** 规划面板保存成功后递增，触发任务列表刷新 */
+  const [taskRefresh, setTaskRefresh] = useState(0);
+  /** 收到 /topic/task-progress 推送后递增，触发列表与详情刷新 */
+  const [taskProgressSignal, setTaskProgressSignal] = useState(0);
+  const exitPlanning = useMissionPlanningStore((s) => s.exitPlanning);
 
   const [showDetailPanel, setShowDetailPanel] = useState(false);
   const [detailPanelEnabled, setDetailPanelEnabled] = useState(true);
@@ -190,12 +205,30 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     setTimeout(() => setCommandAckFeedback(null), 4000);
   }, []);
 
+  // 航点任务进度推送：只做「有变化」的信号，具体数据由任务列表/详情自己拉
+  const handleTaskProgress = useCallback(() => {
+    setTaskProgressSignal(v => v + 1);
+  }, []);
+
+  // 任务异常（单点超时、离线等）沿用快捷指令的提示条
+  const handleTaskAlert = useCallback((alert: TaskAlertMessage) => {
+    setQuickFeedback({
+      uavId: alert.uavId,
+      message: `任务异常: ${alert.reason || alert.event}`,
+      success: false,
+    });
+    setTaskProgressSignal(v => v + 1);
+    setTimeout(() => setQuickFeedback(null), 5000);
+  }, []);
+
   useTelemetryWebSocket({
     enabled: partitions.length > 0,
     partitions,
     onPartitionDataReceived: handlePartitionData,
     onDroneRemoved: handleDroneRemoved,
     onCommandAck: handleCommandAck,
+    onTaskProgress: handleTaskProgress,
+    onTaskAlert: handleTaskAlert,
   });
 
   const fetchDrones = useCallback(async () => {
@@ -270,6 +303,10 @@ export default function PilotView({ token, username, partitions = [], onLogout }
         uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
         battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
         model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
+        controlOwnerName: d.controlOwnerName,
+        // 航点任务信息只走 REST（5 秒轮询），遥测帧里没有，下面的合并不会覆盖
+        currentTaskName: d.currentTaskName, currentTaskSeq: d.currentTaskSeq,
+        currentTaskTotal: d.currentTaskTotal,
       });
     });
     const telBuf = telemetryBufferRef.current;
@@ -434,6 +471,18 @@ export default function PilotView({ token, username, partitions = [], onLogout }
     }
   };
 
+  // 可指派给任务的无人机：队员名下这些机。是否真的有控制权由后端按既有权限规则校验。
+  const assignableDrones = useMemo(
+    () =>
+      mapDrones.map(d => ({
+        uavId: d.uavId,
+        online: d.onlineStatus === true,
+        model: d.model,
+        controlOwner: d.controlOwnerName,
+      })),
+    [mapDrones]
+  );
+
   // Multi-select aggregate data
   const multiSelectedDronesList = mapDrones.filter(d => selectedDrones.has(d.uavId));
   const aggregateData = multiSelectedDronesList.length >= 2 ? {
@@ -538,6 +587,36 @@ export default function PilotView({ token, username, partitions = [], onLogout }
       <div className="flex-1 flex overflow-hidden">
         {/* Left: Drone list with quick controls */}
         <div className="w-60 bg-[rgba(13,21,38,0.7)] backdrop-blur-md border-r border-[rgba(0,240,255,0.08)] overflow-y-auto p-1.5 space-y-1 shrink-0">
+          {/* \u6807\u7b7e\u5207\u6362\uff1a\u65e0\u4eba\u673a / \u4efb\u52a1 */}
+          <div className="flex gap-0.5 mb-1">
+            <button onClick={() => setActiveTab('drones')}
+              className={`flex items-center px-2 py-1 rounded text-[11px] transition-colors ${activeTab === 'drones' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
+              <Plane className="w-3 h-3 mr-1" />{'\u65e0\u4eba\u673a'}
+            </button>
+            <button onClick={() => setActiveTab('tasks')}
+              className={`flex items-center px-2 py-1 rounded text-[11px] transition-colors ${activeTab === 'tasks' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
+              <ListChecks className="w-3 h-3 mr-1" />{'\u4efb\u52a1'}
+            </button>
+          </div>
+
+          {/* \u4efb\u52a1\u6807\u7b7e\u9875\uff1a\u8def\u5f84\u9884\u89c4\u5212 */}
+          {activeTab === 'tasks' && (
+            <TaskListPanel
+              token={token}
+              drones={assignableDrones}
+              refreshSignal={taskRefresh}
+              progressSignal={taskProgressSignal}
+              onPlanTask={(task, otherNames) => {
+                setPlannerTask(task);
+                setPlannerNames(otherNames);
+                setPlannerOpen(true);
+                // \u89c4\u5212\u65f6\u5730\u56fe\u8981\u80fd\u70b9\u9009\u822a\u70b9\uff0c\u5168\u606f 3D \u6a21\u5f0f\u4e0b\u4e0d\u652f\u6301\uff0c\u5148\u9000\u56de\u4e8c\u7ef4
+                setHoloMode(false);
+              }}
+            />
+          )}
+
+          {activeTab === 'drones' && (<>
           <h2 className="text-[10px] font-semibold text-slate-400 mb-0.5 px-1">{'\u6211\u7684\u65e0\u4eba\u673a'}</h2>
           {mapDrones.length === 0 && <p className="text-slate-500 text-xs text-center py-6">{'\u6682\u65e0\u53ef\u63a7\u5236\u7684\u65e0\u4eba\u673a'}</p>}
           {[...mapDrones].sort((a, b) => {
@@ -593,6 +672,20 @@ export default function PilotView({ token, username, partitions = [], onLogout }
                 <span className="flex items-center gap-0.5"><Battery className="w-2.5 h-2.5" />{drone.battery != null ? `${drone.battery.toFixed(1)}%` : 'N/A'}</span>
                 <span className="flex items-center gap-0.5"><MapPin className="w-2.5 h-2.5" />{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : 'N/A'}</span>
               </div>
+              {/* 正在执行的航点任务 */}
+              {drone.currentTaskName && (
+                <div className="flex items-center gap-1 text-[10px] text-cyan-300 mt-0.5">
+                  <ListChecks className="w-2.5 h-2.5" />
+                  <span className="truncate">{'任务：'}{drone.currentTaskName}</span>
+                  {drone.currentTaskSeq != null && drone.currentTaskSeq >= 0 && (
+                    <span className="text-slate-400">
+                      {'第 '}{drone.currentTaskSeq + 1}
+                      {drone.currentTaskTotal ? ` / ${drone.currentTaskTotal}` : ''}
+                      {' 点'}
+                    </span>
+                  )}
+                </div>
+              )}
               {/* Quick control buttons */}
               <div className="flex flex-wrap gap-0.5 mt-1">
                 {QUICK_COMMANDS.map(cmd => {
@@ -612,6 +705,7 @@ export default function PilotView({ token, username, partitions = [], onLogout }
               </div>
             </div>
           ))}
+          </>)}
         </div>
 
         {/* Multi-select aggregate panel - enlarged layout */}
@@ -1063,8 +1157,8 @@ export default function PilotView({ token, username, partitions = [], onLogout }
           </div>
         )}
 
-        {/* Right: Map view */}
-        <div className="flex-1 h-full">
+        {/* Right: Map view（relative 供航点规划面板浮在地图上） */}
+        <div className="flex-1 h-full relative">
           <MapPanel drones={mapDrones} selectedDroneId={selectedDrone}
             selectedDroneIds={multiSelectMode ? selectedDrones : undefined}
             homeMarker={homeMarker}
@@ -1113,6 +1207,26 @@ export default function PilotView({ token, username, partitions = [], onLogout }
               }
             }}
             showDroneList={false} showEventLog={false} />
+
+          {/* 航点规划面板：浮在地图右侧，与地图点选联动 */}
+          {plannerOpen && (
+            <WaypointPlannerPanel
+              token={token}
+              initialTask={plannerTask}
+              existingNames={plannerNames}
+              onSaved={() => {
+                setTaskRefresh(v => v + 1);
+                exitPlanning();
+                setPlannerOpen(false);
+                setPlannerTask(null);
+              }}
+              onClose={() => {
+                exitPlanning();
+                setPlannerOpen(false);
+                setPlannerTask(null);
+              }}
+            />
+          )}
         </div>
       </div>
       {/* 全息3D模式 */}

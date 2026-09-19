@@ -60,6 +60,10 @@ import {
 import MapPanel, { type MapDrone } from '@/components/MapPanel';
 import { HoloDashboard, type LogEntry } from '@/components/cesium';
 import { useTelemetryWebSocket, type PartitionTelemetryMessage, type CommandAckMessage } from '@/hooks/useTelemetryWebSocket';
+import TaskListPanel from '@/components/task/TaskListPanel';
+import WaypointPlannerPanel from '@/components/task/WaypointPlannerPanel';
+import { useMissionPlanningStore } from '@/stores/missionPlanningStore';
+import type { TaskAlertMessage, TaskDetail } from '@/types/task';
 
 interface LeaderViewProps {
   token: string;
@@ -103,7 +107,17 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
   const [logPageSize, setLogPageSize] = useState(8);
   const [commandFeedback, setCommandFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
   const [commandAckFeedback, setCommandAckFeedback] = useState<{ uavId: string; message: string; success: boolean } | null>(null);
-  const [activeTab, setActiveTab] = useState<'drones' | 'members' | 'logs'>('drones');
+  const [activeTab, setActiveTab] = useState<'drones' | 'members' | 'logs' | 'tasks'>('drones');
+
+  // ==================== 航点任务（路径预规划） ====================
+  const [plannerOpen, setPlannerOpen] = useState(false);
+  const [plannerTask, setPlannerTask] = useState<TaskDetail | null>(null);
+  const [plannerNames, setPlannerNames] = useState<string[]>([]);
+  /** 规划面板保存成功后递增，触发任务列表刷新 */
+  const [taskRefresh, setTaskRefresh] = useState(0);
+  /** 收到 /topic/task-progress 推送后递增，触发列表与详情刷新 */
+  const [taskProgressSignal, setTaskProgressSignal] = useState(0);
+  const exitPlanning = useMissionPlanningStore((s) => s.exitPlanning);
 
   // GOTO params
   const [gotoLat, setGotoLat] = useState('39.9042');
@@ -213,12 +227,30 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     setTimeout(() => setCommandAckFeedback(null), 4000);
   }, []);
 
+  // 航点任务进度推送：只做「有变化」的信号，具体数据由任务列表/详情自己拉
+  const handleTaskProgress = useCallback(() => {
+    setTaskProgressSignal(v => v + 1);
+  }, []);
+
+  // 任务异常（单点超时、离线等）用与指令反馈一致的提示条展示
+  const handleTaskAlert = useCallback((alert: TaskAlertMessage) => {
+    setCommandFeedback({
+      uavId: alert.uavId,
+      message: `任务异常: ${alert.reason || alert.event}`,
+      success: false,
+    });
+    setTaskProgressSignal(v => v + 1);
+    setTimeout(() => setCommandFeedback(null), 5000);
+  }, []);
+
   useTelemetryWebSocket({
     enabled: partitions.length > 0,
     partitions,
     onPartitionDataReceived: handlePartitionData,
     onDroneRemoved: handleDroneRemoved,
     onCommandAck: handleCommandAck,
+    onTaskProgress: handleTaskProgress,
+    onTaskAlert: handleTaskAlert,
   });
 
   const [showDetailPanel, setShowDetailPanel] = useState(false);
@@ -499,6 +531,10 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
         uavId: d.uavId, lat: d.lat, lng: d.lng, altitude: d.altitude,
         battery: d.battery, flightStatus: d.flightStatus, onlineStatus: d.onlineStatus,
         model: d.model, owner: d.owner, teamName: d.teamName, teamLeader: d.teamLeader,
+        controlOwnerName: d.controlOwnerName,
+        // 航点任务信息只走 REST（5 秒轮询），遥测帧里没有，下面的合并不会覆盖
+        currentTaskName: d.currentTaskName, currentTaskSeq: d.currentTaskSeq,
+        currentTaskTotal: d.currentTaskTotal,
       });
     });
     const telBuf = telemetryBufferRef.current;
@@ -520,6 +556,20 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
     return Array.from(droneMap.values()).sort((a, b) => a.uavId.localeCompare(b.uavId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drones, telemetryVersion]);
+
+  // 可指派给任务的无人机：列出队伍内全部无人机，并标出当前控制人。
+  // 是否真的有控制权由后端按既有权限规则校验（无权限会在指派弹窗里给出提示），
+  // 这里不做额外的权限判断，避免与后端规则不一致。
+  const assignableDrones = useMemo(
+    () =>
+      mapDrones.map(d => ({
+        uavId: d.uavId,
+        online: d.onlineStatus === true,
+        model: d.model,
+        controlOwner: d.controlOwnerName,
+      })),
+    [mapDrones]
+  );
 
   // Multi-select aggregate data
   const multiSelectedDrones = mapDrones.filter(d => selectedDrones.has(d.uavId));
@@ -637,6 +687,10 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
               className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'members' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
               <Users className="w-3 h-3 mr-1" />{'\u6210\u5458'}
             </button>
+            <button onClick={() => setActiveTab('tasks')}
+              className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'tasks' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
+              <ListChecks className="w-3 h-3 mr-1" />{'任务'}
+            </button>
             <button onClick={() => { setActiveTab('logs'); fetchLogs(0); }}
               className={`flex items-center px-2 py-1 rounded text-xs transition-colors ${activeTab === 'logs' ? 'bg-[rgba(0,240,255,0.15)] text-neon-cyan border border-[rgba(0,240,255,0.2)]' : 'text-slate-400 hover:text-white hover:bg-[rgba(0,240,255,0.05)]'}`}>
               <FileText className="w-3 h-3 mr-1" />{'\u65e5\u5fd7'}
@@ -718,6 +772,20 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                         <span>{drone.altitude != null ? `${drone.altitude.toFixed(2)}m` : ''}</span>
                         <span className="text-slate-500">{drone.teamName || ''}</span>
                       </div>
+                      {/* 正在执行的航点任务 */}
+                      {drone.currentTaskName && (
+                        <div className="flex items-center gap-1 text-[10px] text-cyan-300 mb-0.5">
+                          <ListChecks className="w-2.5 h-2.5" />
+                          <span className="truncate">{'任务：'}{drone.currentTaskName}</span>
+                          {drone.currentTaskSeq != null && drone.currentTaskSeq >= 0 && (
+                            <span className="text-slate-400">
+                              {'第 '}{drone.currentTaskSeq + 1}
+                              {drone.currentTaskTotal ? ` / ${drone.currentTaskTotal}` : ''}
+                              {' 点'}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {/* Locate + Follow buttons */}
                       <div className="flex flex-wrap gap-0.5 mt-0.5">
                         <Button size="sm" variant="outline"
@@ -760,6 +828,23 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                   {mapDrones.length === 0 && <div className="text-center text-slate-500 py-4 text-xs">{'\u6682\u65e0\u6570\u636e'}</div>}
                 </div>
               </div>
+            )}
+
+            {/* Tasks Tab - 路径预规划：展示当前用户创建的所有任务 */}
+            {activeTab === 'tasks' && (
+              <TaskListPanel
+                token={token}
+                drones={assignableDrones}
+                refreshSignal={taskRefresh}
+                progressSignal={taskProgressSignal}
+                onPlanTask={(task, otherNames) => {
+                  setPlannerTask(task);
+                  setPlannerNames(otherNames);
+                  setPlannerOpen(true);
+                  // 规划时地图要能点选航点，全息 3D 模式下不支持，先退回二维
+                  setHoloMode(false);
+                }}
+              />
             )}
 
             {/* Members Tab */}
@@ -1134,6 +1219,20 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
                       {drone.model && <span>{'\u673a\u578b'}: <span className="text-slate-300">{drone.model}</span></span>}
                     </div>
                   )}
+                  {/* \u6b63\u5728\u6267\u884c\u7684\u822a\u70b9\u4efb\u52a1 */}
+                  {drone.currentTaskName && (
+                    <div className="flex items-center gap-1 mt-1.5 text-[9px] text-cyan-300">
+                      <ListChecks className="w-2.5 h-2.5" />
+                      <span className="truncate">{'\u6267\u884c\u4efb\u52a1'}: {drone.currentTaskName}</span>
+                      {drone.currentTaskSeq != null && drone.currentTaskSeq >= 0 && (
+                        <span className="text-slate-400">
+                          {'\u7b2c '}{drone.currentTaskSeq + 1}
+                          {drone.currentTaskTotal ? ` / ${drone.currentTaskTotal}` : ''}
+                          {' \u70b9'}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1312,8 +1411,8 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
           );
         })()}
 
-        {/* Right: Map view */}
-        <div className="flex-1 h-full">
+        {/* Right: Map view（relative 供航点规划面板浮在地图上） */}
+        <div className="flex-1 h-full relative">
           <MapPanel drones={mapDrones} selectedDroneId={selectedMapDrone}
             selectedDroneIds={multiSelectMode ? selectedDrones : undefined}
             homeMarker={homeMarker}
@@ -1370,6 +1469,26 @@ export default function LeaderView({ token, username, partitions = [], onLogout 
               }
             }}
             showDroneList={leftPanelCollapsed} showEventLog={false} />
+
+          {/* 航点规划面板：浮在地图右侧，与地图点选联动 */}
+          {plannerOpen && (
+            <WaypointPlannerPanel
+              token={token}
+              initialTask={plannerTask}
+              existingNames={plannerNames}
+              onSaved={() => {
+                setTaskRefresh(v => v + 1);
+                exitPlanning();
+                setPlannerOpen(false);
+                setPlannerTask(null);
+              }}
+              onClose={() => {
+                exitPlanning();
+                setPlannerOpen(false);
+                setPlannerTask(null);
+              }}
+            />
+          )}
         </div>
       </div>
 
