@@ -10,6 +10,8 @@ public final class KafkaTopicConstants {
     public static final String EVENTS_DRONE = "events.drone";
     public static final String COMMANDS_DOWN = "commands.down";
     public static final String COMMANDS_ACK = "commands.ack";
+    /** 航点任务进度（Gateway → 后端），key=uavId 保证单机有序 */
+    public static final String MISSION_PROGRESS = "mission.progress";
 
     /** Consumer group IDs */
     public static final String GROUP_INGEST = "ingest-group";

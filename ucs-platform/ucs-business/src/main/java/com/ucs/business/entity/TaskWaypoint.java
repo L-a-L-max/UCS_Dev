@@ -1,4 +1,4 @@
-package com.ucs.entity;
+package com.ucs.business.entity;
 
 import jakarta.persistence.*;
 import lombok.Data;

@@ -1,4 +1,4 @@
-package com.ucs.dto;
+package com.ucs.business.dto;
 
 import lombok.Data;
 

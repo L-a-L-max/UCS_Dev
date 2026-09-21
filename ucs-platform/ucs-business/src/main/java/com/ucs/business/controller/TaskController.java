@@ -1,13 +1,13 @@
-package com.ucs.controller;
+package com.ucs.business.controller;
 
-import com.ucs.dto.ApiResponse;
-import com.ucs.dto.TaskAssignRequest;
-import com.ucs.dto.TaskCreateRequest;
-import com.ucs.dto.TaskDetailDTO;
-import com.ucs.dto.TaskExecuteRequest;
-import com.ucs.dto.WaypointDTO;
-import com.ucs.security.UserPrincipal;
-import com.ucs.service.WaypointTaskService;
+import com.ucs.business.dto.ApiResponse;
+import com.ucs.business.dto.TaskAssignRequest;
+import com.ucs.business.dto.TaskCreateRequest;
+import com.ucs.business.dto.TaskDetailDTO;
+import com.ucs.business.dto.TaskExecuteRequest;
+import com.ucs.business.dto.WaypointDTO;
+import com.ucs.business.security.UserPrincipal;
+import com.ucs.business.service.WaypointTaskService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;

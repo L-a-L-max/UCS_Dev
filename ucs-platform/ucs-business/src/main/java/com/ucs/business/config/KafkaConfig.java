@@ -44,6 +44,9 @@ public class KafkaConfig {
     @Value("${kafka.topic.commands-ack:commands.ack}")
     private String commandsAckTopic;
 
+    @Value("${kafka.topic.mission-progress:mission.progress}")
+    private String missionProgressTopic;
+
     /**
      * Error handler that retries 3 times with 1s interval, then logs and skips.
      * NEVER stops the container — ensures consumer threads stay alive.
@@ -97,6 +100,19 @@ public class KafkaConfig {
     @Bean
     public NewTopic commandsAckTopic() {
         return TopicBuilder.name(commandsAckTopic)
+                .partitions(8)
+                .replicas(1)
+                .build();
+    }
+
+    /**
+     * 航点任务进度：网关每到达一个航点上报一条。
+     * 以 uavId 为 key，保证同一架机的进度事件有序，避免「已完成」先于
+     * 最后一个「到点」被消费。
+     */
+    @Bean
+    public NewTopic missionProgressTopic() {
+        return TopicBuilder.name(missionProgressTopic)
                 .partitions(8)
                 .replicas(1)
                 .build();

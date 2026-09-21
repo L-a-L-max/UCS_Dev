@@ -28,24 +28,18 @@ public class DroneService {
     private final UserRepository userRepository;
     private final CommandLogRepository commandLogRepository;
     private final EventLogRepository eventLogRepository;
-    private final TaskDroneMapRepository taskDroneMapRepository;
-    private final TaskRepository taskRepository;
-    private final TaskWaypointRepository taskWaypointRepository;
 
     /** Kafka 指令生产者（可选，Kafka 未启用时为 null） */
     @Autowired(required = false)
     private CommandKafkaProducer commandKafkaProducer;
-
+    
     public DroneService(DroneRepository droneRepository,
                         DroneStatusRepository droneStatusRepository,
                         DroneOwnershipRepository droneOwnershipRepository,
                         TeamDroneMapRepository teamDroneMapRepository,
                         UserRepository userRepository,
                         CommandLogRepository commandLogRepository,
-                        EventLogRepository eventLogRepository,
-                        TaskDroneMapRepository taskDroneMapRepository,
-                        TaskRepository taskRepository,
-                        TaskWaypointRepository taskWaypointRepository) {
+                        EventLogRepository eventLogRepository) {
         this.droneRepository = droneRepository;
         this.droneStatusRepository = droneStatusRepository;
         this.droneOwnershipRepository = droneOwnershipRepository;
@@ -53,9 +47,6 @@ public class DroneService {
         this.userRepository = userRepository;
         this.commandLogRepository = commandLogRepository;
         this.eventLogRepository = eventLogRepository;
-        this.taskDroneMapRepository = taskDroneMapRepository;
-        this.taskRepository = taskRepository;
-        this.taskWaypointRepository = taskWaypointRepository;
     }
     
     public List<DroneStatusDTO> getDronesByUserId(Long userId) {
@@ -88,13 +79,10 @@ public class DroneService {
                 .collect(Collectors.toMap(DroneStatus::getDroneId, s -> s));
         
         Map<Long, String> ownerMap = getOwnerMap(droneIds);
-
+        
         // Build control owner name map: droneId -> actual controller's realName
         Map<Long, String> controlOwnerMap = getControlOwnerMap(droneIds);
-
-        // 正在执行的航点任务：droneId -> 任务信息
-        Map<Long, CurrentTaskInfo> taskMap = getCurrentTaskMap(droneIds);
-
+        
         return drones.stream().map(drone -> {
             DroneStatusDTO dto = new DroneStatusDTO();
             dto.setUavId(drone.getUavId() != null ? drone.getUavId() : "UNKNOWN_" + drone.getId());
@@ -102,7 +90,7 @@ public class DroneService {
             dto.setModel(drone.getModel());
             dto.setOwner(ownerMap.get(drone.getId()));
             dto.setControlOwnerName(controlOwnerMap.get(drone.getId()));
-
+            
             DroneStatus status = statusMap.get(drone.getId());
             if (status != null) {
                 dto.setLat(status.getLat());
@@ -116,62 +104,9 @@ public class DroneService {
                 dto.setHardwareStatus(getHardwareStatusString(status.getHealthStatus()));
                 dto.setColor(getStatusColor(status));
             }
-
-            CurrentTaskInfo task = taskMap.get(drone.getId());
-            if (task != null) {
-                dto.setCurrentTaskId(task.taskId());
-                dto.setCurrentTaskName(task.taskName());
-                dto.setCurrentTaskSeq(task.currentSeq());
-                dto.setCurrentTaskTotal(task.total());
-                dto.setCurrentTaskProgress(task.progress());
-                // 遥测里没有任务语义，这里用任务名覆盖，前端卡片直接展示
-                dto.setTaskStatus("执行任务：" + task.taskName());
-            }
-
+            
             return dto;
         }).collect(Collectors.toList());
-    }
-
-    /** 无人机当前正在执行的航点任务 */
-    private record CurrentTaskInfo(Long taskId, String taskName, Integer currentSeq,
-                                    Integer total, Float progress) {}
-
-    /**
-     * 批量查出这批无人机正在执行（status=1）的航点任务。
-     * 一架机同时只会有一个执行中的任务，取最近更新的那条。
-     */
-    private Map<Long, CurrentTaskInfo> getCurrentTaskMap(List<Long> droneIds) {
-        if (droneIds.isEmpty()) return Map.of();
-
-        List<TaskDroneMap> running = taskDroneMapRepository.findByDroneIdInAndStatus(droneIds, 1);
-        if (running.isEmpty()) return Map.of();
-
-        Map<Long, Integer> waypointCounts = new java.util.HashMap<>();
-        Map<Long, String> taskNames = new java.util.HashMap<>();
-        Map<Long, CurrentTaskInfo> result = new java.util.HashMap<>();
-
-        for (TaskDroneMap map : running) {
-            Long taskId = map.getTaskId();
-            String name = taskNames.computeIfAbsent(taskId, id ->
-                    taskRepository.findById(id).map(Task::getTaskName).orElse(null));
-            if (name == null) continue;
-            int total = waypointCounts.computeIfAbsent(taskId, id ->
-                    (int) taskWaypointRepository.countByTaskId(id));
-
-            CurrentTaskInfo existing = result.get(map.getDroneId());
-            if (existing != null) {
-                // 同一架机理论上只有一个执行中任务，出现多个时保留进度靠前的
-                float existingProgress = existing.progress() != null ? existing.progress() : 0f;
-                float candidate = map.getProgress() != null ? map.getProgress() : 0f;
-                if (existingProgress >= candidate) continue;
-            }
-            result.put(map.getDroneId(), new CurrentTaskInfo(
-                    taskId, name,
-                    map.getCurrentSeq() != null ? map.getCurrentSeq() : -1,
-                    total,
-                    map.getProgress() != null ? map.getProgress() : 0f));
-        }
-        return result;
     }
     
     private Map<Long, String> getOwnerMap(List<Long> droneIds) {

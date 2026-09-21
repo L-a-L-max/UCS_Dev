@@ -1,13 +1,13 @@
-package com.ucs.kafka;
+package com.ucs.business.kafka;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ucs.entity.Drone;
-import com.ucs.entity.TaskDroneMap;
-import com.ucs.repository.DroneRepository;
-import com.ucs.repository.TaskDroneMapRepository;
-import com.ucs.repository.TaskRepository;
-import com.ucs.service.WaypointTaskService;
+import com.ucs.business.entity.Drone;
+import com.ucs.business.entity.TaskDroneMap;
+import com.ucs.business.repository.DroneRepository;
+import com.ucs.business.repository.TaskDroneMapRepository;
+import com.ucs.business.repository.TaskRepository;
+import com.ucs.business.service.WaypointTaskService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;

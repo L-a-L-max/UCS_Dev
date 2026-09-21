@@ -1,11 +1,11 @@
-package com.ucs.service;
+package com.ucs.business.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ucs.dto.ControlCommandRequest;
-import com.ucs.dto.ControlCommandResponse;
-import com.ucs.entity.Drone;
-import com.ucs.entity.Task;
-import com.ucs.entity.TaskWaypoint;
+import com.ucs.business.dto.ControlCommandRequest;
+import com.ucs.business.dto.ControlCommandResponse;
+import com.ucs.business.entity.Drone;
+import com.ucs.business.entity.Task;
+import com.ucs.business.entity.TaskWaypoint;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;

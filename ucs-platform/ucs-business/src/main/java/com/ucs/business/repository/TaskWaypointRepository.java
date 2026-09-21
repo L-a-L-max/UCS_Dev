@@ -1,6 +1,6 @@
-package com.ucs.repository;
+package com.ucs.business.repository;
 
-import com.ucs.entity.TaskWaypoint;
+import com.ucs.business.entity.TaskWaypoint;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;

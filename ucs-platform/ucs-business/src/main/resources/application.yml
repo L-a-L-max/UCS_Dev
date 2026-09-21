@@ -49,6 +49,7 @@ kafka:
     events-drone: events.drone
     commands-down: commands.down
     commands-ack: commands.ack
+    mission-progress: mission.progress
 
 dds:
   gateway:
